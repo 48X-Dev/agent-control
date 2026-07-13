@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v8.3.0 (2026-07-13)
+
+### Features
+
+- **evaluators**: Add defenseclaw evaluator
+  ([#248](https://github.com/agentcontrol/agent-control/pull/248),
+  [`2274ca8`](https://github.com/agentcontrol/agent-control/commit/2274ca8980e07f1f071b144b46ce67a1e36f16b9))
+
+
 ## v8.2.0 (2026-06-25)
 
 ### Features
