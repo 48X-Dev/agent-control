@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v8.4.0 (2026-07-27)
+
+### Features
+
+- **server**: Support optionally disabling uvicorn access logs
+  ([#255](https://github.com/agentcontrol/agent-control/pull/255),
+  [`57129fd`](https://github.com/agentcontrol/agent-control/commit/57129fd0ed3de65793e55aaa070e945d15e11686))
+
+
 ## v8.3.0 (2026-07-13)
 
 ### Features
