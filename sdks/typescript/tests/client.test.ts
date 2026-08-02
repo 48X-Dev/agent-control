@@ -8,6 +8,7 @@ describe("AgentControlClient", () => {
 
     client.init({
       agentName: "test-agent",
+      register: false,
       serverUrl: "http://localhost:8000",
       apiKey: "test-key",
     });
