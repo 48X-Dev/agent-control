@@ -1,7 +1,9 @@
 # Agent Control Server - Local Development Docker Compose
 #
 # This file is used for local development with `make server-run`.
-# It only starts PostgreSQL, allowing you to run the server locally with uvicorn.
+# It starts PostgreSQL, allowing you to run the server locally with uvicorn,
+# plus a one-shot job that provisions the agent executor's separate database
+# and its dedicated Postgres role (see server/scripts/adk_db_init.sql).
 #
 # Usage:
 #   docker compose -f docker-compose.dev.yml up -d
@@ -20,7 +22,11 @@ services:
     environment:
       POSTGRES_DB: agent_control
       POSTGRES_USER: agent_control
-      POSTGRES_PASSWORD: agent_control
+      # Same variable and default as docker-compose.yml. Both files mount the
+      # same named pgdata volume in the same compose project, so they have to
+      # agree on the password or whichever one did not initialise the volume
+      # will hand out credentials that do not work.
+      POSTGRES_PASSWORD: "${AGENT_CONTROL_POSTGRES_PASSWORD:-agent_control}"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -29,6 +35,52 @@ services:
       timeout: 5s
       retries: 10
     restart: unless-stopped
+
+  # One-shot provisioning for the agent executor's database. Runs to completion
+  # and exits; `docker compose up` starts it again on every run, which is fine
+  # because server/scripts/adk_db_init.sql is idempotent.
+  #
+  # This cannot be a /docker-entrypoint-initdb.d script: the postgres service
+  # above mounts a named volume, and the Postgres image runs init scripts only
+  # against an empty data directory, so nobody with an existing volume would
+  # ever get the database.
+  #
+  # It creates adk_runtime owned by a dedicated `adk` role, and closes the
+  # control-plane database to that role. The executor is a process running
+  # model-driven agent code; if it connected as `agent_control` it could
+  # rewrite the controls and policies that govern it, which is reachable
+  # through ordinary prompt injection into a tool result.
+  adk-db-init:
+    image: postgres:16-alpine
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # Superuser credentials for provisioning only. This container exits
+      # before any agent code exists; the executor service never gets them.
+      # Must track the postgres service above, including a password set in
+      # .env - otherwise this job cannot authenticate on any install that
+      # changed it from the default.
+      PGPASSWORD: "${AGENT_CONTROL_POSTGRES_PASSWORD:-agent_control}"
+      ADK_DB_PASSWORD: "${ADK_DB_PASSWORD:-adk_local}"
+    volumes:
+      - ./server/scripts/adk_db_init.sql:/adk_db_init.sql:ro
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      # Second run closes the local pytest database, which carries the same
+      # control-plane schema. It is created by server/tests/conftest.py rather
+      # than by compose, so it may not exist; the script skips a missing
+      # control database and exits 0.
+      - >
+        psql -v ON_ERROR_STOP=1 -h postgres -U agent_control -d postgres
+        -v adk_password="$${ADK_DB_PASSWORD}"
+        -f /adk_db_init.sql
+        &&
+        psql -v ON_ERROR_STOP=1 -h postgres -U agent_control -d postgres
+        -v adk_password="$${ADK_DB_PASSWORD}"
+        -v control_db=agent_control_test
+        -f /adk_db_init.sql
+    restart: "no"
 
 volumes:
   pgdata:

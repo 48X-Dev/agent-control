@@ -92,6 +92,31 @@ curl http://localhost:8000/health
 
 If you changed `AGENT_CONTROL_SERVER_HOST_PORT`, use that port in the health check URL.
 
+#### Which key does what
+
+The two tiers are not interchangeable. Reads work with either key. Creating or
+updating a control needs an admin key, and so does changing an agent's
+registration once that agent exists.
+
+That last part matters for long-lived agents. `agent_control.init()` sends
+`conflict_mode="overwrite"` by default, and asking to overwrite an existing
+registration is privileged whether or not anything actually changed. An agent
+running with a plain agent key will register fine on its first run, then fail
+with a 403 every time it restarts. Give long-lived agents the server default
+instead:
+
+```python
+agent_control.init(
+    agent_name="awesome_bot_3000",
+    agent_description="My Chatbot",
+    conflict_mode="strict",
+)
+```
+
+Under `strict`, restarting an unchanged agent succeeds with a plain agent key.
+Adding or changing its steps, evaluators, or description still requires an admin
+key, so run those registration changes from a deploy step that holds one.
+
 ### 2. Install the SDK
 
 Run this in your agent project directory.
