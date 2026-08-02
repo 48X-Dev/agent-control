@@ -1,0 +1,147 @@
+.card {
+  position: relative;
+  display: block;
+  height: 100%;
+  overflow: hidden;
+  padding: var(--mantine-spacing-lg);
+  padding-left: calc(var(--mantine-spacing-lg) + 6px);
+  border: 1px solid var(--jds-color-border);
+  border-radius: var(--mantine-radius-md);
+  background-color: var(--mantine-color-white);
+  transition:
+    border-color 150ms ease,
+    box-shadow 150ms ease,
+    transform 150ms ease;
+}
+
+/* Accent spine: the team's colour, carried everywhere the team appears. */
+.card::before {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 6px;
+  background-color: var(--team-accent-solid);
+}
+
+[data-mantine-color-scheme='dark'] .card {
+  background-color: var(--mantine-color-dark-7);
+  border-color: var(--mantine-color-dark-4);
+}
+
+.card:hover {
+  transform: translateY(-2px);
+  border-color: var(--team-accent-solid);
+  box-shadow: var(--mantine-shadow-md);
+}
+
+.card:focus-visible {
+  outline: 2px solid var(--team-accent-solid);
+  outline-offset: 2px;
+  border-color: var(--team-accent-solid);
+}
+
+.card:hover .chevron,
+.card:focus-visible .chevron {
+  transform: translateX(3px);
+  color: var(--team-accent-solid);
+}
+
+.marker {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: var(--mantine-radius-md);
+  background-color: var(--team-accent-surface);
+  color: var(--team-accent-foreground);
+  font-size: var(--mantine-font-size-sm);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.chevron {
+  flex-shrink: 0;
+  color: var(--mantine-color-gray-5);
+  transition:
+    transform 150ms ease,
+    color 150ms ease;
+}
+
+[data-mantine-color-scheme='dark'] .chevron {
+  color: var(--mantine-color-dark-2);
+}
+
+.title {
+  color: var(--jds-color-black);
+}
+
+[data-mantine-color-scheme='dark'] .title {
+  color: var(--mantine-color-gray-1);
+}
+
+.members {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.memberPill {
+  max-width: 100%;
+  overflow: hidden;
+  padding: 2px 8px;
+  border-radius: var(--mantine-radius-sm);
+  background-color: var(--mantine-color-gray-1);
+  color: var(--mantine-color-gray-7);
+  font-size: var(--mantine-font-size-xs);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+[data-mantine-color-scheme='dark'] .memberPill {
+  background-color: var(--mantine-color-dark-5);
+  color: var(--mantine-color-gray-3);
+}
+
+.overflowPill {
+  background-color: var(--team-accent-surface);
+  color: var(--team-accent-foreground);
+  font-weight: 500;
+}
+
+/* Not redundant with the rule above: the overflow pill also carries
+   .memberPill, whose dark rule is more specific than a bare .overflowPill. */
+[data-mantine-color-scheme='dark'] .overflowPill {
+  background-color: var(--team-accent-surface);
+  color: var(--team-accent-foreground);
+}
+
+.skeletonCard {
+  height: 100%;
+  padding: var(--mantine-spacing-lg);
+  border: 1px solid var(--jds-color-border);
+  border-radius: var(--mantine-radius-md);
+  background-color: var(--mantine-color-white);
+}
+
+[data-mantine-color-scheme='dark'] .skeletonCard {
+  background-color: var(--mantine-color-dark-7);
+  border-color: var(--mantine-color-dark-4);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .card,
+  .chevron {
+    transition: none;
+  }
+
+  .card:hover {
+    transform: none;
+  }
+
+  .card:hover .chevron,
+  .card:focus-visible .chevron {
+    transform: none;
+  }
+}

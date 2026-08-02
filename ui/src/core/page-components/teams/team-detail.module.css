@@ -1,0 +1,182 @@
+.header {
+  position: relative;
+  overflow: hidden;
+  padding: var(--mantine-spacing-lg);
+  padding-left: calc(var(--mantine-spacing-lg) + 6px);
+  border: 1px solid var(--jds-color-border);
+  border-radius: var(--mantine-radius-md);
+  background-color: var(--mantine-color-white);
+}
+
+/* Accent spine, carried over from the overview card so a team keeps its
+   colour between the two views. */
+.header::before {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 6px;
+  background-color: var(--team-accent-solid);
+}
+
+[data-mantine-color-scheme='dark'] .header {
+  background-color: var(--mantine-color-dark-7);
+  border-color: var(--mantine-color-dark-4);
+}
+
+.marker {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  border-radius: var(--mantine-radius-md);
+  background-color: var(--team-accent-surface);
+  color: var(--team-accent-foreground);
+  font-size: var(--mantine-font-size-md);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+/* `solid` rather than `foreground`: the light-scheme foreground token is
+   near-white in dark mode, which reads as no accent at all on a dark card. */
+.teamName {
+  color: var(--team-accent-solid);
+}
+
+.backLink {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  width: fit-content;
+  color: var(--mantine-color-dimmed);
+  text-decoration: none;
+  transition: color 150ms ease;
+}
+
+.backLink:hover {
+  color: var(--team-accent-solid);
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: var(--mantine-spacing-lg);
+  border: 1px solid var(--jds-color-border);
+  border-radius: var(--mantine-radius-md);
+  background-color: var(--mantine-color-white);
+}
+
+[data-mantine-color-scheme='dark'] .panel {
+  background-color: var(--mantine-color-dark-7);
+  border-color: var(--mantine-color-dark-4);
+}
+
+.agentRow {
+  display: block;
+  padding: var(--mantine-spacing-sm) var(--mantine-spacing-md);
+  border: 1px solid var(--jds-color-border);
+  border-radius: var(--mantine-radius-sm);
+  background-color: transparent;
+  transition:
+    border-color 150ms ease,
+    background-color 150ms ease;
+}
+
+[data-mantine-color-scheme='dark'] .agentRow {
+  border-color: var(--mantine-color-dark-4);
+}
+
+.agentRow:hover {
+  border-color: var(--team-accent-solid);
+  background-color: var(--mantine-color-gray-0);
+}
+
+[data-mantine-color-scheme='dark'] .agentRow:hover {
+  background-color: var(--mantine-color-dark-6);
+}
+
+.agentRow:focus-visible {
+  outline: 2px solid var(--team-accent-solid);
+  outline-offset: 2px;
+}
+
+.agentRow:hover .chevron,
+.agentRow:focus-visible .chevron {
+  transform: translateX(3px);
+  color: var(--team-accent-solid);
+}
+
+.chevron {
+  flex-shrink: 0;
+  color: var(--mantine-color-gray-5);
+  transition:
+    transform 150ms ease,
+    color 150ms ease;
+}
+
+[data-mantine-color-scheme='dark'] .chevron {
+  color: var(--mantine-color-dark-2);
+}
+
+.milestone {
+  padding: var(--mantine-spacing-sm) var(--mantine-spacing-md);
+  border: 1px solid var(--jds-color-border);
+  border-radius: var(--mantine-radius-sm);
+}
+
+[data-mantine-color-scheme='dark'] .milestone {
+  border-color: var(--mantine-color-dark-4);
+}
+
+.projectLink {
+  color: var(--mantine-color-dimmed);
+  text-decoration: none;
+}
+
+.projectLink:hover {
+  color: var(--team-accent-solid);
+  text-decoration: underline;
+}
+
+/* Calm setup guidance: informative, not an alarm. */
+.hint {
+  padding: var(--mantine-spacing-md);
+  border: 1px dashed var(--jds-color-border);
+  border-radius: var(--mantine-radius-sm);
+  background-color: var(--mantine-color-gray-0);
+}
+
+[data-mantine-color-scheme='dark'] .hint {
+  border-color: var(--mantine-color-dark-4);
+  background-color: var(--mantine-color-dark-6);
+}
+
+.envVar {
+  padding: 1px 6px;
+  border-radius: var(--mantine-radius-sm);
+  background-color: var(--mantine-color-gray-2);
+  color: var(--mantine-color-gray-8);
+  font-family: var(--mantine-font-family-monospace);
+  font-size: var(--mantine-font-size-xs);
+  white-space: nowrap;
+}
+
+[data-mantine-color-scheme='dark'] .envVar {
+  background-color: var(--mantine-color-dark-5);
+  color: var(--mantine-color-gray-2);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agentRow,
+  .chevron,
+  .backLink {
+    transition: none;
+  }
+
+  .agentRow:hover .chevron,
+  .agentRow:focus-visible .chevron {
+    transform: none;
+  }
+}

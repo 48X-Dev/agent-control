@@ -1,0 +1,208 @@
+.panel {
+  display: flex;
+  flex-direction: column;
+  /* Sized so the composer stays on screen under the agent header on a 720px
+     tall window, which is where a chat panel that scrolls off the bottom
+     stops being a chat panel. */
+  height: min(60vh, 720px);
+  min-height: 360px;
+  overflow: hidden;
+  border: 1px solid var(--jds-color-border);
+  border-radius: var(--mantine-radius-md);
+  background-color: var(--mantine-color-white);
+}
+
+[data-mantine-color-scheme='dark'] .panel {
+  background-color: var(--mantine-color-dark-7);
+  border-color: var(--mantine-color-dark-4);
+}
+
+.panelHeader {
+  flex-shrink: 0;
+  padding: var(--mantine-spacing-sm) var(--mantine-spacing-md);
+  border-bottom: 1px solid var(--jds-color-border);
+}
+
+[data-mantine-color-scheme='dark'] .panelHeader {
+  border-color: var(--mantine-color-dark-4);
+}
+
+.transcript {
+  flex: 1;
+  min-height: 0;
+}
+
+.transcriptBody {
+  padding: var(--mantine-spacing-md);
+}
+
+.composer {
+  flex-shrink: 0;
+  padding: var(--mantine-spacing-md);
+  border-top: 1px solid var(--jds-color-border);
+}
+
+[data-mantine-color-scheme='dark'] .composer {
+  border-color: var(--mantine-color-dark-4);
+}
+
+.message {
+  max-width: 82%;
+  padding: var(--mantine-spacing-sm) var(--mantine-spacing-md);
+  border: 1px solid var(--jds-color-border);
+  border-radius: var(--mantine-radius-md);
+}
+
+[data-mantine-color-scheme='dark'] .message {
+  border-color: var(--mantine-color-dark-4);
+}
+
+.messageUser {
+  align-self: flex-end;
+  background-color: var(--mantine-color-gray-0);
+}
+
+[data-mantine-color-scheme='dark'] .messageUser {
+  background-color: var(--mantine-color-dark-6);
+}
+
+.messageAgent {
+  align-self: flex-start;
+}
+
+.messageSystem {
+  align-self: center;
+  max-width: 100%;
+  border-style: dashed;
+}
+
+/* An operator nudge, shown where it landed. Aligned with the human side of the
+   conversation because that is what it is: a user turn, appended by a person
+   rather than typed into the composer. */
+.messageOperator {
+  align-self: flex-end;
+  border-style: dashed;
+  border-color: var(--mantine-color-blue-4);
+}
+
+[data-mantine-color-scheme='dark'] .messageOperator {
+  border-color: var(--mantine-color-blue-7);
+}
+
+.nudgePanel {
+  flex-shrink: 0;
+  padding: var(--mantine-spacing-sm) var(--mantine-spacing-md);
+  border-top: 1px solid var(--jds-color-border);
+}
+
+[data-mantine-color-scheme='dark'] .nudgePanel {
+  border-color: var(--mantine-color-dark-4);
+}
+
+/* The agent's own account of its work, above the nudge composer. Bordered like
+   the other footer blocks rather than highlighted: it is a report, not a
+   status, and styling it as a dashboard would do the persuading the copy
+   deliberately declines to do. */
+.progressRail {
+  flex-shrink: 0;
+  max-height: 220px;
+  overflow-y: auto;
+  padding: var(--mantine-spacing-sm) var(--mantine-spacing-md);
+  border-top: 1px solid var(--jds-color-border);
+}
+
+[data-mantine-color-scheme='dark'] .progressRail {
+  border-color: var(--mantine-color-dark-4);
+}
+
+.queuedNudge {
+  padding: 6px var(--mantine-spacing-sm);
+  border: 1px solid var(--jds-color-border);
+  border-radius: var(--mantine-radius-sm);
+}
+
+[data-mantine-color-scheme='dark'] .queuedNudge {
+  border-color: var(--mantine-color-dark-4);
+}
+
+/* Same rule as message text, and for the same reason: this is a body that was
+   handed to a model, rendered as text and never as markup. */
+.queuedNudgeBody {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* The one rule that matters most in this panel.
+   Message text is the first untrusted content this UI renders: it comes out of
+   a model, and a tool result can carry whatever page an agent fetched. It is
+   rendered as text, never as markup, so this is only about preserving the
+   line breaks the model wrote and breaking words that would otherwise push the
+   panel sideways. */
+.messageText {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.toolBlock {
+  border: 1px solid var(--jds-color-border);
+  border-radius: var(--mantine-radius-sm);
+  background-color: var(--mantine-color-gray-0);
+}
+
+[data-mantine-color-scheme='dark'] .toolBlock {
+  border-color: var(--mantine-color-dark-4);
+  background-color: var(--mantine-color-dark-6);
+}
+
+.toolHeader {
+  width: 100%;
+  padding: 6px var(--mantine-spacing-sm);
+  text-align: left;
+}
+
+.toolHeader:focus-visible {
+  outline: 2px solid var(--mantine-primary-color-filled);
+  outline-offset: -2px;
+}
+
+.toolName {
+  font-family: var(--mantine-font-family-monospace);
+  overflow-wrap: anywhere;
+}
+
+.toolJson {
+  max-height: 320px;
+  margin: 0;
+  padding: var(--mantine-spacing-sm);
+  overflow: auto;
+  border-top: 1px solid var(--jds-color-border);
+  font-family: var(--mantine-font-family-monospace);
+  font-size: var(--mantine-font-size-xs);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+[data-mantine-color-scheme='dark'] .toolJson {
+  border-color: var(--mantine-color-dark-4);
+}
+
+.chevron {
+  flex-shrink: 0;
+  color: var(--mantine-color-gray-6);
+  transition: transform 150ms ease;
+}
+
+[data-mantine-color-scheme='dark'] .chevron {
+  color: var(--mantine-color-dark-2);
+}
+
+.chevronOpen {
+  transform: rotate(90deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chevron {
+    transition: none;
+  }
+}

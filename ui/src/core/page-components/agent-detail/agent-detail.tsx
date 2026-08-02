@@ -11,13 +11,19 @@ import {
   Title,
 } from '@mantine/core';
 import { Button, TimeRangeSwitch } from '@rungalileo/jupiter-ds';
-import { IconAlertCircle, IconChartBar, IconShield } from '@tabler/icons-react';
+import {
+  IconAlertCircle,
+  IconChartBar,
+  IconMessage,
+  IconShield,
+} from '@tabler/icons-react';
 import { useRouter } from 'next/router';
 import React, { useMemo, useRef, useState } from 'react';
 
 import { ErrorBoundary } from '@/components/error-boundary';
 import type { Control } from '@/core/api/types';
 import { SearchInput } from '@/core/components/search-input';
+import type { AgentDetailTab } from '@/core/constants/agent-routes';
 import { getAgentRoute } from '@/core/constants/agent-routes';
 import { MODAL_NAMES } from '@/core/constants/modal-routes';
 import { useAgent } from '@/core/hooks/query-hooks/use-agent';
@@ -29,6 +35,7 @@ import { useModalRoute } from '@/core/hooks/use-modal-route';
 import { useQueryParam } from '@/core/hooks/use-query-param';
 import { useTimeRangePreference } from '@/core/hooks/use-time-range-preference';
 
+import { AgentChat } from './agent-chat/agent-chat';
 import { ControlsTab } from './controls/controls-tab';
 import { useControlsTableColumns } from './controls/table-columns';
 import { useDeleteControlFlow } from './controls/use-delete-control-flow';
@@ -38,7 +45,7 @@ import { AgentsMonitor, TIME_RANGE_SEGMENTS } from './monitor';
 
 type AgentDetailPageProps = {
   agentId: string;
-  defaultTab?: 'controls' | 'monitor';
+  defaultTab?: AgentDetailTab;
 };
 
 const AgentDetailPage = ({ agentId, defaultTab }: AgentDetailPageProps) => {
@@ -88,11 +95,9 @@ const AgentDetailPage = ({ agentId, defaultTab }: AgentDetailPageProps) => {
     onCloseEditModal: handleCloseEditModal,
   });
 
-  const [activeTab, setActiveTab] = useState<string | null>(() => {
-    if (defaultTab === 'monitor') return 'monitor';
-    if (defaultTab === 'controls') return 'controls';
-    return 'controls';
-  });
+  const [activeTab, setActiveTab] = useState<string | null>(
+    () => defaultTab ?? 'controls'
+  );
 
   const hasCheckedInitialTab = React.useRef(false);
   React.useEffect(() => {
@@ -275,20 +280,13 @@ const AgentDetailPage = ({ agentId, defaultTab }: AgentDetailPageProps) => {
           value={activeTab}
           onChange={(value) => {
             setActiveTab(value);
-            if (value === 'monitor') {
+            if (
+              value === 'monitor' ||
+              value === 'controls' ||
+              value === 'chat'
+            ) {
               router.push(
-                getAgentRoute(agentId, { tab: 'monitor', query: router.query }),
-                undefined,
-                {
-                  shallow: true,
-                }
-              );
-            } else if (value === 'controls') {
-              router.push(
-                getAgentRoute(agentId, {
-                  tab: 'controls',
-                  query: router.query,
-                }),
+                getAgentRoute(agentId, { tab: value, query: router.query }),
                 undefined,
                 {
                   shallow: true,
@@ -312,6 +310,13 @@ const AgentDetailPage = ({ agentId, defaultTab }: AgentDetailPageProps) => {
                 >
                   Monitor
                 </Tabs.Tab>
+                <Tabs.Tab
+                  value="chat"
+                  leftSection={<IconMessage size={16} />}
+                  data-testid="agent-chat-tab"
+                >
+                  Chat
+                </Tabs.Tab>
               </Tabs.List>
 
               <Group gap="md" pos="absolute" right={0} top="-8px">
@@ -334,14 +339,15 @@ const AgentDetailPage = ({ agentId, defaultTab }: AgentDetailPageProps) => {
                       Add Control
                     </Button>
                   </>
-                ) : (
+                ) : null}
+                {activeTab === 'monitor' ? (
                   <TimeRangeSwitch
                     value={timeRangeValue}
                     onChange={setTimeRangeValue}
                     allowCustomSelection={false}
                     segmentOptions={TIME_RANGE_SEGMENTS}
                   />
-                )}
+                ) : null}
               </Group>
             </Group>
           </Box>
@@ -354,6 +360,16 @@ const AgentDetailPage = ({ agentId, defaultTab }: AgentDetailPageProps) => {
               columns={columns}
               onAddControl={() => openModal(MODAL_NAMES.CONTROL_STORE)}
             />
+          </Tabs.Panel>
+
+          {/* Mounted only while selected: the panel polls a session's live
+              turn state, and a hidden tab has no business doing that. */}
+          <Tabs.Panel value="chat" pt="lg">
+            <ErrorBoundary variant="content">
+              {agent?.agent.agent_name && activeTab === 'chat' ? (
+                <AgentChat agentName={agent.agent.agent_name} />
+              ) : null}
+            </ErrorBoundary>
           </Tabs.Panel>
 
           <Tabs.Panel value="monitor" pt="lg">

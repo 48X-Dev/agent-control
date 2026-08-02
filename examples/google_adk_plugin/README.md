@@ -43,6 +43,35 @@ export AGENT_CONTROL_URL=http://localhost:8000
 export GOOGLE_MODEL=gemini-2.5-flash
 ```
 
+### Using a non-Gemini model
+
+Set `OPENAI_BASE_URL` and the agent routes through LiteLLM instead of Gemini, so
+any OpenAI-compatible endpoint works: OpenAI itself, Ollama, vLLM, or a local
+proxy. `GOOGLE_API_KEY` is then not needed.
+
+```bash
+export OPENAI_BASE_URL=http://127.0.0.1:10531/v1
+export AGENT_MODEL=gpt-5.6-sol
+```
+
+Ask the endpoint what it actually serves rather than guessing a model name:
+
+```bash
+curl -s http://127.0.0.1:10531/v1/models
+```
+
+Requires the LiteLLM extra (`uv pip install "google-adk[extensions]"` — note it
+is `extensions`, not `litellm`, as of google-adk 2.6.1). The model
+name is prefixed with `openai/` automatically unless it already names a
+provider. `OPENAI_API_KEY` is sent if set, and defaults to a placeholder for
+endpoints that authenticate upstream themselves.
+
+Two things to know if the endpoint is a local proxy fronting a consumer
+subscription. Check the proxy's own terms and source before pointing agents at
+it, since it holds your account credentials. And a proxy on `127.0.0.1` is not
+reachable from a container, so a containerised agent needs
+`host.docker.internal` instead of `127.0.0.1`.
+
 ## Setup
 
 Default server execution:

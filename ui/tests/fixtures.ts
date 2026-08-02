@@ -2,14 +2,26 @@ import { type Page, test as base } from '@playwright/test';
 
 import type {
   AgentControlsResponse,
+  AgentSessionDetail,
+  AgentSessionSummary,
   AgentSummary,
   Control,
   ControlSummary,
   EvaluatorsResponse,
   GetAgentResponse,
   GetControlSchemaResponse,
+  GetTeamResponse,
+  Halt,
   ListAgentsResponse,
   ListControlsResponse,
+  ListTeamMilestonesResponse,
+  ListTeamsResponse,
+  Milestone,
+  Nudge,
+  Plan,
+  SessionMessage,
+  SessionMessagePart,
+  TeamSummary,
 } from '@/core/api/types';
 import type { StatsResponse } from '@/core/hooks/query-hooks/use-agent-monitor';
 
@@ -727,11 +739,762 @@ const emptyStatsResponse: StatsResponse = {
   controls: [],
 };
 
+// =============================================================================
+// Teams
+// =============================================================================
+
+function teamSummary(
+  overrides: Partial<TeamSummary> & Pick<TeamSummary, 'slug' | 'display_name'>
+): TeamSummary {
+  return {
+    id: 1,
+    namespace_key: 'default',
+    description: null,
+    linear_team_key: null,
+    member_count: 0,
+    created_at: '2024-01-01T00:00:00Z',
+    updated_at: '2024-01-01T00:00:00Z',
+    ...overrides,
+  };
+}
+
+const teamMemberNames: Record<string, string[]> = {
+  'sales-outreach': [
+    'customer-support-bot',
+    'lead-qualifier',
+    'outreach-scheduler',
+  ],
+  engineering: ['code-review-assistant', 'data-analysis-agent'],
+  marketing: [],
+};
+
+const teamsList: TeamSummary[] = [
+  teamSummary({
+    id: 1,
+    slug: 'sales-outreach',
+    display_name: 'Sales & Outreach',
+    description: 'Owns pipeline, prospecting and follow-up.',
+    member_count: teamMemberNames['sales-outreach'].length,
+  }),
+  teamSummary({
+    id: 2,
+    slug: 'engineering',
+    display_name: 'Engineering',
+    description: 'Builds and runs the platform.',
+    member_count: teamMemberNames.engineering.length,
+  }),
+  // No members and no description: the sparsest card the overview can render.
+  teamSummary({
+    id: 3,
+    slug: 'marketing',
+    display_name: 'Marketing',
+    member_count: 0,
+  }),
+];
+
+const teamsResponse: ListTeamsResponse = {
+  teams: teamsList,
+  pagination: {
+    total: teamsList.length,
+    limit: 100,
+    has_more: false,
+    next_cursor: null,
+  },
+};
+
+const emptyTeamsResponse: ListTeamsResponse = {
+  teams: [],
+  pagination: {
+    total: 0,
+    limit: 100,
+    has_more: false,
+    next_cursor: null,
+  },
+};
+
+/** Longest name and largest membership the API permits, for layout tests. */
+export const crowdedTeamName =
+  'Global Revenue Operations, Partner Enablement and Strategic Customer Success Organisation';
+
+const crowdedMemberNames = Array.from(
+  { length: 14 },
+  (_, index) =>
+    `extremely-long-agent-name-for-layout-testing-${String(index + 1).padStart(2, '0')}`
+);
+
+const crowdedTeam: TeamSummary = teamSummary({
+  id: 4,
+  slug: 'global-revenue-operations',
+  display_name: crowdedTeamName,
+  description:
+    'A description long enough to need clamping: this team coordinates ' +
+    'revenue operations, partner enablement, customer success, renewals, ' +
+    'expansion and every adjacent motion across all regions and segments.',
+  member_count: crowdedMemberNames.length,
+});
+
+const crowdedTeamsResponse: ListTeamsResponse = {
+  teams: [crowdedTeam, ...teamsList],
+  pagination: {
+    total: teamsList.length + 1,
+    limit: 100,
+    has_more: false,
+    next_cursor: null,
+  },
+};
+
+function teamDetail(team: TeamSummary, memberNames: string[]): GetTeamResponse {
+  return {
+    ...team,
+    members: memberNames.map((agent_name) => ({
+      agent_name,
+      joined_at: '2024-01-05T00:00:00Z',
+    })),
+  };
+}
+
+const teamDetails: Record<string, GetTeamResponse> = {
+  ...Object.fromEntries(
+    teamsList.map((team) => [
+      team.slug,
+      teamDetail(team, teamMemberNames[team.slug] ?? []),
+    ])
+  ),
+  [crowdedTeam.slug]: teamDetail(crowdedTeam, crowdedMemberNames),
+};
+
+// =============================================================================
+// Team detail: agents filtered to a team, and Linear milestones
+// =============================================================================
+
+/**
+ * An AgentSummary for any member name.
+ *
+ * Members that also appear on the agents overview reuse that row, so the two
+ * pages agree on control counts. Names unique to a team get a synthesized row.
+ */
+function agentSummaryFor(agentName: string, index: number): AgentSummary {
+  const known = agentsList.find((agent) => agent.agent_name === agentName);
+  if (known) return known;
+  return {
+    agent_name: agentName,
+    policy_ids: [],
+    created_at: '2024-02-01T00:00:00Z',
+    step_count: index + 1,
+    evaluator_count: 1,
+    active_controls_count: index === 0 ? 1 : index + 1,
+  };
+}
+
+/** Membership by slug, as the `?team=` filter on the agents endpoint sees it. */
+const teamAgents: Record<string, AgentSummary[]> = {
+  ...Object.fromEntries(
+    Object.entries(teamMemberNames).map(([slug, names]) => [
+      slug,
+      names.map(agentSummaryFor),
+    ])
+  ),
+  [crowdedTeam.slug]: crowdedMemberNames.map(agentSummaryFor),
+};
+
+function milestone(overrides: Partial<Milestone> = {}): Milestone {
+  return {
+    id: 'ms-1',
+    name: 'Beta launch',
+    description: 'Ship the beta to design partners.',
+    target_date: '2026-09-01',
+    status: 'unstarted',
+    progress: 0.25,
+    project_id: 'proj-1',
+    project_name: 'Platform',
+    project_url: 'https://linear.app/acme/project/platform',
+    ...overrides,
+  };
+}
+
+const milestonesList: Milestone[] = [
+  milestone(),
+  milestone({
+    id: 'ms-2',
+    name: 'GA',
+    status: 'next',
+    progress: 0.6,
+    target_date: '2026-12-15',
+  }),
+  // No date, no progress, no project: the sparsest row the panel can draw.
+  milestone({
+    id: 'ms-3',
+    name: 'Untargeted follow-up work',
+    status: null,
+    progress: null,
+    target_date: null,
+    project_id: null,
+    project_name: null,
+    project_url: null,
+  }),
+];
+
+function milestonesResponse(
+  slug: string,
+  overrides: Partial<ListTeamMilestonesResponse> = {}
+): ListTeamMilestonesResponse {
+  return {
+    status: 'ok',
+    slug,
+    linear_team_key: 'ENG',
+    milestones: milestonesList,
+    error: null,
+    retry_after_seconds: null,
+    cached: false,
+    fetched_at: '2026-08-01T09:30:00Z',
+    ...overrides,
+  };
+}
+
+/** One canned response per documented milestone status. */
+const milestoneStates = {
+  ok: (slug: string) => milestonesResponse(slug),
+  empty: (slug: string) =>
+    milestonesResponse(slug, { status: 'empty', milestones: [] }),
+  not_linked: (slug: string) =>
+    milestonesResponse(slug, {
+      status: 'not_linked',
+      linear_team_key: null,
+      milestones: [],
+      fetched_at: null,
+    }),
+  not_configured: (slug: string) =>
+    milestonesResponse(slug, {
+      status: 'not_configured',
+      linear_team_key: null,
+      milestones: [],
+      fetched_at: null,
+    }),
+  error: (slug: string) =>
+    milestonesResponse(slug, {
+      status: 'error',
+      milestones: [],
+      error: 'Linear did not answer in time.',
+      retry_after_seconds: 30,
+      fetched_at: null,
+    }),
+} as const;
+
+export type MilestoneState = keyof typeof milestoneStates;
+
+// =============================================================================
+// Agent chat fixtures
+//
+// The transcript is the only untrusted content this UI renders, so the mocks
+// below are shaped like the real endpoint rather than like whatever the panel
+// happens to read: absolute message indexes, `after_index` paging, and the two
+// in-flight fields kept distinct (see `AgentSessionDetail`).
+// =============================================================================
+
+/** The agent `mockRoutes.agent` answers with, whatever id the URL carries. */
+export const chatAgentName = 'customer-support-bot';
+
+function chatSession(
+  sessionKey: string,
+  title: string,
+  createdAt: string
+): AgentSessionSummary {
+  return {
+    session_key: sessionKey,
+    namespace_key: 'default',
+    agent_name: chatAgentName,
+    team_slug: null,
+    title,
+    status: 'active',
+    executor_kind: 'google_adk',
+    last_trace_id: null,
+    last_activity_at: createdAt,
+    created_at: createdAt,
+    updated_at: createdAt,
+  };
+}
+
+/** Newest first, the order the list endpoint returns. */
+const chatSessions: AgentSessionSummary[] = [
+  chatSession('sess-refunds', 'Refund policy', '2024-03-02T09:00:00Z'),
+  chatSession(
+    'sess-onboarding',
+    'Onboarding checklist',
+    '2024-03-01T09:00:00Z'
+  ),
+];
+
+const chatTranscripts: Record<string, SessionMessage[]> = {
+  'sess-refunds': [
+    {
+      index: 0,
+      role: 'user',
+      timestamp: '2024-03-02T09:00:01Z',
+      parts: [{ kind: 'text', text: 'What is our refund window?' }],
+    },
+    {
+      index: 1,
+      role: 'agent',
+      author: chatAgentName,
+      timestamp: '2024-03-02T09:00:09Z',
+      parts: [
+        {
+          kind: 'tool_call',
+          tool_name: 'fetch_policy',
+          tool_call_id: 'call-1',
+          arguments: { topic: 'refunds', locale: 'en-GB' },
+        },
+        {
+          kind: 'tool_result',
+          tool_name: 'fetch_policy',
+          tool_call_id: 'call-1',
+          result: { window_days: 30, source: 'policies/refunds.md' },
+        },
+        {
+          kind: 'text',
+          text: 'Refunds are accepted within 30 days of delivery.',
+        },
+      ],
+    },
+  ],
+  'sess-onboarding': [
+    {
+      index: 0,
+      role: 'user',
+      timestamp: '2024-03-01T09:00:01Z',
+      parts: [{ kind: 'text', text: 'Draft the onboarding checklist.' }],
+    },
+    {
+      index: 1,
+      role: 'agent',
+      author: chatAgentName,
+      timestamp: '2024-03-01T09:00:04Z',
+      parts: [{ kind: 'text', text: 'Step one: create the workspace.' }],
+    },
+  ],
+};
+
+/** A refusal in the shape the server actually writes it. */
+export type ProblemMock = {
+  status: number;
+  errorCode: string;
+  detail: string;
+  title?: string;
+  hint?: string;
+};
+
+function problemBody(problem: ProblemMock) {
+  return JSON.stringify({
+    type: 'about:blank',
+    title: problem.title ?? 'Error',
+    status: problem.status,
+    detail: problem.detail,
+    error_code: problem.errorCode,
+    reason: problem.title ?? 'Error',
+    ...(problem.hint ? { hint: problem.hint } : {}),
+  });
+}
+
+export type AgentSessionsMockOptions = {
+  /** Newest first. An empty array is an agent nobody has chatted with. */
+  sessions?: AgentSessionSummary[];
+  /** Absolute-indexed transcript per session key. */
+  transcripts?: Record<string, SessionMessage[]>;
+  /**
+   * Held open before a turn answers. While it is unresolved the turn holds
+   * the session, which is what the detail endpoint reports.
+   */
+  turnGate?: Promise<void>;
+  /** What the completed turn appends to the transcript. */
+  turnReply?: SessionMessagePart[];
+  turnError?: ProblemMock;
+  listError?: ProblemMock;
+  messagesError?: ProblemMock;
+  createError?: ProblemMock;
+  /** Merged into a session's detail response, e.g. a stranded invocation. */
+  detailOverrides?: Record<string, Partial<AgentSessionDetail>>;
+  /** Queued guidance per session key, newest first, as the server returns it. */
+  nudges?: Record<string, Nudge[]>;
+  /** Stops recorded per session key, newest first. */
+  halts?: Record<string, Halt[]>;
+  /** Refusal for `POST /nudges`, e.g. the per-session queue ceiling. */
+  nudgeCreateError?: ProblemMock;
+  /** Refusal for `DELETE /nudges/:id`, e.g. a nudge already claimed. */
+  nudgeCancelError?: ProblemMock;
+  /** Refusal for `POST /halts`, e.g. nothing in flight to stop. */
+  haltCreateError?: ProblemMock;
+  /**
+   * The plan each session's agent declared, if it declared one.
+   *
+   * Absent is the ordinary case and the one the fallback view exists for, so
+   * the default here is no plan rather than an empty one.
+   */
+  plans?: Record<string, Plan>;
+};
+
+export type AgentSessionsMock = {
+  /** Every turn the browser started, in order. */
+  turns: Array<{ sessionKey: string; message: string }>;
+  /** Every transcript read, for asserting a poll did or did not happen. */
+  messageReads: string[];
+  /** Live transcripts, so a test can assert what the panel was given. */
+  transcripts: Record<string, SessionMessage[]>;
+  /** Every nudge queued from the browser, in order. */
+  nudgesQueued: Array<{ sessionKey: string; body: string }>;
+  /** Every nudge withdrawal, in order. */
+  nudgesCancelled: Array<{ sessionKey: string; nudgeId: number }>;
+  /** Every stop pressed, in order. Repeats are visible, as on the server. */
+  haltsRequested: string[];
+  /**
+   * Live queues and stop records, mutable so a test can move one on mid-run.
+   *
+   * That is the point of exposing them: what the panel says about a stop
+   * changes as the server's own record changes underneath it - queued, then
+   * acknowledged by the executor, then observed to have ended - and none of
+   * those transitions are things the browser causes.
+   */
+  nudges: Record<string, Nudge[]>;
+  halts: Record<string, Halt[]>;
+  /**
+   * Declared plans per session, mutable so a test can have the agent replan
+   * mid-run. Nothing the browser does changes these: plans are written by the
+   * agent under its own session-bound credential.
+   */
+  plans: Record<string, Plan>;
+};
+
+/**
+ * Mock the five agent-session endpoints the chat panel calls.
+ *
+ * One handler rather than five routes: Playwright's `*` spans `/`, so
+ * separate patterns for `/agent-sessions/:key` and `/agent-sessions/:key/turns`
+ * overlap and the ordering rules are easier to get wrong than a switch on the
+ * path is to read.
+ */
+async function mockAgentSessions(
+  page: Page,
+  options: AgentSessionsMockOptions = {}
+): Promise<AgentSessionsMock> {
+  const sessions = [...(options.sessions ?? chatSessions)];
+  const transcripts: Record<string, SessionMessage[]> = Object.fromEntries(
+    Object.entries(options.transcripts ?? chatTranscripts).map(
+      ([key, messages]) => [key, [...messages]]
+    )
+  );
+  const cloneByKey = <T>(source: Record<string, T[]> | undefined) =>
+    Object.fromEntries(
+      Object.entries(source ?? {}).map(([key, rows]) => [key, [...rows]])
+    ) as Record<string, T[]>;
+
+  const state: AgentSessionsMock = {
+    turns: [],
+    messageReads: [],
+    transcripts,
+    nudgesQueued: [],
+    nudgesCancelled: [],
+    haltsRequested: [],
+    nudges: cloneByKey(options.nudges),
+    halts: cloneByKey(options.halts),
+    plans: { ...(options.plans ?? {}) },
+  };
+
+  /** Sessions a turn is currently holding, and since when. */
+  const inFlightSince = new Map<string, string>();
+  let created = 0;
+  let nextOperatorId = 1000;
+
+  const detailOf = (sessionKey: string): AgentSessionDetail | null => {
+    const summary = sessions.find((s) => s.session_key === sessionKey);
+    if (!summary) return null;
+    const since = inFlightSince.get(sessionKey) ?? null;
+    return {
+      ...summary,
+      in_flight_since: since,
+      in_flight_trace_id: since ? 'trace-in-flight' : null,
+      ...(options.detailOverrides?.[sessionKey] ?? {}),
+    };
+  };
+
+  await page.route('**/api/v1/agent-sessions**', async (route, request) => {
+    const url = new URL(request.url());
+    const segments = url.pathname.split('/').filter(Boolean);
+    // ['api','v1','agent-sessions', <key>?, <sub>?]
+    const sessionKey = segments[3] ? decodeURIComponent(segments[3]) : null;
+    const sub = segments[4] ?? null;
+    const method = request.method();
+
+    const json = async (body: unknown, status = 200) => {
+      await route.fulfill({
+        status,
+        contentType: 'application/json',
+        body: JSON.stringify(body),
+      });
+    };
+    const problem = async (p: ProblemMock) => {
+      await route.fulfill({
+        status: p.status,
+        contentType: 'application/json',
+        body: problemBody(p),
+      });
+    };
+
+    if (sessionKey === null) {
+      if (method === 'POST') {
+        if (options.createError) {
+          await problem(options.createError);
+          return;
+        }
+        created += 1;
+        const session = chatSession(
+          `sess-new-${created}`,
+          `New chat ${created}`,
+          new Date().toISOString()
+        );
+        sessions.unshift(session);
+        transcripts[session.session_key] ??= [];
+        await json({ session: { ...session, in_flight_since: null } });
+        return;
+      }
+
+      if (options.listError) {
+        await problem(options.listError);
+        return;
+      }
+      const agent = url.searchParams.get('agent');
+      const matching = agent
+        ? sessions.filter((s) => s.agent_name === agent)
+        : sessions;
+      await json({
+        sessions: matching,
+        pagination: {
+          total: matching.length,
+          limit: 50,
+          has_more: false,
+          next_cursor: null,
+        },
+      });
+      return;
+    }
+
+    if (sub === 'messages') {
+      state.messageReads.push(sessionKey);
+      if (options.messagesError) {
+        await problem(options.messagesError);
+        return;
+      }
+      const all = transcripts[sessionKey] ?? [];
+      const afterIndexParam = url.searchParams.get('after_index');
+      const start = afterIndexParam === null ? 0 : Number(afterIndexParam) + 1;
+      const limit = Number(url.searchParams.get('limit') ?? '100');
+      const window = all.slice(start, start + limit);
+      const consumed = start + window.length;
+      await json({
+        session_key: sessionKey,
+        status: detailOf(sessionKey)?.status ?? 'active',
+        messages: window,
+        next_index: consumed < all.length ? consumed - 1 : null,
+        has_more: consumed < all.length,
+        total: all.length,
+        notice: null,
+      });
+      return;
+    }
+
+    if (sub === 'turns' && method === 'POST') {
+      const body = (request.postDataJSON() ?? {}) as { message?: string };
+      state.turns.push({ sessionKey, message: body.message ?? '' });
+      inFlightSince.set(sessionKey, new Date().toISOString());
+      try {
+        if (options.turnGate) await options.turnGate;
+        if (options.turnError) {
+          await problem(options.turnError);
+          return;
+        }
+        const existing = transcripts[sessionKey] ?? [];
+        const next = existing.length;
+        const userMessage: SessionMessage = {
+          index: next,
+          role: 'user',
+          timestamp: new Date().toISOString(),
+          parts: [{ kind: 'text', text: body.message ?? '' }],
+        };
+        const agentMessage: SessionMessage = {
+          index: next + 1,
+          role: 'agent',
+          author: chatAgentName,
+          timestamp: new Date().toISOString(),
+          parts: options.turnReply ?? [
+            { kind: 'text', text: 'Understood. I have noted that.' },
+          ],
+        };
+        transcripts[sessionKey] = [...existing, userMessage, agentMessage];
+        await json({
+          session_key: sessionKey,
+          trace_id: `trace-${state.turns.length}`,
+          started_at: new Date().toISOString(),
+          completed_at: new Date().toISOString(),
+          duration_seconds: 1.5,
+          messages: [
+            { ...userMessage, index: 0 },
+            { ...agentMessage, index: 1 },
+          ],
+        });
+      } catch {
+        // The panel abandoned the request. Nothing left to answer.
+      } finally {
+        inFlightSince.delete(sessionKey);
+      }
+      return;
+    }
+
+    // Guidance queued for an agent that is already working. The list is
+    // newest first, matching the server, and nothing here ever moves a nudge
+    // on by itself: an executor claims and applies them on its own schedule,
+    // so a test that wants "delivered" says so by editing `state.nudges`.
+    if (sub === 'nudges') {
+      const queue = (state.nudges[sessionKey] ??= []);
+      const nudgeId = segments[5] ? Number(segments[5]) : null;
+
+      if (method === 'DELETE' && nudgeId !== null) {
+        state.nudgesCancelled.push({ sessionKey, nudgeId });
+        if (options.nudgeCancelError) {
+          await problem(options.nudgeCancelError);
+          return;
+        }
+        const index = queue.findIndex((nudge) => nudge.id === nudgeId);
+        if (index === -1) {
+          await problem({
+            status: 404,
+            errorCode: 'NUDGE_NOT_FOUND',
+            title: 'Not Found',
+            detail: 'Nudge not found on this session.',
+          });
+          return;
+        }
+        const cancelled: Nudge = { ...queue[index], status: 'cancelled' };
+        queue[index] = cancelled;
+        await json({ cancelled: true, nudge: cancelled });
+        return;
+      }
+
+      if (method === 'POST') {
+        if (options.nudgeCreateError) {
+          await problem(options.nudgeCreateError);
+          return;
+        }
+        const body = (request.postDataJSON() ?? {}) as { body?: string };
+        state.nudgesQueued.push({ sessionKey, body: body.body ?? '' });
+        nextOperatorId += 1;
+        const nudge: Nudge = {
+          id: nextOperatorId,
+          session_key: sessionKey,
+          body: body.body ?? '',
+          status: 'pending',
+          created_at: new Date().toISOString(),
+          claim_count: 0,
+          injection_attempts: 0,
+        };
+        queue.unshift(nudge);
+        await json({ nudge });
+        return;
+      }
+      await json({ session_key: sessionKey, nudges: queue });
+      return;
+    }
+
+    // Stopping a turn. Bound to the session's liveness marker, and refused
+    // with the server's own 409 when there is no live turn to bind to.
+    if (sub === 'halts') {
+      const recorded = (state.halts[sessionKey] ??= []);
+      if (method === 'POST') {
+        state.haltsRequested.push(sessionKey);
+        if (options.haltCreateError) {
+          await problem(options.haltCreateError);
+          return;
+        }
+        const traceId = detailOf(sessionKey)?.in_flight_trace_id ?? null;
+        if (!traceId) {
+          await problem({
+            status: 409,
+            errorCode: 'TURN_NOT_IN_FLIGHT',
+            title: 'Conflict',
+            detail:
+              'This session is not running a turn, so there is nothing to stop.',
+          });
+          return;
+        }
+        // One turn, one stop: a second press answers with the first row.
+        const existing = recorded.find((h) => h.target_trace_id === traceId);
+        if (existing) {
+          await json({ halt: existing, created: false });
+          return;
+        }
+        nextOperatorId += 1;
+        const halt: Halt = {
+          id: nextOperatorId,
+          session_key: sessionKey,
+          target_trace_id: traceId,
+          mode: 'graceful',
+          status: 'pending',
+          created_at: new Date().toISOString(),
+        };
+        recorded.unshift(halt);
+        await json({ halt, created: true });
+        return;
+      }
+      await json({ session_key: sessionKey, halts: recorded });
+      return;
+    }
+
+    // What the agent says it is doing. Read-only from a browser, and null when
+    // the agent never declared a plan, which is the ordinary case the panel's
+    // fallback view exists for.
+    if (sub === 'plan' && method === 'GET') {
+      await json({
+        session_key: sessionKey,
+        plan: state.plans[sessionKey] ?? null,
+      });
+      return;
+    }
+
+    if (sub === null && method === 'GET') {
+      const detail = detailOf(sessionKey);
+      if (!detail) {
+        await problem({
+          status: 404,
+          errorCode: 'SESSION_NOT_FOUND',
+          detail: 'That chat no longer exists.',
+          title: 'Not Found',
+        });
+        return;
+      }
+      await json({ session: detail });
+      return;
+    }
+
+    await route.fallback();
+  });
+
+  return state;
+}
+
 /**
  * Typed mock data for tests
  */
 export const mockData = {
+  chatSessions,
+  chatTranscripts,
   agents: agentsResponse,
+  teams: teamsResponse,
+  emptyTeams: emptyTeamsResponse,
+  crowdedTeams: crowdedTeamsResponse,
+  crowdedTeam,
+  crowdedMemberNames,
+  teamMemberNames,
+  teamDetails,
+  teamAgents,
+  milestones: milestonesList,
+  milestoneStates,
   agent: agentResponse,
   agentWithSteps: agentWithStepsResponse,
   controls: controlsResponse,
@@ -856,8 +1619,13 @@ export const mockRoutes = {
       const getFilteredResponse = (url: string): ListAgentsResponse => {
         const urlObj = new URL(url);
         const nameFilter = urlObj.searchParams.get('name');
+        const teamFilter = urlObj.searchParams.get('team');
 
-        let agents = mockData.agents.agents;
+        // `?team=` narrows to that team's membership. An unknown slug matches
+        // nobody, which is a 200 with an empty page on the real server too.
+        let agents = teamFilter
+          ? (teamAgents[teamFilter] ?? [])
+          : mockData.agents.agents;
 
         // Apply name filter (case-insensitive partial match, like the real API)
         if (nameFilter) {
@@ -867,13 +1635,22 @@ export const mockRoutes = {
           );
         }
 
+        // Cursor paging, so the team panel's infinite scroll can be exercised.
+        // The cursor is the index of the next row.
+        const limit = Number(urlObj.searchParams.get('limit')) || 10;
+        const offset = Number(urlObj.searchParams.get('cursor')) || 0;
+        const total = agents.length;
+        const pageRows = agents.slice(offset, offset + limit);
+        const nextOffset = offset + pageRows.length;
+        const hasMore = nextOffset < total;
+
         return {
-          agents,
+          agents: pageRows,
           pagination: {
-            total: agents.length,
-            limit: 10,
-            has_more: false,
-            next_cursor: null,
+            total,
+            limit,
+            has_more: hasMore,
+            next_cursor: hasMore ? String(nextOffset) : null,
           },
         };
       };
@@ -1127,6 +1904,179 @@ export const mockRoutes = {
     );
   },
 
+  /**
+   * Mock GET /api/v1/teams and GET /api/v1/teams/:slug.
+   *
+   * `details` supplies the per-team responses the overview fetches for member
+   * names; a slug missing from it is answered with a 500 so tests can exercise
+   * a failed member read without breaking the list.
+   */
+  teams: async (
+    page: Page,
+    options: {
+      list?: MockResponseOptions<ListTeamsResponse>;
+      details?: Record<string, GetTeamResponse>;
+      detailStatus?: number;
+    } = {}
+  ) => {
+    const listOpts = options.list ?? { data: mockData.teams };
+    const details = options.details ?? mockData.teamDetails;
+
+    await page.route('**/api/v1/teams?**', async (route) => {
+      await fulfillRoute(route, listOpts, mockData.teams);
+    });
+
+    await page.route('**/api/v1/teams/*', async (route, request) => {
+      const pathname = new URL(request.url()).pathname;
+      // `*` spans `/` here, so sub-resources land in this handler too. They
+      // belong to their own mocks.
+      if (pathname.split('/').length > 5 || request.method() !== 'GET') {
+        await route.fallback();
+        return;
+      }
+
+      const slug = decodeURIComponent(pathname.split('/').pop() ?? '');
+      const detail = details[slug];
+      if (!detail) {
+        // The real server answers with an RFC 7807 ProblemDetail. The client
+        // reads `status` off the parsed body, so a bare `{error}` here would
+        // let a broken 404 branch pass.
+        const status = options.detailStatus ?? 500;
+        await route.fulfill({
+          status,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            type: 'about:blank',
+            title: status === 404 ? 'Not Found' : 'Error',
+            status,
+            detail: 'Team detail unavailable',
+            error_code: status === 404 ? 'TEAM_NOT_FOUND' : 'INTERNAL_ERROR',
+            reason: status === 404 ? 'Not found' : 'Server error',
+          }),
+        });
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(detail),
+      });
+    });
+  },
+
+  /**
+   * Mock GET /api/v1/teams/:slug/milestones.
+   *
+   * `state` picks one of the five documented statuses. Every one of them is a
+   * 200 on the real server, including `error`: a Linear outage must not reach
+   * the client as a failed request.
+   */
+  teamMilestones: async (
+    page: Page,
+    options: {
+      state?: MilestoneState;
+      body?: Partial<ListTeamMilestonesResponse>;
+      /** Set to fail the request itself, i.e. Agent Control being down. */
+      status?: number;
+      /** Resolves before the response is sent, for loading-state assertions. */
+      gate?: Promise<void>;
+    } = {}
+  ) => {
+    const state = options.state ?? 'ok';
+
+    await page.route('**/api/v1/teams/*/milestones', async (route, request) => {
+      if (options.gate) await options.gate;
+
+      const slug = decodeURIComponent(
+        new URL(request.url()).pathname.split('/').slice(-2)[0] ?? ''
+      );
+
+      if (options.status && options.status >= 400) {
+        await route.fulfill({
+          status: options.status,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            type: 'about:blank',
+            title: 'Error',
+            status: options.status,
+            detail: 'Milestones unavailable',
+            error_code: 'INTERNAL_ERROR',
+            reason: 'Server error',
+          }),
+        });
+        return;
+      }
+
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          ...milestoneStates[state](slug),
+          ...options.body,
+        }),
+      });
+    });
+  },
+
+  /**
+   * Mock PATCH /api/v1/teams/:slug, the write the Linear link form makes.
+   *
+   * Records each submitted body so a test can assert what left the browser.
+   */
+  teamPatch: async (
+    page: Page,
+    options: { status?: number; errorCode?: string } = {}
+  ) => {
+    const submitted: Array<Record<string, unknown>> = [];
+
+    await page.route('**/api/v1/teams/*', async (route, request) => {
+      if (request.method() !== 'PATCH') {
+        await route.fallback();
+        return;
+      }
+
+      const body = (request.postDataJSON() ?? {}) as Record<string, unknown>;
+      submitted.push(body);
+
+      const status = options.status ?? 200;
+      if (status >= 400) {
+        await route.fulfill({
+          status,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            type: 'about:blank',
+            title: 'Error',
+            status,
+            detail: 'Not permitted',
+            error_code: options.errorCode ?? 'FORBIDDEN',
+            reason: 'Forbidden',
+          }),
+        });
+        return;
+      }
+
+      const slug = decodeURIComponent(
+        new URL(request.url()).pathname.split('/').pop() ?? ''
+      );
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          success: true,
+          slug,
+          display_name: mockData.teamDetails[slug]?.display_name ?? slug,
+          description: null,
+          linear_team_key: body.linear_team_key ?? null,
+        }),
+      });
+    });
+
+    return submitted;
+  },
+
+  /** Mock the agent-session endpoints behind the chat panel. */
+  agentSessions: mockAgentSessions,
+
   /** Mock GET /api/v1/observability/stats */
   stats: async (
     page: Page,
@@ -1153,6 +2103,9 @@ export async function mockApiRoutes(page: Page) {
   await mockRoutes.controlCreate(page);
   await mockRoutes.controlUpdate(page);
   await mockRoutes.stats(page);
+  await mockRoutes.teams(page);
+  await mockRoutes.teamMilestones(page);
+  await mockRoutes.agentSessions(page);
 }
 
 /**
@@ -1178,6 +2131,9 @@ export async function mockApiRoutesWithAuthRequired(page: Page) {
   await mockRoutes.controlCreate(page);
   await mockRoutes.controlUpdate(page);
   await mockRoutes.stats(page);
+  await mockRoutes.teams(page);
+  await mockRoutes.teamMilestones(page);
+  await mockRoutes.agentSessions(page);
 }
 
 export {

@@ -29,7 +29,8 @@ const AgentPage: NextPageWithLayout = () => {
     );
   }
 
-  const defaultTab = tab === 'controls' || tab === 'monitor' ? tab : undefined;
+  const defaultTab =
+    tab === 'controls' || tab === 'monitor' || tab === 'chat' ? tab : undefined;
 
   return <AgentDetailPage agentId={id} defaultTab={defaultTab} />;
 };

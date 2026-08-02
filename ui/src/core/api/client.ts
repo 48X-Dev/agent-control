@@ -2,16 +2,40 @@ import createClient from 'openapi-fetch';
 
 import type { paths } from './generated/api-types';
 import type {
+  CancelNudgeResponse,
+  CreateAgentSessionRequest,
+  CreateAgentSessionResponse,
   CreateControlRequest,
+  CreateHaltResponse,
+  CreateNudgeRequest,
+  CreateNudgeResponse,
   GetAgentControlsPathParams,
   GetAgentPathParams,
+  GetAgentSessionResponse,
   GetControlSchemaResponse,
+  GetTeamResponse,
   InitAgentRequestBody,
+  ListAgentSessionsQueryParams,
+  ListAgentSessionsResponse,
   ListAgentsQueryParams,
+  ListAgentsResponse,
+  ListHaltsResponse,
+  ListNudgesResponse,
+  ListSessionMessagesQueryParams,
+  ListSessionMessagesResponse,
+  ListTeamAgentsQueryParams,
+  ListTeamMilestonesResponse,
+  ListTeamsQueryParams,
+  ListTeamsResponse,
   PatchControlRequest,
+  PatchTeamRequest,
+  PatchTeamResponse,
+  PlanResponse,
   RenderControlTemplateRequest,
   RenderControlTemplateResponse,
   SetControlDataRequest,
+  StartTurnRequest,
+  TurnResponse,
   ValidateControlDataRequest,
   ValidateControlDataResponse,
 } from './types';
@@ -29,6 +53,20 @@ export const apiClient = createClient<paths>({
   },
 });
 
+/**
+ * Where the record of one turn lives, as a URL a person can open.
+ *
+ * Built here rather than in a component because the API base is this module's
+ * business. It is a plain link to the trace endpoint: the hops of the turn as
+ * this control plane recorded them, which is the independent evidence beside
+ * anything an agent says about its own work. There is no trace page in this UI
+ * yet, so it opens the API response itself, and the copy around it says so
+ * instead of dressing it up as a viewer.
+ */
+export function traceUrl(traceId: string): string {
+  return `${API_URL}/api/v1/observability/traces/${encodeURIComponent(traceId)}`;
+}
+
 // Global 401 listener — UI components can subscribe to be notified when
 // a request is rejected due to missing/expired credentials.
 type UnauthorizedListener = () => void;
@@ -39,14 +77,153 @@ export function onUnauthorized(listener: UnauthorizedListener): () => void {
   return () => unauthorizedListeners.delete(listener);
 }
 
+function notifyUnauthorized(): void {
+  unauthorizedListeners.forEach((fn) => fn());
+}
+
 apiClient.use({
   async onResponse({ response }) {
     if (response.status === 401) {
-      unauthorizedListeners.forEach((fn) => fn());
+      notifyUnauthorized();
     }
     return response;
   },
 });
+
+// ------------------------------------------------------------------
+// Manual JSON requests
+//
+// Used by endpoints that are not yet part of the generated OpenAPI types.
+// Mirrors the shape openapi-fetch returns so callers stay uniform.
+// ------------------------------------------------------------------
+
+type JsonResult<T> = {
+  data?: T;
+  error?: unknown;
+  response: Response;
+};
+
+async function getJson<T>(path: string): Promise<JsonResult<T>> {
+  const res = await fetch(`${API_URL}${path}`, {
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+  });
+
+  if (res.status === 401) {
+    notifyUnauthorized();
+  }
+
+  const body = await res.json().catch(() => undefined);
+
+  if (!res.ok) {
+    return {
+      data: undefined,
+      error: body ?? { status: res.status, title: res.statusText },
+      response: res,
+    };
+  }
+
+  return { data: body as T, error: undefined, response: res };
+}
+
+/**
+ * POST with a JSON body.
+ *
+ * Takes an `AbortSignal` because one caller needs it: a chat turn is a
+ * blocking request that can run for a minute, and the panel offers to stop
+ * waiting for it. Aborting abandons the response, not the turn.
+ */
+async function postJson<T>(
+  path: string,
+  body: unknown,
+  options?: { signal?: AbortSignal }
+): Promise<JsonResult<T>> {
+  const res = await fetch(`${API_URL}${path}`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    signal: options?.signal,
+  });
+
+  if (res.status === 401) {
+    notifyUnauthorized();
+  }
+
+  const responseBody = await res.json().catch(() => undefined);
+
+  if (!res.ok) {
+    return {
+      data: undefined,
+      error: responseBody ?? { status: res.status, title: res.statusText },
+      response: res,
+    };
+  }
+
+  return { data: responseBody as T, error: undefined, response: res };
+}
+
+async function deleteJson<T>(path: string): Promise<JsonResult<T>> {
+  const res = await fetch(`${API_URL}${path}`, {
+    method: 'DELETE',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+  });
+
+  if (res.status === 401) {
+    notifyUnauthorized();
+  }
+
+  const responseBody = await res.json().catch(() => undefined);
+
+  if (!res.ok) {
+    return {
+      data: undefined,
+      error: responseBody ?? { status: res.status, title: res.statusText },
+      response: res,
+    };
+  }
+
+  return { data: responseBody as T, error: undefined, response: res };
+}
+
+async function patchJson<T>(
+  path: string,
+  body: unknown
+): Promise<JsonResult<T>> {
+  const res = await fetch(`${API_URL}${path}`, {
+    method: 'PATCH',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+
+  if (res.status === 401) {
+    notifyUnauthorized();
+  }
+
+  const responseBody = await res.json().catch(() => undefined);
+
+  if (!res.ok) {
+    return {
+      data: undefined,
+      error: responseBody ?? { status: res.status, title: res.statusText },
+      response: res,
+    };
+  }
+
+  return { data: responseBody as T, error: undefined, response: res };
+}
+
+function toQueryString(params?: Record<string, string | number | undefined>) {
+  if (!params) return '';
+  const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined) search.set(key, String(value));
+  }
+  const query = search.toString();
+  return query ? `?${query}` : '';
+}
 
 // ------------------------------------------------------------------
 // Auth API (not part of the generated OpenAPI types)
@@ -105,6 +282,10 @@ export const api = {
       apiClient.GET('/api/v1/agents', {
         params: { query: params },
       }),
+    // Separate from `list` because the generated query type predates the
+    // `team` filter. Same endpoint, same response shape.
+    listByTeam: (params: ListTeamAgentsQueryParams) =>
+      getJson<ListAgentsResponse>(`/api/v1/agents${toQueryString(params)}`),
     get: (agentName: GetAgentPathParams['agent_name']) =>
       apiClient.GET('/api/v1/agents/{agent_name}', {
         params: { path: { agent_name: agentName } },
@@ -243,6 +424,81 @@ export const api = {
       apiClient.DELETE('/api/v1/policies/{policy_id}/controls/{control_id}', {
         params: { path: { policy_id: policyId, control_id: controlId } },
       }),
+  },
+  teams: {
+    list: (params?: ListTeamsQueryParams) =>
+      getJson<ListTeamsResponse>(`/api/v1/teams${toQueryString(params)}`),
+    get: (slug: string) =>
+      getJson<GetTeamResponse>(`/api/v1/teams/${encodeURIComponent(slug)}`),
+    getMilestones: (slug: string) =>
+      getJson<ListTeamMilestonesResponse>(
+        `/api/v1/teams/${encodeURIComponent(slug)}/milestones`
+      ),
+    patch: (slug: string, body: PatchTeamRequest) =>
+      patchJson<PatchTeamResponse>(
+        `/api/v1/teams/${encodeURIComponent(slug)}`,
+        body
+      ),
+  },
+  agentSessions: {
+    list: (params?: ListAgentSessionsQueryParams) =>
+      getJson<ListAgentSessionsResponse>(
+        `/api/v1/agent-sessions${toQueryString(params)}`
+      ),
+    get: (sessionKey: string) =>
+      getJson<GetAgentSessionResponse>(
+        `/api/v1/agent-sessions/${encodeURIComponent(sessionKey)}`
+      ),
+    create: (body: CreateAgentSessionRequest) =>
+      postJson<CreateAgentSessionResponse>('/api/v1/agent-sessions', body),
+    messages: (sessionKey: string, params?: ListSessionMessagesQueryParams) =>
+      getJson<ListSessionMessagesResponse>(
+        `/api/v1/agent-sessions/${encodeURIComponent(sessionKey)}/messages${toQueryString(params)}`
+      ),
+    // Blocking: resolves when the agent has finished answering, which is
+    // routinely tens of seconds. The signal is how the panel stops waiting.
+    startTurn: (
+      sessionKey: string,
+      body: StartTurnRequest,
+      options?: { signal?: AbortSignal }
+    ) =>
+      postJson<TurnResponse>(
+        `/api/v1/agent-sessions/${encodeURIComponent(sessionKey)}/turns`,
+        body,
+        options
+      ),
+    listNudges: (sessionKey: string) =>
+      getJson<ListNudgesResponse>(
+        `/api/v1/agent-sessions/${encodeURIComponent(sessionKey)}/nudges`
+      ),
+    createNudge: (sessionKey: string, body: CreateNudgeRequest) =>
+      postJson<CreateNudgeResponse>(
+        `/api/v1/agent-sessions/${encodeURIComponent(sessionKey)}/nudges`,
+        body
+      ),
+    cancelNudge: (sessionKey: string, nudgeId: number) =>
+      deleteJson<CancelNudgeResponse>(
+        `/api/v1/agent-sessions/${encodeURIComponent(sessionKey)}/nudges/${nudgeId}`
+      ),
+    listHalts: (sessionKey: string) =>
+      getJson<ListHaltsResponse>(
+        `/api/v1/agent-sessions/${encodeURIComponent(sessionKey)}/halts`
+      ),
+    // The body is empty and stays empty: a stop carries no operator text, so
+    // it can never become an unevaluated instruction channel into the model.
+    createHalt: (sessionKey: string) =>
+      postJson<CreateHaltResponse>(
+        `/api/v1/agent-sessions/${encodeURIComponent(sessionKey)}/halts`,
+        {}
+      ),
+    // Read-only from this client. Plans are written by the agent under a
+    // session-bound runtime token, never from a browser: what a person sees is
+    // the agent's account, and a console that could edit it would be showing
+    // something other than what the agent said.
+    getPlan: (sessionKey: string) =>
+      getJson<PlanResponse>(
+        `/api/v1/agent-sessions/${encodeURIComponent(sessionKey)}/plan`
+      ),
   },
   observability: {
     getStats: (params: {

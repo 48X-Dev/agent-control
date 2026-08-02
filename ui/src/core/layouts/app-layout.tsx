@@ -14,6 +14,7 @@ import {
   IconHexagons,
   IconMoon,
   IconSun,
+  IconUsersGroup,
 } from '@tabler/icons-react';
 import { AnimatePresence, motion } from 'motion/react';
 import Image from 'next/image';
@@ -230,6 +231,20 @@ export function AppLayout({ children }: AppLayoutProps) {
                 active={
                   router.pathname === '/' || router.pathname === '/agents'
                 }
+                onClick={closeNavbar}
+              />
+
+              <NavItem
+                href="/teams"
+                icon={
+                  <IconUsersGroup
+                    color="var(--jds-color-muted-foreground)"
+                    size={18}
+                    stroke={2}
+                  />
+                }
+                label="Teams"
+                active={router.pathname.startsWith('/teams')}
                 onClick={closeNavbar}
               />
 
