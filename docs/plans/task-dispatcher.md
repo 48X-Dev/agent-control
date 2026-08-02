@@ -34,7 +34,7 @@ An earlier draft of this plan claimed `grep -rniE "dispatch"` over `models/src`,
 
 The same draft claimed nothing outside `asyncio` locals uses "task". `server/src/agent_control_server/endpoints/observability.py:274` opens with `"""Read one multi-agent task as a chain of hops.` That is user-facing prose already meaning something adjacent to, and slightly different from, `agent_tasks`. Two things called a task, one a ledger row and one a trace. **Resolution: the Phase 4 branch that already touches traces renames that docstring to "one multi-agent chain".** The console word for an `agent_tasks` row is "task"; the console word for a trace rollup is "chain".
 
-User-facing words do not follow the identifiers. The button says **Start work**. The queue is **Waiting for an agent**. The stop is **Stop all work**. An operator should never have to know the schema to read a page.
+User-facing words do not follow the identifiers. The milestone control is a play triangle labelled **Start work on this milestone**, and its confirm says what will happen with the issues named. The queue is **Waiting for an agent**. The review queue is **Waiting for you**. The stop is **Stop all work**. An operator should never have to know the schema to read a page.
 
 ---
 
@@ -186,6 +186,8 @@ class TaskSource(Protocol):
 
 `SourceItem` carries `ref` (stable id), `title`, `body`, `url`, `updated_at`. That is everything.
 
+Section 4's confirm additionally renders each candidate issue's creator and creation time, and **those two fields stop at the confirm.** They exist so a human can judge provenance before pressing; they never reach `SourceItem`, never reach the envelope, and never reach a model. A creator name in the prompt is one more attacker-controlled string in `contents[-1]` buying nothing, and the moment an agent can read who filed an issue is the moment an injection can address it by name.
+
 It deliberately does **not** carry an agent, a workflow, a tool list, a priority, or labels. An earlier draft carried `labels: list[str]` and used them for agent selection; section 8 explains why that was a hole and deletes it. Labels are still read by the server's Linear query as a *filter*, and are discarded before a `SourceItem` exists. Nothing the source can express reaches a decision.
 
 Pluggability is not speculative generality: the file source is what the whole of Phase 2 tests against, months before Linear write access is enabled anywhere. It also makes "a plain todo list" from the original question a first-class answer rather than a downgrade.
@@ -244,7 +246,7 @@ This makes the first prerequisite for the whole product a single field: **link `
 
 This is not a nicety, and getting it wrong turns the play button into a way to break the panel it lives in. `LinearMilestoneService`'s module docstring names the three protections and why each exists: a short TTL, a single-flight lock per team, and a per-team cooldown after any failed read that honours `Retry-After`. An issue read with none of those, firing on every expand of every row, is an unrated authenticated caller loop against a shared workspace rate limit, on a FastAPI request path holding a database session.
 
-`linear_issues.py` therefore gets the same three, **and the cooldown is shared with `LinearMilestoneService`, keyed on `(namespace_key, linear_team_key)`**, so a 429 earned by either reader backs off both. Without sharing, issue reads spend the workspace budget and `_start_cooldown` then blanks the milestone panel for everyone in the namespace, with nothing on screen connecting the two. The preview additionally reports `fetched_at` and `cached` so the confirm can say how old the set is.
+`linear_issues.py` therefore gets the same three, **and the cooldown is shared with `LinearMilestoneService`, keyed on `(namespace_key, linear_team_key)`**, so a 429 earned by either reader backs off both. Without sharing, issue reads spend the workspace budget and `_start_cooldown` then blanks the milestone panel for everyone in the namespace, with nothing on screen connecting the two. On top of that: a hard 10s budget on the outbound call, so a hanging Linear cannot hold a database session for a request timeout, and a per-`caller_hash` rate limit on `POST /agent-tasks/import` itself, because expanding rows in a loop is otherwise an authenticated denial of the panel. The preview reports `fetched_at` and `cached` so the confirm can say how old the set is, and section 16 makes a stale set disable the button rather than arm it.
 
 ### 5.3 The claim, and why it cannot live in Linear
 
@@ -354,6 +356,8 @@ queued ──operator──▶ cancelled
 ```
 
 `blocked` and `failed` differ on purpose. `failed` means the work was attempted and did not work. `blocked` means it was never attempted because the configuration is wrong, and retrying on a timer produces the same result forever. A dispatcher never retries a `blocked` task.
+
+**Two different things are called `awaiting_approval` and they must not be conflated.** The *task* status above is Phase 8's, and it means a turn is suspended mid-chain waiting for a human to approve a tool call. The *write-back* status in 5.7 means the task finished, its comment landed, and a proposal to close the issue is sitting in a review queue. A task in 5.7's flow reaches `completed` and stays there whether or not anyone accepts, precisely so that "the agent is done" and "the tracker was changed" never become one fact.
 
 Reclaim is refreshed by `POST /agent-tasks/{key}/heartbeat` **between** steps, and also during a quota backoff, which is between steps by construction. A step can legitimately take five minutes, so `dispatcher_stale_after_seconds` must exceed `turn_timeout_seconds * max_turns_per_step` with margin. That relationship gets the same `model_validator` refusal `ExecutorSettings._stale_window_must_outlast_a_turn` already uses (`config.py:444`), for the same reason: cheaper to refuse at import than to debug at 3am.
 
@@ -625,7 +629,7 @@ Nothing in an earlier draft prevented N concurrently-claimed tasks all resolving
 
 Concurrent invocations inside one ADK process share one `AgentControlPlugin` instance. Most of its state is keyed by `(invocation_id, call_id)`, but not all of it: `_artifact_notice_emitted`, `_warned_attachments`, `_synced_step_keys` and the managed-config applier are process-scoped. **No spike in `docs/plans/spike-findings.md` establishes concurrent-invocation safety of the plugin**, and the failure mode would be cross-contaminated policy evaluation, which is the worst possible place for it.
 
-So the dispatcher ships `max_concurrent_tasks` (global, default 4) and `max_concurrent_tasks_per_agent` (default **1**), both enforced before claiming. Per-agent 1 is conservative precisely because the safety is unverified. Phase 0's E5 settles it cheaply, and the limit is raised with evidence or not at all.
+So the dispatcher ships `max_concurrent_tasks` (global, default 4) and `max_concurrent_tasks_per_agent` (default **1**), both enforced before claiming. Per-agent 1 is conservative precisely because the safety is unverified. Phase 0's E5a settles it cheaply, and the limit is raised with evidence or not at all.
 
 ### 9.2 The envelope
 
@@ -762,7 +766,7 @@ Agent Control cannot make Gmail's send idempotent. What it can do, in descending
 
 **Dedupe our own writes.** The comment marker in 5.6 is the one write path this system owns end to end.
 
-**Stamp a key into outbound tool arguments.** ADK passes the *same dict object* to the plugin and then to the tool: `run_before_tool_callback(tool=tool, tool_args=function_args, ...)` at `functions.py:582`, then `__call_tool_async(tool, args=function_args, ...)` at `:602`, with `function_args` declared `nonlocal` in the enclosing `_run_with_trace`. In-place mutation should reach the tool. **This has not been run, so it is Phase 0's E4 and not a design commitment.** Even if it works it only helps for tools that accept such a field, which most MCP tools do not.
+**Stamp a key into outbound tool arguments.** ADK passes the *same dict object* to the plugin and then to the tool: `run_before_tool_callback(tool=tool, tool_args=function_args, ...)` at `functions.py:582`, then `__call_tool_async(tool, args=function_args, ...)` at `:602`, with `function_args` declared `nonlocal` in the enclosing `_run_with_trace`. In-place mutation should reach the tool. **This has not been run, so it is E4 and not a design commitment**, and E4 now sits in Phase 6 with the other tool experiments, because with no MCP tools there is nothing to stamp. Even if it works it only helps for tools that accept such a field, which the three Linear read tools in 13.2 do not.
 
 The shipped position: the dangerous case is prevented by not retrying. Idempotency keys are a partial mitigation with a spike attached. Anything stronger would be a claim this stack cannot support.
 
@@ -770,7 +774,7 @@ The shipped position: the dangerous case is prevented by not retrying. Idempoten
 
 ## 12. Safety
 
-This is the centre of the design, not an appendix. "Hit play" plus hundreds of SaaS connectors plus an autonomous loop is a machine for taking irreversible actions on real systems with nobody watching. Everything here ships *before* or *with* the phase that makes it reachable, and section 16 reorders the phases because an earlier draft broke that rule.
+This is the centre of the design, not an appendix. "Hit play" plus an autonomous loop plus a write path into a shared tracker is a machine for taking actions on real systems with nobody watching, and section 13.2 spends its length arguing about how much worse that machine gets with each connector added to it. Everything here ships *before* or *with* the phase that makes it reachable, and section 16 reorders the phases because an earlier draft broke that rule.
 
 ### 12.1 Ceilings, enforced where they cannot be bypassed
 
@@ -818,7 +822,7 @@ Two tiers, decided once, applied by control rather than by prompt.
 
 ### The mechanism, which an earlier draft got backwards
 
-That draft expressed tier 1 as a denylist naming the write-capable tools. That fails open, and the reason is in the SDK. `evaluation.py:462` contacts the server only when `_has_applicable_prefiltered_server_controls` returns true, and applicability is decided by `engine/src/agent_control_engine/core.py:562` on `scope.step_names` / `step_name_regex`. A control that names the write-capable tools **does not apply** to a tool it does not name, so no evaluation request is made and the tool runs with `is_safe=True` (`evaluation.py:511`). Composio adds actions to toolkits. A gateway that renames `GMAIL_SEND_EMAIL`, or exposes `GMAIL_SEND_DRAFT` next to it, produces a tool the denylist does not name, no server call, no policy decision recorded anywhere. The control plane would show a clean audit log for an action it never saw.
+That draft expressed tier 1 as a denylist naming the write-capable tools. That fails open, and the reason is in the SDK. `evaluation.py:462` contacts the server only when `_has_applicable_prefiltered_server_controls` returns true, and applicability is decided by `engine/src/agent_control_engine/core.py:562` on `scope.step_names` / `step_name_regex`. A control that names the write-capable tools **does not apply** to a tool it does not name, so no evaluation request is made and the tool runs with `is_safe=True` (`evaluation.py:511`). Any tool the denylist does not name means no server call, no policy decision, and a clean audit log for an action the control plane never saw. Under 13.2's Linear-only scope the way that happens is a tool added to our own MCP server without the allowlist being updated in the same commit, which is an ordinary mistake. Under a connector catalogue it happens without anyone on this team doing anything at all, which is why 13.5 makes E5b a recurring gate rather than a one-off if a catalogue is ever adopted.
 
 **So tier 1 is one deny control whose scope names no steps at all.** Verified in `get_applicable_controls`: `scope.step_types` is checked and `scope.stages` is checked, and step-name filtering happens only inside `if scope.step_names or scope.step_name_regex:`. With neither set, the control is applicable to **every** tool call and forces a server round trip every time.
 
@@ -1200,6 +1204,8 @@ TypeScript SDK regeneration was listed as out of scope. It is a gated CI check, 
 
 And nothing was budgeted for the reorder in Phase 3, which is not extra work but does move a week and a half earlier in the schedule, changing what is done by when.
 
+**One thing the narrowing does not make cheaper, and it is worth saying because the totals suggest otherwise.** Phase 4 grew from 1.5 weeks to 2 while everything around it shrank. Most of what it absorbed is not Linear plumbing, it is the gate: the preview that shows a set, the digest that binds it, the accept path with its self-approval refusal and its target check, and E8. Those are the pieces that make an agent's claim safe to act on, and they cost roughly half a week between them. Cutting them is cutting the only thing standing between a self-report and somebody's board.
+
 ### 15.2 TypeScript SDK regeneration is mandatory work, not scope
 
 `.github/workflows/ci.yml` runs `make sdk-ts-generate-check` (line 237) and `make sdk-ts-name-check` (line 240) in the `sdk-ts-ci` job, with `SPEAKEASY_API_KEY` from secrets (line 188) and `make -C sdks/typescript speakeasy-install` (line 219). This plan adds roughly a dozen routes across Phases 1, 4 and 7. **Out-of-scope is not available for a gated check.** Every phase that adds a route lands on a red build, and whoever hits it cannot fix it without the pinned Speakeasy CLI and the key.
@@ -1213,7 +1219,29 @@ The orchestration plan already budgets exactly this: "Budget two days per gated 
 | Case | Behaviour |
 |---|---|
 | Issue body is a prompt injection | Delimited and labelled untrusted; lands in `contents[-1]` so bound controls evaluate it; cannot reach agent selection, workflow, tools or write-back target (12.4) |
-| Issue *label* is a prompt injection | Labels are a filter, never a selector. Agent comes from server-side config only (section 8). The attacker can queue work, and the press plus the budget bound it |
+| Issue *label* is a prompt injection | Labels are a filter, never a selector. Agent comes from server-side config only (section 8). The attacker can queue work, and the press over a displayed set plus the budget bound it |
+| Attacker files an issue into the targeted milestone | It appears in the confirm's list, flagged `new_within_hour` and, if applicable, `creator_not_in_team`. The operator sees the row before pressing; `expected_refs_digest` catches it arriving between preview and commit. Both flags are heuristics, and the console says so |
+| Agent output contains a closing code fence and an image embed | Escaped before insertion, never rendered (5.6 rule 1). E8 is Phase 4's entry gate and write-back does not ship without it |
+| Team has no `linear_team_key` | No milestone list renders, so no play button exists. API refuses independently with 409 `TEAM_NOT_LINKED`. This is `marketing` and `sales-outreach` today |
+| `milestone_id` not in the team's own list | 404 `MILESTONE_NOT_IN_TEAM`. The browser's id is never trusted; the server re-reads the team's list from the warm cache |
+| Milestone holds issues from three teams | Only this team's are eligible. The rest are counted as `skipped.other_team` and named in the confirm. Cross-team work needs the other team's button |
+| Eligible set changed between preview and commit | 409 `SCOPE_CHANGED` with a fresh preview body. A digest over the sorted refs, so four issues swapped for four others also fails |
+| Play pressed twice, or by two people at once | The partial unique index dedupes. The second press previews `already_queued: N`, nothing eligible, and the button is disabled |
+| Same issue queued by a milestone press and a cron label poll | One open task. `source_kind` stays `'linear'` on both paths precisely so the index fires |
+| Milestone has zero eligible issues | Button renders disabled with "Nothing to work on". Not an error, not a modal |
+| No agent resolvable for the team or workflow | 409 `NO_AGENT_SELECTED` at press, **before any row is created**. Four blocked tasks and four identical comments is the failure this avoids |
+| Namespace paused, or executors halted, at press | 409 carrying the reason and who set it, rendered as the existing banner copy. Enforcement stays in `_acquire_turn` |
+| Hourly task ceiling reached at commit | 429 with `retry_after_seconds`, nothing inserted. Counted in the inserting transaction (12.1) |
+| `linear_team_key` changed while tasks are running | In-flight tasks keep writing to `source_team_key` as resolved at import. The Change form confirms: "4 tasks are running against OPS" |
+| Milestone deleted in Linear mid-run | Tasks continue; they are keyed on issues. The row vanishes from the panel and the review queue moves to the task list. `source_scope_name` keeps the history legible |
+| Issue moved out of the milestone mid-run | The task continues and the comment still lands. Accept refuses with 409 `SCOPE_CHANGED`, because the reviewer is being asked to close something that has left the scope they authorised |
+| Issue closed by a human before the accept | `ALREADY_COMPLETED`, write-back marked `sent`, reported as a note. A human closing it first is the system working |
+| Accept pressed on a summary or target that changed | 409 `DECISION_CHANGED`. The digest covers `(output_text, source_ref, target_state_id)`, so the reviewer is bound to the mutation and not only to the prose |
+| The dispatcher's own credential presses accept | 409 `SELF_APPROVAL_REFUSED` (5.7 step 2). The comparison is against `claimed_by_hash` and the task's session `created_by_hash` |
+| Nobody ever accepts | Task `completed`, comment posted, issue open, bar unchanged. The queue ages and marks entries stale after 48 h. Nothing auto-accepts, ever |
+| Dry-run task reaches the accept queue | It does not. No write-back is enqueued for `dry_run = true`, and accept refuses a dry-run task independently |
+| An agent asks to close a different issue | Ignored. Target is `source_ref` on the claimed row; target state is resolved from the Linear team's workflow. Neither is reachable from model output |
+| Accepted, but the panel still shows the old bar | The accept response carries the new progress value and the row renders it. `invalidate()` clears the serving replica; another replica corrects within one TTL (5.7 step 6) |
 | Same issue claimed twice | Impossible: partial unique index on `(namespace_key, source_kind, source_ref)` for non-terminal statuses. Import uses `ON CONFLICT DO NOTHING` |
 | Agent has no executor binding | 409 `AGENT_RUNTIME_NOT_BOUND` at session open. `blocked`, one write-back, no retry |
 | Executor dies mid-task | 503 (retryable) or 504 (not). Lock clears via the shielded release. Transcript may end on a dangling function call, and the write-back says so |
@@ -1228,13 +1256,14 @@ The orchestration plan already budgets exactly this: "Budget two days per gated 
 | Namespace session ceiling hit | Cannot happen with the enforced relationship in section 6. If it does, the `model_validator` was bypassed and the runbook says to raise the ceiling, not to delete human sessions |
 | Two dispatchers | Safe, and **does not increase throughput** (see below) |
 | Two tasks select the same agent | Serialized by `max_concurrent_tasks_per_agent = 1`, because plugin concurrent-invocation safety is unverified (9.1). E5a can raise it |
-| Linear unreachable on read | Import fails with an honest banner inside a 10s budget. No running task affected |
+| Linear unreachable and no cached read | `LinearMilestoneService` reports `status: 'error'`, the panel renders `InlineError` and **no milestone rows at all**, so there is no play control to disable. The existing retry applies. Import refuses with 503 and inserts nothing |
+| Linear unreachable but a stale read is served | The failure mode that actually needs a rule. `_degraded` serves the last good copy through `_from_entry`, which reports `status: 'ok'` with `cached: true` for up to `stale_ttl_seconds` (default 900). So the panel shows fully-enabled play buttons over a 15-minute-old list while the cooldown is active. **The play control is disabled whenever `cached` is true and the cooldown is live**, with the tooltip naming `fetched_at`, because the eligible set cannot be recomputed and a press would fail after the operator had already committed to the gesture |
 | Linear unreachable on write | Task still reaches `completed`. Write-back sits `pending` and retries; the marker makes retries safe; the console shows the two states separately |
 | Write-back denied by a control | `denied`, recorded, task still `completed`. The `control_execution_events` row is the audit trail |
-| Two toolsets expose the same tool name | Predicted collapse to one step name (E3). Mitigated by mandatory `tool_name_prefix` |
-| A tool appears that no allowlist names | **Denied.** The tier-1 control names no steps, so it is applicable to every tool call (12.2). E5b proves it |
-| Executor's control cache is stale | Dry run refuses without canary evidence (12.3). Level 3 stop is a turn-path refusal, not a new control, for the same reason |
-| MCP endpoint expires mid-run | Tools vanish, the agent reports it cannot proceed, the step fails on unusable output. The refresh path must be proven in Phase 6 |
+| Two toolsets expose the same tool name | Cannot arise: one toolset, fixed local tool list (13.2). E3 is deleted, and returns with any second toolset |
+| A tool appears that no allowlist names | **Denied.** The tier-1 control names no steps, so it is applicable to every tool call (12.2). It ships in Phase 3, before the first tool exists. E5b proves it |
+| Executor's control cache is stale | Dry run refuses without canary evidence, and the canary probes `get_weather` against the deny-by-default allowlist, so it needs no write-capable tool (12.3). Level 3 stop is a turn-path refusal, not a new control, for the same reason |
+| A write-capable tool is deployed to an executor by mistake | The server cannot see it: `_ensure_step_known` registers schemas post-hoc on first use. The canary still refuses the dry run, `preflight` refuses on the reported tool list, and 12.2's control denies the call. Three weak signals rather than one strong one, and 12.3 says so |
 | Agent's plugin has `before_tool` disabled | `preflight` refuses to start (Phase 6); `_acquire_turn` refuses the turn (Phase 8) |
 | Operator stops mid-chain | Level 1 within a step and independent of the dispatcher; level 2 best-effort at the next boundary; level 3 immediately for anything new; level 4 kills processes. A running tool finishes regardless |
 
@@ -1247,6 +1276,16 @@ The orchestration plan already budgets exactly this: "Budget two days per gated 
 Named here rather than discovered in week ten.
 
 **Agents that talk to each other.** Section 9, three times.
+
+**Gmail, Drive, and any other connector.** Section 13.2, as a decision with reasoning and four named conditions for revisiting it, not as a backlog item.
+
+**Engineering agents that fix anything.** Section 13.7. They can triage, analyse and comment. Fixing needs a repository credential, a shell and git, which is a larger step than Gmail and which nobody has agreed to.
+
+**A milestone bar that moves on its own.** Section 5.7. It moves when a human accepts, which means the demo has a human in it and always will.
+
+**Sales-outreach doing outreach.** Its product is email and email is denied. What it gets is research and drafting in a comment for a human to send.
+
+**An answer to "which human approved this".** `approved_by_hash` is a credential tag, and `caller_identity.py` records that every browser caller hashes identically because the cookie path has no subject. Answerable for API keys, not for console users, until the session token grows one.
 
 **Parallel fan-out and join.** Every workflow is a line. Two agents working simultaneously on one task needs a join, a merge policy for conflicting outputs, and a partial-failure story, and none of that is here.
 
@@ -1262,7 +1301,7 @@ Named here rather than discovered in week ten.
 
 **Per-namespace executor isolation.** Multi-tenant deployments with tool egress need it; the orchestration plan already flags it.
 
-**A useful toolset.** Section 13.4. The dispatcher is sized here; making five agents genuinely capable is not, and it is the larger of the two.
+**A useful toolset.** Section 13.5. The dispatcher is sized here; making five agents genuinely capable is not, and it is the larger of the two.
 
 **A hand-written TypeScript client surface.** Regeneration of the generated one is in scope and costed (15.2).
 
@@ -1285,7 +1324,12 @@ Files it modifies that others may be in, all small, all landing on separate bran
 | `services/agent_turns.py` | three refusals in `_acquire_turn` for dispatch-origin turns; `extra_details` on the 429 | 2, 3 |
 | `auth_framework/core.py`, `providers/header.py` | new operations | 1, 3 |
 | `endpoints/observability.py` | one docstring rename (section 2) | 5 |
+| `services/linear_milestones.py` | `invalidate(namespace_key, linear_team_key)`; cooldown shared with `linear_issues.py` | 4 |
+| `ui/.../teams/team-milestones.tsx` | the play control, the scope preview `Collapse`, the agent-step bar, the review queue | 4 |
+| `ui/.../teams/link-linear-team.tsx` | confirm when tasks are running against the current key (5.3) | 4 |
 | `docker-compose.dev.yml` | one service | 2 |
+
+The two UI files are the one place this plan writes into a component another team may also be editing. They are additive (one control, one collapsible panel) and land in Phase 4, so the conflict surface is a single `Group` and a single `Stack`.
 
 Note what is **not** on that list: `models/.../sessions.py`. Withdrawing the `StartTurnRequest.trace_id` change (section 10) removed this plan's only edit to a heavily contested models file.
 
@@ -1295,7 +1339,17 @@ Note what is **not** on that list: `models/.../sessions.py`. Withdrawing the `St
 
 **Is one turn per step too tight?** `max_turns: 1` means an agent gets one shot with no chance to react to its own tool results across turns, though it can still loop inside the turn. Three is the ceiling. Somebody who has watched real agent runs should set the default, and section 14's slice is designed to produce exactly that observation in week one.
 
-**Should `POST /agent-tasks/import` really call Linear from the server?** It is the one place this plan puts an outbound integration call on a request path. The credential and the adapter already live there; against that, a slow Linear makes the product's first-impression button slow. The 10s budget is a mitigation, not an answer.
+**Should `POST /agent-tasks/import` really call Linear from the server?** It is the one place this plan puts an outbound integration call on a request path. The credential and the adapter already live there; against that, a slow Linear makes the product's first-impression button slow. The TTL, single-flight, shared cooldown and per-caller rate limit in 5.2 are mitigations, not an answer.
+
+**Is the review queue the thing that stops getting used?** Section 5.7 chose one click per issue with no bulk accept, on the argument that friction is the control. A forty-issue milestone turns that argument into forty clicks and a reviewer who stops reading around twelve, which is bulk accept with worse ergonomics and a false audit trail. The counter is that the press bounds the set and a press that queued forty issues was already the wrong press. Somebody who has actually reviewed forty agent outputs should say whether the confirm needs a ceiling lower than the milestone's size.
+
+**Is the human gate worth much when the record cannot name the human?** 5.7 makes a person the only thing that can close an issue, and then records a credential hash that is identical for every console user. The gate still works, because a person still has to read and press. What it cannot do is tell you afterwards which person, which is half of what an approval record is for. Fixing it is a subject claim on the session token, which is not this plan's work but is on this plan's critical path for anyone who wants the audit trail to mean what it looks like it means.
+
+**Does closing an issue really belong at AUTHENTICATED?** 5.7 argues that ADMIN-gated approval produces one rubber-stamping admin, and that the self-approval refusal separates the principals more precisely than a tier could. The counter is that closing issues in a shared tracker under a workspace credential is exactly the kind of authority this repo puts at ADMIN elsewhere. Somebody who owns the Linear workspace should pick, and the per-key operation allowlist (3 days, section 15) is the version that does not force the choice.
+
+**Is `require_label` dead on arrival?** 5.2 keeps it as an optional narrowing filter that nothing in the shipped flow sets. An unused field on a request body is a field somebody eventually wires to something. Deleting it and re-adding it later would be defensible.
+
+**Should the second progress bar exist at all?** Section 4 puts an agent-step bar under Linear's and spends a paragraph on why the two must not merge. The alternative is no second bar and a plain count, which is uglier and impossible to misread. The bar is there because a running task with no visible progress reads as broken. That may be the wrong trade.
 
 **Is `blocked` a status or a failure code?** It is a status here because the operator response differs from `failed`. It could equally be `failed` with a code, and that would be one fewer state.
 
