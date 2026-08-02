@@ -850,6 +850,8 @@ An earlier draft had the server refuse to start a dry-run task unless the agent 
 
 **The Linear-only scope in section 13 does not retire the canary, and an intermediate draft of that section claimed it did.** The claim was that with zero write-capable tools deployed, dry run becomes provable by construction, so the canary could be deferred to the phase that introduces the first tool with a side effect. That is the same class of assertion this section already rejected. **Zero write-capable tools is a property of the executor's deployment configuration, and the control plane cannot see it.** `_ensure_step_known` (`plugin.py:1368`) registers a step schema on *first use*, via `loop.create_task(self._sync_steps_async([step]))` with a done-callback and no await anywhere on the caller's path. The server's step registry is therefore a post-hoc record of tools that have already been invoked, never a pre-flight inventory. A tool added early, or a developer editing `tools=[...]` on one executor, makes a dry run silently stop being a dry run, and the check that would have caught it would have been deferred to a phase that may never run.
 
+**And the canary does not need a write-capable tool to run, which is what makes keeping it cheap.** Its requirement is a tool the deny-by-default control *must* refuse, not a tool that would do damage if it did not. Under the Linear-only allowlist in 12.2, `get_weather` is such a tool, and it is already on the example agent. So the canary is buildable the day the deny control ships in Phase 3, it costs one turn against `get_weather`, and it proves the property actually at stake: that this executor process's control cache is live and enforcing right now, rather than 60 seconds and one swallowed refresh failure out of date.
+
 So the honest statement of what narrowing buys is: **no write-capable tools are deployed, not that none can run.** The canary stays as the shipped proof for every dry-run task. What narrowing does change is its cost, because under Linear-only the "known write-capable tool" the canary attempts is a stub in our own MCP server rather than something borrowed from a catalogue. Alongside it, `dispatch preflight` (12.6) grows one assertion: each agent's reported tool list is empty or wholly inside the allowlist, and Phase 4 refuses to start a dry-run task for any agent that has ever synced a tool step outside it. That is a second, cheaper signal built on the registry's real semantics rather than a pretence that it is an inventory. The enforcement point remains the deny-by-default control in 12.2, not the deployment.
 
 Two consequences worth stating. The same staleness undermines *any* incident response that works by binding a new deny control, which is a second reason section 12.5's authoritative stop is a refusal on the turn path rather than a new control. And the longer-term fix reuses a pattern that already exists: the plugin stamps `reported.config_etag` on every event, so adding a control-set generation counter reported the same way lets `_acquire_turn` refuse a dispatch turn whose executor reports a stale generation. That is Phase 7 work, sized there.
@@ -1133,31 +1135,60 @@ $ agent-control-dispatch once --source file://tasks.yaml \
 
 The upgrade path is additive. `sources/file.py` stays as the test source forever. `envelope.py` and `extract.py` are unchanged by Phase 1. The SQLite ledger is deleted the day `agent_tasks` lands, and the CLI signature does not change.
 
+### Slice 2: one real milestone, read only
+
+**This is what the user should see first, and narrowing to Linear-only is what makes it reachable.** After slice 1, roughly **three more days**:
+
+```
+$ agent-control-dispatch once --source linear-milestone:<id> --team marketing \
+      --max-tasks 3 --dry-run
+```
+
+Real issues from a real marketing milestone become real agent output printed to the terminal. No writes to Linear of any kind. No new tables, because slice 1's SQLite ledger carries it. No MCP tools, because there are none to build. What it needs on the server is the milestone-scoped read and the bucket counts from 5.2, which is roughly a day on top of `linear_client.py`, a module that already holds the credential, the transport and the error taxonomy.
+
+**By how much this moves, and why.** Under the plan as written before the narrowing, Linear reads arrived in Phase 4, week seven or eight, and a demo of real work needed a toolset, which needed a gateway, a credential broker, an endpoint refresh path and five spike experiments. Slice 2 puts a real milestone in front of real agents on **day eight**. The saving is almost entirely the tool build, and it is available because the deliverable is text rather than an action.
+
+**What slice 2 deliberately does not have**, in the same spirit as slice 1: no claim that survives two dispatchers, no server-enforced budget, no fleet stop, no write of any kind, and no play button. One operator, one terminal, watching. Every one of those is required before it runs unattended, and it does not run unattended.
+
 ---
 
 ## 15. Phases and effort
 
 One engineer, including tests, because this repo's existing plans include them. **The earlier draft's 8-to-9 weeks was wrong and section 15.1 says what it was missing.**
 
-**Phase 0, spikes. 4 days.** E1 to E7 from 13.3. Deliverable is a findings section appended to `docs/plans/spike-findings.md` in the same format, with fixtures. E7 and E5b are the two that can change the plan's shape, so run them first.
+**Phase 0, spikes. 2 days.** E5a, E6 and E7 from 13.4, which are about turns and topology rather than tools. Deliverable is a findings section appended to `docs/plans/spike-findings.md` in the same format, with fixtures. E7 is the one that can still change the plan's shape, so run it first. E1, E2, E4 and E5b move to Phase 6 as its entry gate; E3 is deleted; E8 is new and gates Phase 4.
 
 **Phase 1, the ledger. 2 to 2.5 weeks.** `models/.../tasks.py`; ORM rows and one Alembic revision for `agent_tasks`, `agent_task_steps`, `agent_task_writebacks`, `agent_workflows`, `agent_dispatch_state`; the `agent_task_id` column on `agent_sessions` and the third branch in `require_content_access`; `services/agent_tasks.py` and `services/task_claims.py` (the claim statement, tested under real concurrency, not with mocks); `endpoints/agent_tasks.py`; new operations in `DEFAULT_OPERATION_ACCESS`, which `test_auth_framework.py` already enforces. Plus **2 days of TypeScript SDK regeneration** (15.2). Ships nothing a user can see, and the claim statement is the highest-risk code in the plan, so it goes first and alone.
 
 **Phase 2, the dispatcher, one step, file source. 1.5 weeks.** The `dispatcher/` package proper, the file source, the failure table, the heartbeat, `max_concurrent_tasks_per_agent`, session deletion with its retention grace, the `retry_after_seconds` server change (11.4), and the compose service. End of this phase a YAML file of three items becomes three agent sessions with three transcripts, under a real ledger. **This is the first phase that spends money unattended, and it is the one to sit and watch.**
 
-**Phase 3, fleet controls and budgets. 1.5 weeks.** All four stop levels, `agent_dispatch_state` enforced inside `_acquire_turn`, the set-based fleet halt, the ceiling `model_validator`. **Moved ahead of Linear and ahead of tools, deliberately.** Section 12's own rule is "before or with the phase that makes it reachable, never after", and the earlier draft's ordering put MCP toolsets on live agents one phase before the fleet stop that governs them. That window is not acceptable and the reordering costs nothing.
+**Phase 3, fleet controls, budgets and the deny control. 1.5 weeks.** All four stop levels, `agent_dispatch_state` enforced inside `_acquire_turn`, `max_tasks_per_hour` enforced in the import transaction (12.1), the set-based fleet halt, the ceiling `model_validator`, **and the deny-by-default tier-1 control from 12.2 bound and tested while the only tools in the deployment are `get_current_time` and `get_weather`.** The canary rides in on the same work, because `get_weather` is a tool the control must refuse (12.3). **Moved ahead of Linear and ahead of tools, deliberately.** Section 12's own rule is "before or with the phase that makes it reachable, never after", and an earlier ordering put MCP toolsets on live agents one phase before the fleet stop that governs them. That window is not acceptable and the reordering costs nothing.
 
-**Phase 4, Linear read, claim, write-back. 1.5 weeks.** `services/linear_issues.py`, `services/linear_writeback.py`, the write flag defaulting off, the comment marker, the sanitisation and evaluation of the write-back body (5.6), the queue and its retry. Plus **2 days of SDK regeneration**.
+**Phase 4, milestone scope, write-back, the review queue and the play button. 2 weeks.** The phase that grew, because it is now the phase that delivers the product. `services/linear_issues.py` with the milestone-and-team query, the Python bucket counts, and the TTL, single-flight and shared cooldown from 5.2; the preview and commit protocol with `expected_refs_digest`; per-caller rate limiting on import; `services/linear_writeback.py` with the write flag defaulting off, the comment marker, the escaping in 5.6 rule 1 and the `POST /evaluate` step; the approval columns, `resolve_completed_state`, the accept and reject endpoints with the self-approval refusal and `decision_digest`; `LinearMilestoneService.invalidate()` and the progress value on the accept response; and the milestone row's play control, scope preview and review queue, pulled forward from the console phase because they are the product rather than a view of it. **Entry gate: E8 passes, or write-back does not ship.** Plus **2 days of SDK regeneration**.
 
-**Phase 5, hand-off. 1 week.** `agent_workflows`, multi-step execution, the prior-report block, and the chain view built from `agent_task_steps` with per-step trace links. Includes the observability docstring rename from section 2.
+**Phase 5, hand-off. 1 week.** `agent_workflows`, multi-step execution, the prior-report block, and the chain view built from `agent_task_steps` with per-step trace links. Includes the observability docstring rename from section 2. **This is where "passed between the agents" lands**, and where `marketing_researcher` into `marketing_writer` becomes the first two-step workflow.
 
-**Phase 6, tools and dry run. 1.5 weeks.** MCP toolsets on the executor image, the deny-by-default tier-1 control as a shipped control template (`services/control_templates.py` already has the machinery), `tool_name_prefix` if E3 failed, twin-agent dry run, the canary, `dispatch preflight`, and the runbook.
+**Phase 6, MCP tools and twin-agent dry run. 1 week, and deferrable.** The purpose-built Linear read-only MCP server from 13.2 on the executor image, twin-agent dry run, `dispatch preflight` with its tool-list assertion, and the runbook. **Entry gate: E1, E2, E4 and E5b.** Composio, the gateway choice, `header_provider` refresh, endpoint expiry and `tool_name_prefix` are all gone with the narrowing. Phase 4 already delivers a working product, so this phase can slip without blocking anything, which is the right place for the plan's least-verified assumption to sit.
 
-**Phase 7, console. 1.5 to 2 weeks.** The task list, the per-task step rail, the Start work button with its numbers, the pause and halt banners with their honest copy, and the `agent_tasks.read` oversight path exercised end to end by a non-admin credential. Plus **2 days of SDK regeneration**. Split out of the earlier draft's Phase 6, where it was sharing 1.5 weeks with every safety mechanism in section 12.
+**Phase 7, console. 1 to 1.5 weeks.** The task list, the per-task step rail, the pause and halt banners with their honest copy, and the `agent_tasks.read` oversight path exercised end to end by a non-admin credential. Shrinks, because the play control and the review queue moved to Phase 4. Plus **2 days of SDK regeneration**.
 
-**Phase 8, approvals and hook attestation. 2 to 3 weeks. Optional and last.** `POST /agent-tasks/{key}/approvals`, the `awaiting_approval` status, the control-set generation counter from 12.3, the `enabled_hooks` attestation from 12.6, and a new approval evaluator resolving `(task_key, step_index, tool_name, args_hash)` against an approval record. **`args_hash` is the whole design:** approving "send email to alice@example.com" must not authorise "send email to attacker@example.com", and an approval keyed on the tool name alone does exactly that. Sized honestly because it touches the evaluator contract, which nothing else here does.
+**Phase 8, approvals and hook attestation. 2 to 3 weeks. Optional and last.** `POST /agent-tasks/{key}/approvals`, the `awaiting_approval` status on tool calls, the control-set generation counter from 12.3, the `enabled_hooks` attestation from 12.6, and a new approval evaluator resolving `(task_key, step_index, tool_name, args_hash)` against an approval record. **`args_hash` is the whole design:** approving "send email to alice@example.com" must not authorise "send email to attacker@example.com", and an approval keyed on the tool name alone does exactly that. Its priority drops under the narrowing, because it was mostly there to make Gmail-shaped tools survivable; it becomes a named precondition for adding any connector (13.5, condition 1) rather than a nice-to-have.
 
-Phases 0 to 7: **12 to 14 weeks.** With Phase 8, **14 to 17.**
+| Phase | Was | Now | Why |
+|---|---|---|---|
+| 0. Spikes | 4 d | **2 d** | E3 deleted, E1/E2/E4/E5b moved to Phase 6, E8 added to Phase 4 |
+| 1. Ledger | 2–2.5 wk + 2 d | **2–2.5 wk + 2 d** | Unchanged. The scope and approval columns are one migration either way |
+| 2. Dispatcher, file source | 1.5 wk | **1.5 wk** | Unchanged |
+| 3. Fleet controls | 1.5 wk | **1.5 wk** | Unchanged in size; absorbs the deny control and the canary, which were Phase 6 |
+| 4. Linear, write-back, play, review | 1.5 wk + 2 d | **2 wk + 2 d** | Grows. It is now the phase that ships the product |
+| 5. Hand-off | 1 wk | **1 wk** | Unchanged |
+| 6. Tools | 1.5 wk | **1 wk, deferrable** | Gateway, broker and endpoint refresh deleted |
+| 7. Console | 1.5–2 wk + 2 d | **1–1.5 wk + 2 d** | Play control and review queue moved to Phase 4 |
+| 8. Approvals | 2–3 wk | **2–3 wk, optional** | Unchanged in size, lower priority, now a connector precondition |
+
+Phases 0 to 7: **11.5 to 13 weeks**, down from 12 to 14. If Phase 6 slips, which it may without blocking the product, **10.5 to 12**. With Phase 8, **13.5 to 16**, down from 14 to 17. The saving is about a week of gateway and spike work that the narrowing deletes rather than defers, and it is smaller than the schedule move: the demo the user asked for is complete at the end of **Phase 5**, roughly week eight, instead of at the end of Phase 7.
+
+**Not in those numbers:** the per-key operation allowlist from section 4, roughly **3 days** on Phase 4 if the user wants approval separated by credential rather than by the self-approval refusal alone. Section 5.7 explains why the refusal is the stronger of the two and the allowlist is the one that closes the residual.
 
 ### 15.1 What the 8-to-9 week estimate was missing
 
