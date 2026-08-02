@@ -7,6 +7,11 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from .plugin import AgentControlPlugin
 
+# Only the plugin is re-exported here, because only the plugin needs the lazy
+# import: it fails at import time without google-adk installed. The progress
+# tools import no ADK surface at module level, so they are imported from
+# ``agent_control.integrations.google_adk.progress_tools`` directly, with no
+# machinery in between.
 __all__ = ["AgentControlPlugin"]
 
 

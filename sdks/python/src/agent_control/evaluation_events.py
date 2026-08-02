@@ -32,6 +32,17 @@ _DEBUG_METADATA_KEYS = frozenset(
 )
 
 
+#: Prefix reserved for values the *server* authors on ingest. A client-supplied
+#: key carrying it is dropped, because the audited party must not be able to
+#: attest its own audit record.
+_SERVER_AUTHORED_PREFIX = "agent_control."
+
+#: Prefix for values the agent process reports about itself. Everything under it
+#: is an **unverified self-report** and is trustworthy only where it agrees with
+#: the server's own stamp. The divergence is the artifact worth alerting on.
+_REPORTED_PREFIX = "reported."
+
+
 def _safe_event_metadata(metadata: dict[str, object]) -> dict[str, object]:
     """Drop raw/debug metadata that should not be exported as observability data."""
     safe_metadata = {k: v for k, v in metadata.items() if k not in _DEBUG_METADATA_KEYS}
@@ -42,6 +53,52 @@ def _safe_event_metadata(metadata: dict[str, object]) -> dict[str, object]:
                 safe_metadata["input"] = preview["value"]
                 break
     return safe_metadata
+
+
+def _reported_config_metadata(request: EvaluationRequest) -> dict[str, object]:
+    """Extract this agent's self-reported configuration from the step context.
+
+    Answers the question an operator actually asks at 2am: *which prompt and
+    which model produced this decision?* Somebody moves Sales to a cheap model
+    on Tuesday and denials triple on Wednesday; without these keys the event
+    stream contains no field connecting the two.
+
+    Two rules, and both matter.
+
+    Client-supplied keys under the server-authored prefix are dropped here. The
+    agent reports its own configuration, so letting it write
+    ``agent_control.config_etag_current`` would let the audited party forge the
+    server's view of what it should have been running.
+
+    Everything that does survive is routed through ``_safe_event_metadata``
+    rather than around it, so any key later added to ``_DEBUG_METADATA_KEYS`` is
+    stripped from this path too.
+
+    ``reported.config_etag`` is an opaque server-issued token a client cannot
+    fabricate without having fetched it, which is what makes a divergence from
+    the server's own stamp a usable tamper signal. ``reported.model_id`` earns
+    its own key beside it because an etag answers "did the agent hold the
+    current config" and cannot answer "which model produced this denial".
+    """
+    context = getattr(request.step, "context", None)
+    if not isinstance(context, Mapping):
+        return {}
+
+    reported: dict[str, object] = {}
+    for key, value in context.items():
+        if not isinstance(key, str):
+            continue
+        if key.startswith(_SERVER_AUTHORED_PREFIX):
+            _logger.debug(
+                "Dropping client-supplied metadata key %r: the %r prefix is "
+                "reserved for server-authored values.",
+                key,
+                _SERVER_AUTHORED_PREFIX,
+            )
+            continue
+        if key.startswith(_REPORTED_PREFIX):
+            reported[key] = value
+    return reported
 
 
 def observability_metadata(
@@ -105,10 +162,15 @@ def _build_events_for_matches(
 
     applies_to = map_applies_to(request.step.type)
     events: list[ControlExecutionEvent] = []
+    reported_config = _reported_config_metadata(request)
 
     for match in matches:
         control_def = control_lookup.get(match.control_id)
-        event_metadata = _safe_event_metadata(dict(match.result.metadata or {}))
+        raw_metadata = dict(match.result.metadata or {})
+        # Merged before the safety filter, not after, so the reported keys are
+        # subject to every rule that applies to evaluator metadata.
+        raw_metadata.update(reported_config)
+        event_metadata = _safe_event_metadata(raw_metadata)
         selector_path = None
         evaluator_name = None
 
