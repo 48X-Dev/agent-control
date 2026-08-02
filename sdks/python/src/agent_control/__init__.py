@@ -46,6 +46,7 @@ except PackageNotFoundError:
     __version__ = "0.0.0.dev"
 
 import asyncio
+import datetime as dt
 import os
 import threading
 from collections.abc import Callable, Coroutine
@@ -79,6 +80,7 @@ from agent_control_telemetry.trace_context import (
     set_trace_context_provider,
 )
 
+from . import agent_config as agent_config_module
 from . import agents, control_bindings, controls, evaluation, evaluators, policies
 from ._control_registry import (
     StepSchemaDict,
@@ -88,6 +90,7 @@ from ._control_registry import (
 from ._control_registry import (
     clear as clear_step_registry,
 )
+from .agent_config import AgentConfigSnapshot
 from .client import AgentControlClient
 from .control_decorators import ControlSteerError, ControlViolationError, control
 from .evaluation import check_evaluation_with_local, evaluate_controls
@@ -274,6 +277,72 @@ async def _fetch_controls_for_context_async(context: _RefreshContext) -> list[di
         return controls
 
 
+async def _fetch_agent_config_for_context_async(
+    context: _RefreshContext,
+) -> AgentConfigSnapshot:
+    """Fetch and normalize this agent's server-managed configuration."""
+    async with AgentControlClient(
+        base_url=context.server_url,
+        api_key=context.api_key,
+        api_key_header=context.api_key_header,
+    ) as client:
+        payload = await agent_config_module.get_agent_config(client, context.agent_name)
+    return AgentConfigSnapshot.from_response(
+        payload, fetched_at=dt.datetime.now(dt.UTC)
+    )
+
+
+async def _fetch_agent_config_async() -> AgentConfigSnapshot:
+    """Fetch the agent's configuration without publishing it."""
+    return await _fetch_agent_config_for_context_async(_snapshot_refresh_context())
+
+
+def _publish_agent_config(snapshot: AgentConfigSnapshot) -> None:
+    """Swap in a new configuration snapshot and notify any change callbacks.
+
+    A callback that raises is caught and logged rather than allowed to take the
+    refresh thread down, matching how ``on_violation_callback`` is handled.
+    """
+    with _session_lock:
+        previous = state.agent_config
+        state.agent_config = snapshot
+        callbacks = list(state.on_config_change_callbacks)
+
+    if not snapshot.differs_from(previous):
+        return
+    for callback in callbacks:
+        try:
+            callback(snapshot)
+        except Exception as exc:
+            logger.error(
+                "agent_control.on_config_change callback failed: %s", exc, exc_info=True
+            )
+
+
+def _refresh_agent_config_once() -> None:
+    """One config fetch, in its own error boundary. Never raises.
+
+    This runs *after* controls have been published, and it deliberately does not
+    share the controls fetch's ``except: continue``. Sharing it would mean a
+    500, a timeout or a 403 on this endpoint silently stops newly authored
+    controls reaching running agents for as long as the failure lasts, with only
+    a log line - a denial channel into the safety-critical path.
+
+    On failure the previous values are kept and ``fetched_at`` is not advanced,
+    which is exactly what the model staleness ceiling reads.
+    """
+    try:
+        snapshot = _run_coro_in_new_loop(_fetch_agent_config_async())
+    except Exception as exc:
+        logger.warning(
+            "Agent configuration refresh failed; keeping the last known system "
+            "prompt and model. %s",
+            exc,
+        )
+        return
+    _publish_agent_config(snapshot)
+
+
 async def _fetch_controls_async() -> list[dict[str, Any]]:
     """Fetch controls from the server without publishing.
 
@@ -310,6 +379,11 @@ def _policy_refresh_worker(stop_event: threading.Event, interval_seconds: int) -
             break
         _publish_server_controls(controls)
         logger.info("Refreshed %d control(s) from server", len(controls))
+        # Strictly after control publication, and in its own boundary. See
+        # ``_refresh_agent_config_once``.
+        if stop_event.is_set():
+            break
+        _refresh_agent_config_once()
 
 
 def _stop_policy_refresh_loop() -> None:
@@ -456,6 +530,7 @@ def init(
     observability_sink_config: JSONObject | None = None,
     log_config: dict[str, Any] | None = None,
     policy_refresh_interval_seconds: int = 60,
+    model_max_staleness_seconds: float | None = None,
     target_type: str | None = None,
     target_id: str | None = None,
     **kwargs: object
@@ -500,6 +575,16 @@ def init(
         log_config: Optional logging configuration dict:
                {"enabled": True, "span_start": True, "span_end": True, "control_eval": True}
         policy_refresh_interval_seconds: Interval for background policy refresh loop.
+        model_max_staleness_seconds: How long a server-managed *model* may survive
+            without a successful config refresh before the SDK drops it and
+            restores the code-declared one. Defaults to five refresh intervals,
+            and to no ceiling at all when the background refresh is disabled,
+            since there is then no refresh for staleness to be measured against.
+            The managed system prompt is deliberately not subject to this:
+            stale text is a behaviour issue whose fallback is a working agent,
+            whereas a retained managed model is unbounded spend that the control
+            plane cannot revoke, because the process that would pick up a clear
+            is the one that cannot reach the server.
             Defaults to 60 seconds. Set to 0 to disable background refresh.
         target_type: Optional opaque target kind. Required iff target_id is
             also supplied. The server merges target-bound controls into the
@@ -721,12 +806,101 @@ def init(
     if batcher:
         logger.info("Observability enabled")
 
+    # One fetch before returning, so a process is correct from its first model
+    # call rather than from its first refresh tick. Failure here is not fatal:
+    # both fields resolve to the agent's own code declaration and the next tick
+    # tries again. A control-plane outage must not become an agent outage.
+    # The ceiling is measured against the refresh loop, so with the loop
+    # switched off there is nothing for "stale" to mean. Deriving one anyway
+    # from an interval of 0 would give a five-second ceiling on a process that
+    # fetches exactly once, so the managed model would apply for five seconds
+    # and then silently revert to the code-declared one for the life of the
+    # process - the feature looking broken rather than the spend being bounded.
+    # An explicit value is always honoured, including on that path.
+    if model_max_staleness_seconds is not None:
+        state.model_max_staleness_seconds = model_max_staleness_seconds
+    elif policy_refresh_interval_seconds > 0:
+        state.model_max_staleness_seconds = policy_refresh_interval_seconds * 5
+    else:
+        state.model_max_staleness_seconds = None
+    _refresh_agent_config_once()
+
     if policy_refresh_interval_seconds > 0:
         _start_policy_refresh_loop(policy_refresh_interval_seconds)
     else:
         logger.debug("Policy refresh loop disabled (policy_refresh_interval_seconds=0)")
 
     return state.current_agent
+
+
+# ============================================================================
+# Server-managed agent configuration
+# ============================================================================
+
+
+def get_agent_config() -> AgentConfigSnapshot | None:
+    """The last successfully fetched configuration, or ``None``.
+
+    ``None`` means no fetch has succeeded yet, not that nothing is configured.
+    """
+    return state.agent_config
+
+
+def get_system_prompt() -> str | None:
+    """The server-managed system prompt to use, or ``None``.
+
+    The **raw body, unwrapped**. Wrapping exists to make re-application
+    idempotent in a field the ADK plugin shares with control guidance, which is
+    a plugin problem. A caller setting their own client's system prompt does not
+    have it.
+
+    ``None`` covers every reason not to use one - unmanaged, cleared, disabled,
+    delivery gated off on a credential-less server - because the server collapsed
+    them all into one resolved field before answering.
+    """
+    snapshot = state.agent_config
+    return snapshot.managed_prompt if snapshot is not None else None
+
+
+def get_model_id() -> str | None:
+    """The server-managed model id to use, or ``None``.
+
+    Never a URL and never slash-prefixed. A caller driving their own client owns
+    their endpoint and their SDK; this hands over the id and nothing else.
+    """
+    snapshot = state.agent_config
+    managed = snapshot.managed_model if snapshot is not None else None
+    return managed[0] if managed is not None else None
+
+
+def get_model_provider() -> str | None:
+    """Which client family the managed model belongs to, or ``None``.
+
+    ``"gemini"`` or ``"openai_compatible"`` today. Comes from the server's
+    allowlist entry rather than from the id string, and the SDK never infers it:
+    that inference is how a name chosen in a dropdown becomes a destination
+    nobody chose.
+    """
+    snapshot = state.agent_config
+    managed = snapshot.managed_model if snapshot is not None else None
+    return managed[1] if managed is not None else None
+
+
+def on_config_change(
+    callback: Callable[[AgentConfigSnapshot], None],
+) -> Callable[[AgentConfigSnapshot], None]:
+    """Register a callback fired when either managed field changes.
+
+    Fires on a change to the *resolved* values, so the delivery gate opening or
+    a model leaving the allowlist counts, which is what a caller reacting to
+    configuration wants to hear about. An exception inside the callback is
+    caught and logged rather than allowed to kill the refresh thread.
+
+    Returns the callback, so it can be used as a decorator.
+    """
+    with _session_lock:
+        state.on_config_change_callbacks.append(callback)
+    return callback
 
 
 # ============================================================================
@@ -749,6 +923,9 @@ def _reset_state() -> None:
         state.runtime_token_cache.clear()
         state.target_type = None
         state.target_id = None
+        state.agent_config = None
+        state.model_max_staleness_seconds = None
+        state.on_config_change_callbacks.clear()
 
 
 async def ashutdown() -> None:
