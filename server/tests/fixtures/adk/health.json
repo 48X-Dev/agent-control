@@ -1,0 +1,15 @@
+{
+  "name": "health",
+  "request": {
+    "method": "GET",
+    "path": "/health",
+    "body": null
+  },
+  "response": {
+    "status": 200,
+    "content_type": "application/json",
+    "body": {
+      "status": "ok"
+    }
+  }
+}

@@ -40,6 +40,7 @@ from .store import (
     EventStore,
     PostgresEventStore,
     StatsResult,
+    TraceEventsResult,
 )
 
 __all__ = [
@@ -57,6 +58,7 @@ __all__ = [
     "EventQuery",
     "EventQueryResult",
     "StatsResult",
+    "TraceEventsResult",
     # Built-in implementations
     "PostgresEventStore",
 ]

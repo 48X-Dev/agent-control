@@ -49,10 +49,65 @@ DEFAULT_OPERATION_ACCESS: dict[Operation, AccessLevel] = {
     Operation.AGENTS_CREATE: AccessLevel.AUTHENTICATED,
     Operation.AGENTS_UPDATE: AccessLevel.ADMIN,
     Operation.EVALUATORS_READ: AccessLevel.AUTHENTICATED,
+    Operation.TEAMS_READ: AccessLevel.AUTHENTICATED,
+    Operation.TEAMS_WRITE: AccessLevel.ADMIN,
     Operation.OBSERVABILITY_READ: AccessLevel.AUTHENTICATED,
     Operation.OBSERVABILITY_WRITE: AccessLevel.AUTHENTICATED,
     Operation.RUNTIME_TOKEN_EXCHANGE: AccessLevel.AUTHENTICATED,
     Operation.RUNTIME_USE: AccessLevel.AUTHENTICATED,
+    # Opening a chat and reading it back is per-caller working state, not org
+    # configuration. ADMIN here would mean only admin keys can hold a
+    # conversation, which removes the feature; the precedent is AGENTS_CREATE.
+    Operation.AGENT_SESSIONS_READ: AccessLevel.AUTHENTICATED,
+    Operation.AGENT_SESSION_CONTENT_READ: AccessLevel.AUTHENTICATED,
+    Operation.AGENT_SESSIONS_WRITE: AccessLevel.AUTHENTICATED,
+    Operation.AGENT_SESSIONS_RUN: AccessLevel.AUTHENTICATED,
+    Operation.AGENT_NUDGES_WRITE: AccessLevel.AUTHENTICATED,
+    # Same tier as AGENT_SESSIONS_RUN, and for a reason that only reads one
+    # way round: a credential that can start a turn which spends money must be
+    # able to stop it. The service scopes halt creation to the caller who
+    # opened the session, which is what keeps an AUTHENTICATED stop from being
+    # a way to end everybody else's turns for free.
+    Operation.AGENT_HALTS_WRITE: AccessLevel.AUTHENTICATED,
+    # Deployment configuration, same tier as CONTROL_BINDINGS_WRITE.
+    Operation.AGENT_RUNTIMES_WRITE: AccessLevel.ADMIN,
+    # Readable by any key in the namespace, including agent process keys,
+    # because delivery is the agent fetching its own config on the refresh loop.
+    # ADMIN here would put an admin key in every agent process, which is a worse
+    # posture than the exposure it prevents. The exposure it accepts, stated
+    # rather than glossed: every key in a namespace can read every other agent's
+    # prompt and its full version history, and because clearing preserves
+    # history, that outlives the decision to remove a prompt.
+    Operation.AGENT_CONFIGS_READ: AccessLevel.AUTHENTICATED,
+    # ADMIN on two independent grounds. The prompt body lands in
+    # system_instruction, which no control can see, so a lower-privileged write
+    # would override ADMIN-authored control policy in a field no guardrail
+    # evaluates. And the model choice spends the operator's quota on every turn
+    # of every session and changes how reliably the agent follows that policy.
+    # Same tier as CONTROLS_CREATE and AGENT_RUNTIMES_WRITE.
+    #
+    # This tier only binds when credential enforcement is on. With
+    # api_key_enabled false the default authorizer is NoAuthProvider and every
+    # operation succeeds unauthenticated, which is why delivery has its own
+    # startup gate; see check_agent_config_startup_requirements.
+    Operation.AGENT_CONFIGS_WRITE: AccessLevel.ADMIN,
+    # ``agent_nudges.consume`` guards halt delivery as well as nudge delivery,
+    # and there is deliberately no separate halt operation. Halts ride the same
+    # claim call as nudges at the model boundary, so a deployment that
+    # restricted a separate operation would still have halts delivered under
+    # this one, and revoking this one would silently disable half of halt
+    # delivery - which reads to an operator as "stop sometimes doesn't work".
+    #
+    # Machine-side operations are normally routed to the runtime-JWT provider,
+    # which binds them to a single session. These entries are the fallback for
+    # a deployment with no runtime token secret configured, and they are ADMIN
+    # rather than AUTHENTICATED on purpose: under the local-credential path any
+    # authenticated key would otherwise be able to claim and swallow another
+    # caller's nudges, which is the exact hole the token binding exists to
+    # close. Failing closed is the right default for a path with no session
+    # binding available.
+    Operation.AGENT_NUDGES_CONSUME: AccessLevel.ADMIN,
+    Operation.AGENT_PLANS_WRITE: AccessLevel.ADMIN,
 }
 
 

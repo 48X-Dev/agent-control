@@ -12,7 +12,10 @@ The framework supports two flows:
   :class:`HeaderAuthProvider` (local API keys), or
   :class:`HttpUpstreamAuthProvider` (forwards to a configurable URL).
 - **Runtime flow.** ``AGENT_CONTROL_RUNTIME_AUTH_MODE`` selects the
-  override for :data:`Operation.RUNTIME_USE`: ``none`` uses
+  override for every operation in
+  :data:`RUNTIME_TOKEN_BOUND_OPERATIONS` - target-bearing runtime
+  resolution plus the machine-side session writes an executor
+  performs: ``none`` uses
   :class:`NoAuthProvider`, ``api_key`` uses
   :class:`HeaderAuthProvider`, and ``jwt`` uses
   :class:`LocalJwtVerifyProvider`. When the mode is unset, startup
@@ -74,6 +77,19 @@ _RUNTIME_TOKEN_SECRET_MIN_BYTES = 32
 _MAX_RUNTIME_TOKEN_TTL_SECONDS = 86_400
 
 
+RUNTIME_TOKEN_BOUND_OPERATIONS: tuple[Operation, ...] = (
+    Operation.RUNTIME_USE,
+    # Machine-side session writes. The executor holds a token bound to one
+    # session, so a token minted for session A physically cannot claim session
+    # B's nudges or rewrite its plan. Routing these through the same override
+    # as ``runtime.use`` is what makes that binding the authorization decision
+    # rather than a check the endpoint has to remember to make.
+    Operation.AGENT_NUDGES_CONSUME,
+    Operation.AGENT_PLANS_WRITE,
+)
+"""Operations the runtime-auth mode owns, instead of the default authorizer."""
+
+
 @dataclass(frozen=True)
 class RuntimeAuthConfig:
     """Validated runtime-auth configuration.
@@ -132,25 +148,27 @@ def configure_auth_from_env() -> None:
     set_authorizer(default)
     _active_providers.append(default)
 
+    operation_names = ", ".join(op.value for op in RUNTIME_TOKEN_BOUND_OPERATIONS)
     if runtime_mode == "default":
         _logger.info(
             "Runtime auth provider: default authorizer handles %s",
-            Operation.RUNTIME_USE.value,
+            operation_names,
         )
     else:
         runtime_provider = _build_runtime_provider(runtime_mode, _runtime_auth_config)
-        set_authorizer(runtime_provider, operation=Operation.RUNTIME_USE)
+        for operation in RUNTIME_TOKEN_BOUND_OPERATIONS:
+            set_authorizer(runtime_provider, operation=operation)
         _active_providers.append(runtime_provider)
         if runtime_mode == "jwt":
             _logger.info(
                 "Runtime auth provider: jwt override installed for %s",
-                Operation.RUNTIME_USE.value,
+                operation_names,
             )
         else:
             _logger.info(
                 "Runtime auth provider: %s override installed for %s",
                 runtime_mode,
-                Operation.RUNTIME_USE.value,
+                operation_names,
             )
 
 

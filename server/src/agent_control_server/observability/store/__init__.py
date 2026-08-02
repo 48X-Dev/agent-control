@@ -4,7 +4,14 @@ This module provides the EventStore ABC and implementations
 for storing and querying control execution events.
 """
 
-from .base import EventQuery, EventQueryResult, EventStore, StatsResult, get_bucket_size
+from .base import (
+    EventQuery,
+    EventQueryResult,
+    EventStore,
+    StatsResult,
+    TraceEventsResult,
+    get_bucket_size,
+)
 from .postgres import PostgresEventStore
 
 __all__ = [
@@ -12,6 +19,7 @@ __all__ = [
     "EventQuery",
     "EventQueryResult",
     "StatsResult",
+    "TraceEventsResult",
     "PostgresEventStore",
     "get_bucket_size",
 ]

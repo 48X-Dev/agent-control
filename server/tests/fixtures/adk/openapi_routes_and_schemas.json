@@ -1,0 +1,937 @@
+{
+  "adk_version": "2.6.1",
+  "paths": {
+    "/health": {
+      "get": {
+        "summary": "Health",
+        "operationId": "health_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object",
+                  "title": "Response Health Health Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/version": {
+      "get": {
+        "summary": "Version",
+        "operationId": "version_version_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object",
+                  "title": "Response Version Version Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/agent-identity/finalize": {
+      "post": {
+        "summary": "Finalize Agent Identity Credentials",
+        "operationId": "finalize_agent_identity_credentials_agent_identity_finalize_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FinalizeAgentIdentityCredentialsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object",
+                  "title": "Response Finalize Agent Identity Credentials Agent Identity Finalize Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/list-apps": {
+      "get": {
+        "summary": "List Apps",
+        "operationId": "list_apps_list_apps_get",
+        "parameters": [
+          {
+            "name": "detailed",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Return detailed app information",
+              "default": false,
+              "title": "Detailed"
+            },
+            "description": "Return detailed app information"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    {
+                      "$ref": "#/components/schemas/ListAppsResponse"
+                    }
+                  ],
+                  "title": "Response List Apps List Apps Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/apps/{app_name}/app-info": {
+      "get": {
+        "summary": "Get Adk App Info",
+        "description": "Returns the detailed info for a given ADK app.",
+        "operationId": "get_adk_app_info_apps__app_name__app_info_get",
+        "parameters": [
+          {
+            "name": "app_name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "App Name"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppInfo"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/apps/{app_name}/users/{user_id}/sessions/{session_id}": {
+      "get": {
+        "summary": "Get Session",
+        "operationId": "get_session_apps__app_name__users__user_id__sessions__session_id__get",
+        "parameters": [
+          {
+            "name": "app_name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "App Name"
+            }
+          },
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "User Id"
+            }
+          },
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Session"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Create Session With Id",
+        "operationId": "create_session_with_id_apps__app_name__users__user_id__sessions__session_id__post",
+        "parameters": [
+          {
+            "name": "app_name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "App Name"
+            }
+          },
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "User Id"
+            }
+          },
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "additionalProperties": true
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "State"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Session"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Delete Session",
+        "operationId": "delete_session_apps__app_name__users__user_id__sessions__session_id__delete",
+        "parameters": [
+          {
+            "name": "app_name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "App Name"
+            }
+          },
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "User Id"
+            }
+          },
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "summary": "Update Session",
+        "description": "Updates session state without running the agent.\n\nArgs:\n    app_name: The name of the application.\n    user_id: The ID of the user.\n    session_id: The ID of the session to update.\n    req: The patch request containing state changes.\n\nReturns:\n    The updated session.\n\nRaises:\n    HTTPException: If the session is not found.",
+        "operationId": "update_session_apps__app_name__users__user_id__sessions__session_id__patch",
+        "parameters": [
+          {
+            "name": "app_name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "App Name"
+            }
+          },
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "User Id"
+            }
+          },
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateSessionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Session"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/apps/{app_name}/users/{user_id}/sessions": {
+      "get": {
+        "summary": "List Sessions",
+        "operationId": "list_sessions_apps__app_name__users__user_id__sessions_get",
+        "parameters": [
+          {
+            "name": "app_name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "App Name"
+            }
+          },
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "User Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Session"
+                  },
+                  "title": "Response List Sessions Apps  App Name  Users  User Id  Sessions Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Create Session",
+        "operationId": "create_session_apps__app_name__users__user_id__sessions_post",
+        "parameters": [
+          {
+            "name": "app_name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "App Name"
+            }
+          },
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "User Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/CreateSessionRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Req"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Session"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/apps/{app_name}/users/{user_id}/memory": {
+      "patch": {
+        "summary": "Patch Memory",
+        "description": "Adds all events from a given session to the memory service.\n\nArgs:\n    app_name: The name of the application.\n    user_id: The ID of the user.\n    update_memory_request: The memory request for the update\n\nRaises:\n    HTTPException: If the memory service is not configured or the request\n    is invalid.",
+        "operationId": "patch_memory_apps__app_name__users__user_id__memory_patch",
+        "parameters": [
+          {
+            "name": "app_name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "App Name"
+            }
+          },
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "User Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateMemoryRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/run": {
+      "post": {
+        "summary": "Run Agent",
+        "operationId": "run_agent_run_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RunAgentRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/Event-Output"
+                  },
+                  "type": "array",
+                  "title": "Response Run Agent Run Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/run_sse": {
+      "post": {
+        "summary": "Run Agent Sse",
+        "operationId": "run_agent_sse_run_sse_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RunAgentRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "schemas": {
+    "CreateSessionRequest": {
+      "properties": {
+        "sessionId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Sessionid",
+          "description": "The ID of the session to create. If not provided, a random session ID will be generated."
+        },
+        "state": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "State",
+          "description": "The initial state of the session."
+        },
+        "events": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/components/schemas/Event-Input"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Events",
+          "description": "A list of events to initialize the session with."
+        }
+      },
+      "type": "object",
+      "title": "CreateSessionRequest"
+    },
+    "RunAgentRequest": {
+      "properties": {
+        "appName": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Appname"
+        },
+        "userId": {
+          "type": "string",
+          "title": "Userid"
+        },
+        "sessionId": {
+          "type": "string",
+          "title": "Sessionid"
+        },
+        "newMessage": {
+          "anyOf": [
+            {
+              "$ref": "#/components/schemas/Content"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "streaming": {
+          "type": "boolean",
+          "title": "Streaming",
+          "default": false
+        },
+        "stateDelta": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Statedelta"
+        },
+        "functionCallEventId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Functioncalleventid"
+        },
+        "invocationId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Invocationid"
+        },
+        "customMetadata": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Custommetadata"
+        }
+      },
+      "type": "object",
+      "required": [
+        "userId",
+        "sessionId"
+      ],
+      "title": "RunAgentRequest"
+    },
+    "Session": {
+      "properties": {
+        "id": {
+          "type": "string",
+          "title": "Id",
+          "description": "Unique identifier of the session.",
+          "examples": [
+            "session-abc123"
+          ]
+        },
+        "appName": {
+          "type": "string",
+          "title": "Appname",
+          "description": "Application name that owns the session.",
+          "examples": [
+            "hello_world"
+          ]
+        },
+        "userId": {
+          "type": "string",
+          "title": "Userid",
+          "description": "User ID that owns the session.",
+          "examples": [
+            "user-123"
+          ]
+        },
+        "state": {
+          "additionalProperties": true,
+          "type": "object",
+          "title": "State",
+          "description": "Current persisted session state.",
+          "examples": [
+            {
+              "locale": "en-US"
+            }
+          ]
+        },
+        "events": {
+          "items": {
+            "$ref": "#/components/schemas/Event-Output"
+          },
+          "type": "array",
+          "title": "Events",
+          "description": "Ordered event history for the session, including user, model, and tool events (e.g. user input, model response, function call/response)."
+        },
+        "lastUpdateTime": {
+          "type": "number",
+          "title": "Lastupdatetime",
+          "description": "Unix timestamp in seconds for the most recent session update.",
+          "default": 0.0,
+          "examples": [
+            1742000000.0
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "id",
+        "appName",
+        "userId"
+      ],
+      "title": "Session",
+      "description": "Represents a series of interactions between a user and agents."
+    },
+    "UpdateSessionRequest": {
+      "properties": {
+        "stateDelta": {
+          "additionalProperties": true,
+          "type": "object",
+          "title": "Statedelta"
+        }
+      },
+      "type": "object",
+      "required": [
+        "stateDelta"
+      ],
+      "title": "UpdateSessionRequest",
+      "description": "Request to update session state without running the agent."
+    }
+  },
+  "event_output_property_names": [
+    "actions",
+    "author",
+    "avgLogprobs",
+    "branch",
+    "cacheMetadata",
+    "citationMetadata",
+    "content",
+    "customMetadata",
+    "environmentId",
+    "errorCode",
+    "errorMessage",
+    "finishReason",
+    "goAway",
+    "groundingMetadata",
+    "id",
+    "inputTranscription",
+    "interactionId",
+    "interrupted",
+    "invocationId",
+    "isolationScope",
+    "liveSessionId",
+    "liveSessionResumptionUpdate",
+    "logprobsResult",
+    "longRunningToolIds",
+    "modelVersion",
+    "nodeInfo",
+    "output",
+    "outputTranscription",
+    "partial",
+    "timestamp",
+    "turnComplete",
+    "turnCompleteReason",
+    "usageMetadata",
+    "voiceActivity"
+  ]
+}

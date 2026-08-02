@@ -1,0 +1,40 @@
+{
+  "name": "run_missing_required_fields",
+  "request": {
+    "method": "POST",
+    "path": "/run",
+    "body": {
+      "appName": "spike_app"
+    }
+  },
+  "response": {
+    "status": 422,
+    "content_type": "application/json",
+    "body": {
+      "detail": [
+        {
+          "type": "missing",
+          "loc": [
+            "body",
+            "userId"
+          ],
+          "msg": "Field required",
+          "input": {
+            "appName": "spike_app"
+          }
+        },
+        {
+          "type": "missing",
+          "loc": [
+            "body",
+            "sessionId"
+          ],
+          "msg": "Field required",
+          "input": {
+            "appName": "spike_app"
+          }
+        }
+      ]
+    }
+  }
+}

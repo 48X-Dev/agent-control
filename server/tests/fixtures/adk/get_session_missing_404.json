@@ -1,0 +1,15 @@
+{
+  "name": "get_session_missing",
+  "request": {
+    "method": "GET",
+    "path": "/apps/spike_app/users/ns-demo:u-spike/sessions/does-not-exist",
+    "body": null
+  },
+  "response": {
+    "status": 404,
+    "content_type": "application/json",
+    "body": {
+      "detail": "Session not found"
+    }
+  }
+}

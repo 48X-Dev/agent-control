@@ -1,0 +1,95 @@
+{
+  "mode": "block_model",
+  "run_status": 200,
+  "run_event_count": 1,
+  "run_events": [
+    {
+      "content": {
+        "parts": [
+          {
+            "text": "BLOCKED_BY_HALT"
+          }
+        ],
+        "role": "model"
+      },
+      "invocationId": "e-5f4d1585-03f5-4583-a9ec-d75c57034605",
+      "author": "root_agent",
+      "actions": {
+        "stateDelta": {},
+        "artifactDelta": {},
+        "requestedAuthConfigs": {},
+        "requestedToolConfirmations": {}
+      },
+      "nodeInfo": {
+        "path": "root_agent@1"
+      },
+      "id": "f986ace2-9505-4506-90a3-216b81efa9a3",
+      "timestamp": 1785687942.818652
+    }
+  ],
+  "callbacks": [
+    "before_model"
+  ],
+  "tool_body_executed": false,
+  "side_effect_exists": false,
+  "side_effect": null,
+  "session_after": {
+    "id": "h1-api",
+    "appName": "spike_app",
+    "userId": "ns-demo:u-spike",
+    "state": {
+      "agent_control.trace_id": "trace-0001",
+      "agent_control.session_key": "sess-abc-123",
+      "agent_control.runtime_token": "tok-xyz-789"
+    },
+    "events": [
+      {
+        "content": {
+          "parts": [
+            {
+              "text": "Report the phrase HELLO_H1_API."
+            }
+          ],
+          "role": "user"
+        },
+        "invocationId": "e-5f4d1585-03f5-4583-a9ec-d75c57034605",
+        "author": "user",
+        "actions": {
+          "stateDelta": {},
+          "artifactDelta": {},
+          "requestedAuthConfigs": {},
+          "requestedToolConfirmations": {}
+        },
+        "nodeInfo": {
+          "path": ""
+        },
+        "id": "c1511f88-0ee5-4e01-8df9-b2fc97a314c7",
+        "timestamp": 1785687941.958521
+      },
+      {
+        "content": {
+          "parts": [
+            {
+              "text": "BLOCKED_BY_HALT"
+            }
+          ],
+          "role": "model"
+        },
+        "invocationId": "e-5f4d1585-03f5-4583-a9ec-d75c57034605",
+        "author": "root_agent",
+        "actions": {
+          "stateDelta": {},
+          "artifactDelta": {},
+          "requestedAuthConfigs": {},
+          "requestedToolConfirmations": {}
+        },
+        "nodeInfo": {
+          "path": "root_agent@1"
+        },
+        "id": "f986ace2-9505-4506-90a3-216b81efa9a3",
+        "timestamp": 1785687942.818652
+      }
+    ],
+    "lastUpdateTime": 1785687942.818652
+  }
+}

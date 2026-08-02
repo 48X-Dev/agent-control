@@ -1,0 +1,24 @@
+{
+  "name": "get_session_empty",
+  "request": {
+    "method": "GET",
+    "path": "/apps/spike_app/users/ns-demo:u-spike/sessions/spike-session-1",
+    "body": null
+  },
+  "response": {
+    "status": 200,
+    "content_type": "application/json",
+    "body": {
+      "id": "spike-session-1",
+      "appName": "spike_app",
+      "userId": "ns-demo:u-spike",
+      "state": {
+        "agent_control.trace_id": "trace-0001",
+        "agent_control.session_key": "sess-abc-123",
+        "agent_control.runtime_token": "tok-xyz-789"
+      },
+      "events": [],
+      "lastUpdateTime": 1785687833.750768
+    }
+  }
+}

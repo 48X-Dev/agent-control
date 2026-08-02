@@ -24,7 +24,7 @@ from agent_control_models.observability import (
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from .base import EventStore, StatsResult
+from .base import EventStore, StatsResult, TraceEventsResult
 
 logger = logging.getLogger(__name__)
 
@@ -511,3 +511,54 @@ class PostgresEventStore(EventStore):
             limit=query.limit,
             offset=query.offset,
         )
+
+    async def query_trace(
+        self,
+        trace_id: str,
+        *,
+        namespace_key: str,
+        limit: int,
+    ) -> TraceEventsResult:
+        """Read one trace's events, oldest first, capped at ``limit``.
+
+        Ordering and counting both happen in the database: the window function
+        counts the whole trace before LIMIT applies, so the caller learns how
+        many hops were left out without a second round trip.
+
+        Args:
+            trace_id: Trace to read
+            namespace_key: Namespace whose events should be queried
+            limit: Maximum events to return
+
+        Returns:
+            TraceEventsResult with the ordered page and the trace's total size
+        """
+        async with self.session_maker() as session:
+            result = await session.execute(
+                text("""
+                    SELECT data, COUNT(*) OVER () AS total
+                    FROM control_execution_events
+                    WHERE namespace_key = :namespace_key
+                      AND data->>'trace_id' = :trace_id
+                    ORDER BY timestamp ASC, data->>'span_id' ASC
+                    LIMIT :limit
+                """),
+                {
+                    "namespace_key": namespace_key,
+                    "trace_id": trace_id,
+                    "limit": limit,
+                },
+            )
+            rows = result.fetchall()
+
+        if not rows:
+            return TraceEventsResult(events=[], total=0)
+
+        events = []
+        for row in rows:
+            event_data = row.data
+            if isinstance(event_data, str):
+                event_data = json.loads(event_data)
+            events.append(ControlExecutionEvent(**event_data))
+
+        return TraceEventsResult(events=events, total=int(rows[0].total))

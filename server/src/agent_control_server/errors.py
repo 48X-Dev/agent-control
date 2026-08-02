@@ -47,6 +47,13 @@ from agent_control_models.errors import (
 from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
 
+from .services.executor_client import (
+    EXECUTOR_PUBLIC_MESSAGES,
+    ExecutorError,
+    ExecutorRejectedError,
+    ExecutorSessionNotFoundError,
+    ExecutorTurnTimeoutError,
+)
 from .services.validation_paths import format_field_path
 
 _logger = logging.getLogger(__name__)
@@ -63,11 +70,36 @@ _GENERIC_UNAUTHORIZED_DETAIL = "Authentication failed."
 _GENERIC_FORBIDDEN_DETAIL = "Permission denied."
 _GENERIC_NOT_FOUND_DETAIL = "Requested resource was not found."
 _GENERIC_CONFLICT_DETAIL = "Request conflicts with existing state."
+_GENERIC_EXECUTOR_UNAVAILABLE_DETAIL = (
+    "The executor that runs this agent is unavailable."
+)
+_GENERIC_EXECUTOR_REJECTED_DETAIL = (
+    "The executor that runs this agent refused the request."
+)
 _DEFAULT_5XX_DETAIL_BY_CODE: dict[ErrorCode, str] = {
     ErrorCode.INTERNAL_ERROR: _GENERIC_INTERNAL_DETAIL,
     ErrorCode.DATABASE_ERROR: _GENERIC_DATABASE_DETAIL,
     ErrorCode.AUTH_MISCONFIGURED: _GENERIC_AUTH_MISCONFIGURED_DETAIL,
+    ErrorCode.EXECUTOR_UNAVAILABLE: _GENERIC_EXECUTOR_UNAVAILABLE_DETAIL,
+    ErrorCode.EXECUTOR_REJECTED: _GENERIC_EXECUTOR_REJECTED_DETAIL,
 }
+
+_ALLOWED_5XX_DETAILS: frozenset[str] = frozenset(EXECUTOR_PUBLIC_MESSAGES)
+"""Server-authored 5xx detail strings that survive sanitization.
+
+5xx detail is otherwise replaced wholesale with a fixed template, which is the
+right default: it is what stops a database driver's message or a third party's
+response body from reaching a browser. But it also flattens the difference
+between "the executor is unreachable" and "the executor did not answer in time,
+and the turn you started may still be running", which is a distinction a person
+staring at a chat panel genuinely needs.
+
+Membership is decided by exact match against a closed set of literals defined
+in ``services.executor_client``. Nothing is formatted into these strings, so a
+detail can only pass if it is character-for-character a message this codebase
+wrote; an executor's own response body, a driver error, or a formatted
+identifier cannot match one by construction.
+"""
 _DEFAULT_4XX_DETAIL_BY_STATUS: dict[int, str] = {
     400: _GENERIC_BAD_REQUEST_DETAIL,
     401: _GENERIC_UNAUTHORIZED_DETAIL,
@@ -99,11 +131,14 @@ def _public_detail(status_code: int, error_code: ErrorCode | None, detail: str) 
     """
     Return safe client-facing detail text.
 
-    For 5xx statuses, this always returns a fixed safe template.
+    For 5xx statuses, this returns a fixed safe template, unless the detail is
+    one of the closed set of literals in ``_ALLOWED_5XX_DETAILS``.
     For 4xx statuses, this keeps caller-provided text after normalization.
     """
     safe_fallback = _default_public_detail(status_code, error_code)
     if status_code >= 500:
+        if detail in _ALLOWED_5XX_DETAILS:
+            return detail
         return safe_fallback
 
     normalized = _normalize_public_text(detail)
@@ -423,6 +458,83 @@ class DatabaseError(APIError):
             hint=hint,
             **kwargs,
         )
+
+
+class ExecutorUnavailableAPIError(APIError):
+    """The executor that runs an agent could not be reached (503).
+
+    Never a 500. An executor being down is a dependency failing, not this
+    server failing, and the distinction is the difference between "try again"
+    and "file a bug".
+    """
+
+    def __init__(self, detail: str, **kwargs: Any) -> None:
+        super().__init__(
+            status_code=503,
+            error_code=ErrorCode.EXECUTOR_UNAVAILABLE,
+            reason=ErrorReason.SERVICE_UNAVAILABLE,
+            detail=detail,
+            **kwargs,
+        )
+
+
+class ExecutorRejectedAPIError(APIError):
+    """The executor answered and refused (502).
+
+    Separated from unavailable because retrying will not help: the executor is
+    up, and something about the configuration or the request is wrong.
+    """
+
+    def __init__(self, detail: str, **kwargs: Any) -> None:
+        super().__init__(
+            status_code=502,
+            error_code=ErrorCode.EXECUTOR_REJECTED,
+            reason=ErrorReason.INTERNAL_ERROR,
+            detail=detail,
+            **kwargs,
+        )
+
+
+class ExecutorTurnTimeoutAPIError(APIError):
+    """A turn outlived the time this server was willing to wait (504).
+
+    Not 503, and the difference is the whole point. 503 says the executor is not
+    answering. This says the executor is answering perfectly well and simply has
+    not finished, which means **the invocation is still running**: models are
+    still being called, the bill is still growing, and the work will land in the
+    transcript later. A caller told "service unavailable" concludes that nothing
+    happened, and here the opposite is true.
+    """
+
+    def __init__(self, detail: str, **kwargs: Any) -> None:
+        super().__init__(
+            status_code=504,
+            error_code=ErrorCode.EXECUTOR_UNAVAILABLE,
+            reason=ErrorReason.SERVICE_UNAVAILABLE,
+            detail=detail,
+            **kwargs,
+        )
+
+
+def executor_api_error(exc: ExecutorError) -> APIError:
+    """Translate an executor failure into the HTTP error that describes it.
+
+    The message travels unchanged because it was written as a literal in
+    ``services.executor_client``; nothing an executor said is in it. A session
+    the executor has lost has no HTTP mapping here on purpose - it is a state
+    the transcript renders, so a caller that lets it reach this function has
+    skipped handling it, and 502 is the honest answer for a call that expected
+    a session and did not get one.
+
+    Order matters: a turn timeout is a subclass of unavailable and has to be
+    tested first, or every route would quietly report a still-running
+    invocation as a dead executor.
+    """
+    if isinstance(exc, ExecutorTurnTimeoutError):
+        return ExecutorTurnTimeoutAPIError(exc.message)
+    if isinstance(exc, (ExecutorRejectedError, ExecutorSessionNotFoundError)):
+        return ExecutorRejectedAPIError(exc.message)
+    return ExecutorUnavailableAPIError(exc.message)
 
 
 class InternalError(APIError):

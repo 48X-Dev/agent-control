@@ -19,7 +19,6 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import cast
 
-from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Connection
@@ -28,6 +27,7 @@ from sqlalchemy.pool import NullPool
 
 import agent_control_server
 from agent_control_server.config import db_config
+from alembic import command
 
 LOGGER = logging.getLogger(__name__)
 _MIGRATION_LOCK_CLASS_ID = 0x4143544C  # "ACTL"

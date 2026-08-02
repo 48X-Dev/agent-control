@@ -1,0 +1,26 @@
+{
+  "headers": {
+    "date": "Sun, 02 Aug 2026 16:43:41 GMT",
+    "server": "uvicorn",
+    "content-type": "text/event-stream; charset=utf-8",
+    "transfer-encoding": "chunked"
+  },
+  "frames": [
+    {
+      "t": 1.802,
+      "len": 675,
+      "head": "data: {\"modelVersion\":\"gpt-5.4-mini\",\"content\":{\"parts\":[{\"functionCall\":{\"id\":\"call_eXqeP4IaoH7FOKI31TZDEDTb\""
+    },
+    {
+      "t": 9.811,
+      "len": 464,
+      "head": "data: {\"content\":{\"parts\":[{\"functionResponse\":{\"id\":\"call_eXqeP4IaoH7FOKI31TZDEDTb\",\"name\":\"send_report\",\"res"
+    },
+    {
+      "t": 10.815,
+      "len": 538,
+      "head": "data: {\"modelVersion\":\"gpt-5.4-mini\",\"content\":{\"parts\":[{\"text\":\"Done.\"}],\"role\":\"model\"},\"partial\":false,\"fi"
+    }
+  ],
+  "total": 10.82
+}

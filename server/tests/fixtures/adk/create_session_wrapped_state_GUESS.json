@@ -1,0 +1,32 @@
+{
+  "name": "create_session_with_id__wrapped_state_body",
+  "request": {
+    "method": "POST",
+    "path": "/apps/spike_app/users/ns-demo:u-spike/sessions/spike-session-1",
+    "body": {
+      "state": {
+        "agent_control.session_key": "sess-abc-123",
+        "agent_control.runtime_token": "tok-xyz-789",
+        "agent_control.trace_id": "trace-0001"
+      }
+    }
+  },
+  "response": {
+    "status": 200,
+    "content_type": "application/json",
+    "body": {
+      "id": "spike-session-1",
+      "appName": "spike_app",
+      "userId": "ns-demo:u-spike",
+      "state": {
+        "state": {
+          "agent_control.session_key": "sess-abc-123",
+          "agent_control.runtime_token": "tok-xyz-789",
+          "agent_control.trace_id": "trace-0001"
+        }
+      },
+      "events": [],
+      "lastUpdateTime": 1785687833.737636
+    }
+  }
+}

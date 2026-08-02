@@ -29,10 +29,11 @@ from agent_control_models.server import (
     SetPolicyResponse,
     StepKey,
 )
+from agent_control_models.teams import TEAM_SLUG_MAX_LENGTH
 from fastapi import APIRouter, Depends, Query, Request
 from jsonschema_rs import ValidationError as JSONSchemaValidationError
 from pydantic import BaseModel, ValidationError
-from sqlalchemy import delete, func, select
+from sqlalchemy import ColumnElement, delete, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -52,6 +53,8 @@ from ..models import (
     AgentData,
     Control,
     Policy,
+    Team,
+    TeamMember,
     agent_policies,
 )
 from ..services.agent_names import normalize_agent_name_or_422
@@ -194,6 +197,35 @@ async def _authorize_existing_agent_overwrite(
 # =============================================================================
 # List Agents Models
 # =============================================================================
+
+
+def _team_membership_filter(team_slug: str, *, namespace_key: str) -> ColumnElement[bool]:
+    """Restrict agents to the members of one team.
+
+    The slug is resolved inside the same EXISTS that tests membership, so an
+    unknown slug simply matches no rows and the caller gets an empty page
+    instead of a 404.
+
+    Both the membership row and the team it points at are pinned to
+    ``namespace_key``. The composite foreign key already guarantees the two
+    agree, but stating it here means the predicate cannot leak across
+    namespaces on its own terms.
+    """
+    return (
+        select(1)
+        .select_from(TeamMember)
+        .join(
+            Team,
+            (Team.id == TeamMember.team_id) & (Team.namespace_key == TeamMember.namespace_key),
+        )
+        .where(
+            TeamMember.namespace_key == namespace_key,
+            Team.namespace_key == namespace_key,
+            Team.slug == team_slug,
+            TeamMember.agent_name == Agent.name,
+        )
+        .exists()
+    )
 
 
 def _get_builtin_evaluator_names() -> set[str]:
@@ -390,6 +422,17 @@ async def list_agents(
     cursor: str | None = None,
     limit: int = _DEFAULT_PAGINATION_LIMIT,
     name: str | None = None,
+    team: str | None = Query(
+        None,
+        min_length=1,
+        max_length=TEAM_SLUG_MAX_LENGTH,
+        description=(
+            "Optional team slug. Restricts the results to agents that belong "
+            "to that team. Matched literally against the team's slug, not its "
+            "display name. A slug with no team in this namespace yields an "
+            "empty page rather than an error."
+        ),
+    ),
     db: AsyncSession = Depends(get_async_db),
     principal: Principal = Depends(require_operation(Operation.AGENTS_READ)),
 ) -> ListAgentsResponse:
@@ -400,10 +443,14 @@ async def list_agents(
     and counts of registered steps and evaluators. Results are scoped to
     the request's namespace; agents in other namespaces are not visible.
 
+    The ``name`` and ``team`` filters intersect, and ``total`` reflects both,
+    so a page count stays consistent with the rows the same request returns.
+
     Args:
         cursor: Optional cursor for pagination (last agent name from previous page)
         limit: Pagination limit (default 20, max 100)
         name: Optional name filter (case-insensitive partial match)
+        team: Optional team slug filter (exact match, members only)
         db: Database session (injected)
         principal: Authorized request principal
 
@@ -418,12 +465,18 @@ async def list_agents(
     # Build base filter for name search
     name_filter = Agent.name.ilike(f"%{escape_like_pattern(name)}%", escape="\\") if name else None
 
-    # Get total count (with name filter if provided)
+    team_filter = (
+        _team_membership_filter(team, namespace_key=namespace_key) if team is not None else None
+    )
+
+    # Get total count (with the same filters the page query uses)
     count_query = (
         select(func.count()).select_from(Agent).where(Agent.namespace_key == namespace_key)
     )
     if name_filter is not None:
         count_query = count_query.where(name_filter)
+    if team_filter is not None:
+        count_query = count_query.where(team_filter)
     count_result = await db.execute(count_query)
     total = count_result.scalar() or 0
 
@@ -438,6 +491,9 @@ async def list_agents(
     # Apply name filter if provided
     if name_filter is not None:
         query = query.where(name_filter)
+
+    if team_filter is not None:
+        query = query.where(team_filter)
 
     # If cursor provided, filter to get items after the cursor.
     # The cursor lookup is namespace-scoped so a duplicate name in
@@ -726,6 +782,15 @@ async def init_agent(
 
     # --- Update agent metadata ---
     new_metadata = request.agent.model_dump(mode="json")
+
+    # agent_created_at records when the agent was first registered, but SDKs
+    # stamp it fresh on every init() call. Preserve the stored value so that
+    # merely restarting an agent is not seen as a metadata change (which would
+    # otherwise demand an admin credential on every restart).
+    existing_metadata = data_model.agent_metadata or {}
+    if existing_metadata.get("agent_created_at") is not None:
+        new_metadata["agent_created_at"] = existing_metadata["agent_created_at"]
+
     metadata_changed = data_model.agent_metadata != new_metadata
     if metadata_changed:
         data_model.agent_metadata = new_metadata

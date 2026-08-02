@@ -1,0 +1,15 @@
+{
+  "name": "list_apps",
+  "request": {
+    "method": "GET",
+    "path": "/list-apps",
+    "body": null
+  },
+  "response": {
+    "status": 200,
+    "content_type": "application/json",
+    "body": [
+      "spike_app"
+    ]
+  }
+}

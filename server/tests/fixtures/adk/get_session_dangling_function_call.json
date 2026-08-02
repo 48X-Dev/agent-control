@@ -1,0 +1,199 @@
+{
+    "id": "truncated-1",
+    "appName": "spike_app",
+    "userId": "ns-demo:u-spike",
+    "state": {
+        "agent_control.session_key": "sess-trunc"
+    },
+    "events": [
+        {
+            "content": {
+                "parts": [
+                    {
+                        "text": "Report the phrase HELLO_TRUNC."
+                    }
+                ],
+                "role": "user"
+            },
+            "invocationId": "e-bd1cc439-cd31-490a-baec-4d105a89e6af",
+            "author": "user",
+            "actions": {
+                "stateDelta": {},
+                "artifactDelta": {},
+                "requestedAuthConfigs": {},
+                "requestedToolConfirmations": {}
+            },
+            "nodeInfo": {
+                "path": ""
+            },
+            "id": "55228cbe-c27e-419e-a875-0f9e167a4ae0",
+            "timestamp": 1785688131.838088
+        },
+        {
+            "modelVersion": "gpt-5.4-mini",
+            "content": {
+                "parts": [
+                    {
+                        "functionCall": {
+                            "id": "call_ROQ8Ccm8ibyrPME9Dt5t4JC6",
+                            "args": {
+                                "text": "HELLO_TRUNC"
+                            },
+                            "name": "send_report"
+                        }
+                    }
+                ],
+                "role": "model"
+            },
+            "partial": false,
+            "finishReason": "STOP",
+            "usageMetadata": {
+                "cachedContentTokenCount": 0,
+                "candidatesTokenCount": 174,
+                "promptTokenCount": 117,
+                "thoughtsTokenCount": 151,
+                "totalTokenCount": 291
+            },
+            "invocationId": "e-bd1cc439-cd31-490a-baec-4d105a89e6af",
+            "author": "root_agent",
+            "actions": {
+                "stateDelta": {},
+                "artifactDelta": {},
+                "requestedAuthConfigs": {},
+                "requestedToolConfirmations": {}
+            },
+            "nodeInfo": {
+                "path": "root_agent@1"
+            },
+            "longRunningToolIds": [],
+            "id": "f11210a6-1046-453b-bfcc-a4255f70da1f",
+            "timestamp": 1785688131.845222
+        },
+        {
+            "content": {
+                "parts": [
+                    {
+                        "text": "Never mind. Just say READY, do not call any tool."
+                    }
+                ],
+                "role": "user"
+            },
+            "invocationId": "e-7feaab9b-043e-4ee6-8d9f-bfac91bdff67",
+            "author": "user",
+            "actions": {
+                "stateDelta": {},
+                "artifactDelta": {},
+                "requestedAuthConfigs": {},
+                "requestedToolConfirmations": {}
+            },
+            "nodeInfo": {
+                "path": ""
+            },
+            "id": "1ed32977-54cc-4fea-ad14-de02caf4629e",
+            "timestamp": 1785688188.482891
+        },
+        {
+            "modelVersion": "gpt-5.4-mini",
+            "content": {
+                "parts": [
+                    {
+                        "functionCall": {
+                            "id": "call_CAP8OLfY6RbqhleE7aXbokmU",
+                            "args": {
+                                "text": "READY"
+                            },
+                            "name": "send_report"
+                        }
+                    }
+                ],
+                "role": "model"
+            },
+            "partial": false,
+            "finishReason": "STOP",
+            "usageMetadata": {
+                "cachedContentTokenCount": 0,
+                "candidatesTokenCount": 223,
+                "promptTokenCount": 184,
+                "thoughtsTokenCount": 203,
+                "totalTokenCount": 407
+            },
+            "invocationId": "e-7feaab9b-043e-4ee6-8d9f-bfac91bdff67",
+            "author": "root_agent",
+            "actions": {
+                "stateDelta": {},
+                "artifactDelta": {},
+                "requestedAuthConfigs": {},
+                "requestedToolConfirmations": {}
+            },
+            "nodeInfo": {
+                "path": "root_agent@1"
+            },
+            "longRunningToolIds": [],
+            "id": "d65e5fd4-f7a6-430b-b737-cf7657acac5d",
+            "timestamp": 1785688189.401091
+        },
+        {
+            "content": {
+                "parts": [
+                    {
+                        "functionResponse": {
+                            "id": "call_CAP8OLfY6RbqhleE7aXbokmU",
+                            "name": "send_report",
+                            "response": {
+                                "text": "READY",
+                                "status": "sent"
+                            }
+                        }
+                    }
+                ],
+                "role": "user"
+            },
+            "invocationId": "e-7feaab9b-043e-4ee6-8d9f-bfac91bdff67",
+            "author": "root_agent",
+            "actions": {
+                "stateDelta": {},
+                "artifactDelta": {},
+                "requestedAuthConfigs": {},
+                "requestedToolConfirmations": {}
+            },
+            "nodeInfo": {
+                "path": "root_agent@1"
+            },
+            "id": "8487f376-c572-4b4f-bbe5-53997e6a3ce7",
+            "timestamp": 1785688194.879542
+        },
+        {
+            "modelVersion": "gpt-5.4-mini",
+            "content": {
+                "parts": [
+                    {
+                        "text": "READY"
+                    }
+                ],
+                "role": "model"
+            },
+            "partial": false,
+            "finishReason": "STOP",
+            "usageMetadata": {
+                "cachedContentTokenCount": 0,
+                "candidatesTokenCount": 5,
+                "promptTokenCount": 222,
+                "totalTokenCount": 227
+            },
+            "invocationId": "e-7feaab9b-043e-4ee6-8d9f-bfac91bdff67",
+            "author": "root_agent",
+            "actions": {
+                "stateDelta": {},
+                "artifactDelta": {},
+                "requestedAuthConfigs": {},
+                "requestedToolConfirmations": {}
+            },
+            "nodeInfo": {
+                "path": "root_agent@1"
+            },
+            "id": "32804b20-a9ba-4965-a7ca-87d6ee9ce5fd",
+            "timestamp": 1785688194.891437
+        }
+    ],
+    "lastUpdateTime": 1785688194.891437
+}
