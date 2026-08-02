@@ -27,8 +27,10 @@ from typing import Any
 
 import pytest
 from agent_control_models.agent_configs import AgentModelOption
+from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
+from agent_control_server.auth_framework import Operation, Principal, set_authorizer
 from agent_control_server.config import model_settings
 
 _ECONOMY = AgentModelOption(
@@ -649,3 +651,127 @@ def test_an_ordinary_prompt_produces_no_findings(client: TestClient, agent: str)
         client, agent, body="Write clear marketing copy. Be concise.", expected_version=0
     )
     assert written["scan_findings"] == []
+
+
+# ---------------------------------------------------------------------------
+# Namespace scoping over the API
+#
+# The database constraints are covered in ``test_namespace_isolation.py``. What
+# is checked here is that every handler actually passes the principal's
+# namespace down, because a query that forgot to would still pass every
+# single-tenant test in this file.
+# ---------------------------------------------------------------------------
+
+
+class HeaderNamespaceAuthorizer:
+    """Maps ``X-Test-Namespace`` onto the principal's namespace."""
+
+    async def authorize(
+        self,
+        request: Request,
+        operation: Operation,
+        context: dict[str, Any] | None = None,
+    ) -> Principal:
+        del operation, context
+        return Principal(
+            namespace_key=request.headers.get("X-Test-Namespace", "default"),
+            is_admin=True,
+        )
+
+
+@pytest.fixture()
+def namespaced(app: FastAPI) -> tuple[TestClient, TestClient]:
+    set_authorizer(HeaderNamespaceAuthorizer())
+    return (
+        TestClient(app, raise_server_exceptions=True, headers={"X-Test-Namespace": "ns-one"}),
+        TestClient(app, raise_server_exceptions=True, headers={"X-Test-Namespace": "ns-two"}),
+    )
+
+
+def test_one_namespaces_configuration_is_invisible_to_another(
+    namespaced: tuple[TestClient, TestClient]
+) -> None:
+    one, two = namespaced
+    name = _agent_name()
+    _register_agent(one, name)
+    _register_agent(two, name)
+
+    _save(one, name, body="ns-one's prompt.", expected_version=0)
+
+    assert _get(one, name)["body"] == "ns-one's prompt."
+    assert _get(two, name)["body"] is None
+    assert _get(two, name)["current_version"] == 0
+
+
+def test_the_version_history_is_namespace_scoped(
+    namespaced: tuple[TestClient, TestClient]
+) -> None:
+    """Every body ever saved lives in this log, so a leaky read is a real leak."""
+    one, two = namespaced
+    name = _agent_name()
+    _register_agent(one, name)
+    _register_agent(two, name)
+
+    _save(one, name, body="ns-one's first.", expected_version=0)
+    _save(one, name, body="ns-one's second.", expected_version=1)
+    _save(two, name, body="ns-two's only.", expected_version=0)
+
+    assert len(one.get(_url(name, "/versions")).json()["versions"]) == 2
+    assert len(two.get(_url(name, "/versions")).json()["versions"]) == 1
+
+    assert (
+        two.get(_url(name, "/versions/2")).status_code == 404
+    ), "version 2 exists only in ns-one"
+    assert one.get(_url(name, "/versions/2")).json()["version"]["body"] == (
+        "ns-one's second."
+    )
+
+
+def test_a_rollback_cannot_reach_across_namespaces(
+    namespaced: tuple[TestClient, TestClient]
+) -> None:
+    """Restoring a version number that exists only next door must not work.
+
+    A restore is a write derived from a read, so a namespace-blind version
+    lookup would let one tenant install another's prompt on their own agent -
+    and the version row would record it as an ordinary rollback.
+    """
+    one, two = namespaced
+    name = _agent_name()
+    _register_agent(one, name)
+    _register_agent(two, name)
+
+    _save(one, name, body="ns-one's confidential prompt.", expected_version=0)
+    _save(one, name, body="ns-one's second.", expected_version=1)
+    _save(two, name, body="ns-two's own.", expected_version=0)
+
+    resp = two.post(_url(name, "/versions/2:restore"), json={"expected_version": 1})
+    assert resp.status_code == 404, resp.text
+    assert _get(two, name)["body"] == "ns-two's own."
+
+
+def test_configuring_an_agent_registered_only_next_door_is_404(
+    namespaced: tuple[TestClient, TestClient]
+) -> None:
+    one, two = namespaced
+    name = _agent_name()
+    _register_agent(one, name)
+
+    assert two.get(_url(name)).status_code == 404
+    assert _put(two, name, body="Mine now.", expected_version=0).status_code == 404
+
+
+def test_clearing_in_one_namespace_leaves_the_others_prompt_alone(
+    namespaced: tuple[TestClient, TestClient]
+) -> None:
+    one, two = namespaced
+    name = _agent_name()
+    _register_agent(one, name)
+    _register_agent(two, name)
+    _save(one, name, body="ns-one's prompt.", expected_version=0)
+    _save(two, name, body="ns-two's prompt.", expected_version=0)
+
+    two.post(_url(name, ":clear-prompt"), json={"expected_version": 1})
+
+    assert _get(one, name)["body"] == "ns-one's prompt."
+    assert _get(two, name)["body"] is None

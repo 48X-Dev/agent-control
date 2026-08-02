@@ -547,3 +547,185 @@ def test_deleting_one_namespaces_session_leaves_the_others_declared_plan(
         ).scalars().all()
 
     assert list(survivors) == ["ns-two"]
+
+
+# ---------------------------------------------------------------------------
+# Agent configuration: the system prompt and the model
+#
+# This row decides what a live agent says and which vendor it says it to, and
+# its version log keeps every body that was ever saved. Both tables lead with
+# ``namespace_key`` in the primary key and in the foreign key, and the version
+# table carries its own copy rather than relying on a parent lookup, so the
+# isolation filter is local to the query instead of a property of the call site.
+# ---------------------------------------------------------------------------
+
+
+def _insert_agent_config(
+    engine: Engine,
+    *,
+    namespace_key: str,
+    agent_name: str,
+    body: str | None = "body",
+    model_id: str | None = None,
+) -> None:
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO agent_configs "
+                "(namespace_key, agent_name, body, model_id, current_version) "
+                "VALUES (:ns, :name, :body, :model_id, 1)"
+            ),
+            {
+                "ns": namespace_key,
+                "name": agent_name,
+                "body": body,
+                "model_id": model_id,
+            },
+        )
+
+
+def _insert_agent_config_version(
+    engine: Engine,
+    *,
+    namespace_key: str,
+    agent_name: str,
+    version_num: int = 1,
+    body: str | None = "body",
+) -> None:
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO agent_config_versions "
+                "(namespace_key, agent_name, version_num, event_type, body) "
+                "VALUES (:ns, :name, :num, 'created', :body)"
+            ),
+            {
+                "ns": namespace_key,
+                "name": agent_name,
+                "num": version_num,
+                "body": body,
+            },
+        )
+
+
+def test_two_namespaces_may_configure_an_agent_of_the_same_name(
+    db_engine: Engine, clean_tables: None
+) -> None:
+    """One tenant naming their agent ``marketing-copywriter`` must not block another."""
+    name = _agent_name()
+    _insert_agent(db_engine, namespace_key="ns-one", name=name)
+    _insert_agent(db_engine, namespace_key="ns-two", name=name)
+
+    _insert_agent_config(
+        db_engine, namespace_key="ns-one", agent_name=name, body="ns-one's prompt"
+    )
+    _insert_agent_config(
+        db_engine, namespace_key="ns-two", agent_name=name, body="ns-two's prompt"
+    )
+
+    with db_engine.begin() as conn:
+        rows = conn.execute(
+            text(
+                "SELECT namespace_key, body FROM agent_configs "
+                " WHERE agent_name = :name ORDER BY namespace_key"
+            ),
+            {"name": name},
+        ).fetchall()
+    assert [tuple(row) for row in rows] == [
+        ("ns-one", "ns-one's prompt"),
+        ("ns-two", "ns-two's prompt"),
+    ]
+
+
+def test_one_namespace_cannot_configure_another_namespaces_agent(
+    db_engine: Engine, clean_tables: None
+) -> None:
+    """The composite foreign key is the tenancy boundary, not a convention."""
+    name = _agent_name()
+    _insert_agent(db_engine, namespace_key="ns-one", name=name)
+
+    with pytest.raises(IntegrityError):
+        _insert_agent_config(db_engine, namespace_key="ns-two", agent_name=name)
+
+
+def test_a_version_row_cannot_reference_another_namespaces_agent(
+    db_engine: Engine, clean_tables: None
+) -> None:
+    """Every saved body lives here, so a cross-namespace row would be a leak."""
+    name = _agent_name()
+    _insert_agent(db_engine, namespace_key="ns-one", name=name)
+    _insert_agent_config(db_engine, namespace_key="ns-one", agent_name=name)
+
+    with pytest.raises(IntegrityError):
+        _insert_agent_config_version(
+            db_engine, namespace_key="ns-two", agent_name=name
+        )
+
+
+def test_two_namespaces_may_hold_the_same_version_number_for_one_agent_name(
+    db_engine: Engine, clean_tables: None
+) -> None:
+    """Version numbering is per agent per namespace.
+
+    A unique key that omitted ``namespace_key`` would make one tenant's save
+    refuse another's, which is a cross-tenant denial of an entirely routine
+    write.
+    """
+    name = _agent_name()
+    for namespace in ("ns-one", "ns-two"):
+        _insert_agent(db_engine, namespace_key=namespace, name=name)
+        _insert_agent_config(db_engine, namespace_key=namespace, agent_name=name)
+        _insert_agent_config_version(
+            db_engine,
+            namespace_key=namespace,
+            agent_name=name,
+            version_num=1,
+            body=f"{namespace}'s body",
+        )
+
+    with db_engine.begin() as conn:
+        rows = conn.execute(
+            text(
+                "SELECT namespace_key, body FROM agent_config_versions "
+                " WHERE agent_name = :name AND version_num = 1 "
+                " ORDER BY namespace_key"
+            ),
+            {"name": name},
+        ).fetchall()
+    assert [tuple(row) for row in rows] == [
+        ("ns-one", "ns-one's body"),
+        ("ns-two", "ns-two's body"),
+    ]
+
+
+def test_deleting_one_namespaces_agent_leaves_the_others_configuration(
+    db_engine: Engine, clean_tables: None
+) -> None:
+    """The cascade follows the tenancy anchor and stops at the boundary."""
+    name = _agent_name()
+    for namespace in ("ns-one", "ns-two"):
+        _insert_agent(db_engine, namespace_key=namespace, name=name)
+        _insert_agent_config(db_engine, namespace_key=namespace, agent_name=name)
+        _insert_agent_config_version(
+            db_engine, namespace_key=namespace, agent_name=name
+        )
+
+    with db_engine.begin() as conn:
+        conn.execute(
+            text("DELETE FROM agents WHERE namespace_key = 'ns-one' AND name = :name"),
+            {"name": name},
+        )
+        configs = conn.execute(
+            text("SELECT namespace_key FROM agent_configs WHERE agent_name = :name"),
+            {"name": name},
+        ).scalars().all()
+        versions = conn.execute(
+            text(
+                "SELECT namespace_key FROM agent_config_versions "
+                " WHERE agent_name = :name"
+            ),
+            {"name": name},
+        ).scalars().all()
+
+    assert list(configs) == ["ns-two"]
+    assert list(versions) == ["ns-two"]
