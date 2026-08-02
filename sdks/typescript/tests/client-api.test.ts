@@ -44,6 +44,7 @@ describe("AgentControlClient API wiring", () => {
     const client = new AgentControlClient();
     client.init({
       agentName: "test-agent",
+      register: false,
       serverUrl: "https://api.example.com",
       apiKey: "test-api-key",
     });
@@ -84,6 +85,7 @@ describe("AgentControlClient API wiring", () => {
     const client = new AgentControlClient();
     client.init({
       agentName: "test-agent",
+      register: false,
       serverUrl: "https://api.example.com",
       debugLogger,
     });
@@ -110,6 +112,7 @@ describe("AgentControlClient API wiring", () => {
     const client = new AgentControlClient();
     client.init({
       agentName: "test-agent",
+      register: false,
       serverUrl: "https://api.example.com",
     });
 
@@ -170,20 +173,26 @@ describe("AgentControlClient API wiring", () => {
   it("defaults initAgent conflict_mode to overwrite", async () => {
     const fetchMock = vi.mocked(globalThis.fetch);
     fetchMock.mockResolvedValueOnce(
+      // The generated inbound schema treats these keys as required-but-nullable,
+      // so a response missing them fails validation before the assertion below
+      // is ever reached.
       jsonResponse({
         created: true,
+        overwrite_applied: false,
+        overwrite_changes: null,
+        controls: [],
       }),
     );
 
     const client = new AgentControlClient();
     client.init({
       agentName: "test-agent",
+      register: false,
       serverUrl: "https://api.example.com",
     });
 
     await client.agents.init({
       agent: {
-        agentId: "550e8400-e29b-41d4-a716-446655440000",
         agentName: "test-agent",
       },
     });
