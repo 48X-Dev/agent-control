@@ -12,9 +12,45 @@ from google.adk.apps import App
 
 load_dotenv()
 
-AGENT_NAME = "google-adk-plugin"
+# One executor process serves exactly one agent - the SDK holds a single
+# current agent and the plugin refuses a mismatch - so this is how you point
+# the same example at a different registered agent.
+AGENT_NAME = os.getenv("AGENT_CONTROL_AGENT_NAME", "google-adk-plugin")
 SERVER_URL = os.getenv("AGENT_CONTROL_URL", "http://localhost:8000")
-MODEL_NAME = os.getenv("GOOGLE_MODEL", "gemini-2.5-flash")
+MODEL_NAME = os.getenv("AGENT_MODEL") or os.getenv("GOOGLE_MODEL", "gemini-2.5-flash")
+OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL")
+
+
+def _build_model(model_name: str, base_url: str | None) -> object:
+    """Return a Gemini model name, or route through LiteLLM for any
+    OpenAI-compatible endpoint (a local proxy, Ollama, vLLM, OpenAI itself).
+
+    LiteLLM is imported lazily so the Gemini path keeps working without it.
+    """
+    if not base_url:
+        return model_name
+
+    from google.adk.models.lite_llm import LiteLlm
+
+    if "/" in model_name:
+        # LiteLLM routes on the prefix, so "bedrock/..." would reach AWS with the
+        # process's ambient credentials and api_base would be ignored outright.
+        raise ValueError(
+            f"AGENT_MODEL must not contain '/': {model_name!r}. "
+            "A provider prefix re-selects the destination host and would send "
+            "traffic somewhere other than OPENAI_BASE_URL."
+        )
+
+    return LiteLlm(
+        model=f"openai/{model_name}",
+        api_base=base_url,
+        # Pins routing to the endpoint above. Without it a prefixed model name
+        # silently chooses its own host.
+        custom_llm_provider="openai",
+        # A local proxy authenticates upstream itself, so the key is a placeholder
+        # unless the endpoint genuinely wants one.
+        api_key=os.getenv("OPENAI_API_KEY", "not-used-by-local-proxy"),
+    )
 
 CITY_DATA = {
     "new york": {
@@ -88,7 +124,7 @@ agent_control.init(
 
 root_agent = LlmAgent(
     name="root_agent",
-    model=MODEL_NAME,
+    model=_build_model(MODEL_NAME, OPENAI_BASE_URL),
     description="City guide agent protected by the packaged Agent Control plugin.",
     instruction=(
         "You are a city guide assistant. Use the available tools for city time or weather. "

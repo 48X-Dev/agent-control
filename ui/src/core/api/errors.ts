@@ -62,3 +62,21 @@ export function parseApiError(
 export function isApiError(error: unknown): error is ApiError {
   return error instanceof ApiError;
 }
+
+/**
+ * HTTP status carried by a thrown error, when it has one.
+ *
+ * Accepts both an {@link ApiError} and a raw ProblemDetail body, since query
+ * hooks throw the response body directly.
+ */
+export function getErrorStatus(error: unknown): number | undefined {
+  if (isApiError(error)) return error.problemDetail.status;
+
+  const status = (error as Partial<ProblemDetail> | null | undefined)?.status;
+  return typeof status === 'number' ? status : undefined;
+}
+
+/** True when the server answered 404. */
+export function isNotFoundError(error: unknown): boolean {
+  return getErrorStatus(error) === 404;
+}
