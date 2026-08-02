@@ -56,9 +56,48 @@ class Operation(StrEnum):
     AGENTS_CREATE = "agents.create"
     AGENTS_UPDATE = "agents.update"
     EVALUATORS_READ = "evaluators.read"
+    TEAMS_READ = "teams.read"
+    TEAMS_WRITE = "teams.write"
     OBSERVABILITY_READ = "observability.read"
     OBSERVABILITY_WRITE = "observability.write"
     RUNTIME_USE = "runtime.use"
+
+    # Chat sessions with an agent. Session metadata and message content are
+    # split because they are different sensitivity classes: a title and a
+    # timestamp are configuration-shaped, while a transcript carries raw human
+    # prompts, model output, and tool results that can hold third-party data
+    # pulled with a server-held key.
+    AGENT_SESSIONS_READ = "agent_sessions.read"
+    AGENT_SESSION_CONTENT_READ = "agent_sessions.content_read"
+    AGENT_SESSIONS_WRITE = "agent_sessions.write"
+    # Split from write because running a turn spends money and calls a model.
+    # Splitting later would be a wire-contract change; splitting now is a line.
+    AGENT_SESSIONS_RUN = "agent_sessions.run"
+    AGENT_NUDGES_WRITE = "agent_nudges.write"
+    # Stopping a turn sits at the same tier as starting one. Run at
+    # AUTHENTICATED and stop at ADMIN is the one combination that cannot be
+    # defended: whoever can start a turn that spends money must be able to stop
+    # it. The scoping that keeps this from being a denial-of-service primitive
+    # is creator scoping in the service, not the tier.
+    AGENT_HALTS_WRITE = "agent_halts.write"
+    # Binding an agent to an executor URL is deployment configuration.
+    AGENT_RUNTIMES_WRITE = "agent_runtimes.write"
+
+    # One row carries the agent's system prompt and its model. The prompt lands
+    # verbatim in ADK's ``config.system_instruction``, which
+    # ``extract_request_text`` never reads, so nothing written there is
+    # evaluated by any control in the deployment. The model decides which vendor
+    # is called and whose quota is spent on every turn. Reads are
+    # configuration-shaped; writes are not.
+    AGENT_CONFIGS_READ = "agent_configs.read"
+    AGENT_CONFIGS_WRITE = "agent_configs.write"
+
+    # Machine-side operations. These are performed by the executor, not by a
+    # human, and are authorized by a runtime token bound to one session rather
+    # than by an API key that would be valid for every session in the
+    # namespace. See ``auth_framework.config`` for the wiring.
+    AGENT_NUDGES_CONSUME = "agent_nudges.consume"
+    AGENT_PLANS_WRITE = "agent_plans.write"
 
 
 @dataclass(frozen=True)

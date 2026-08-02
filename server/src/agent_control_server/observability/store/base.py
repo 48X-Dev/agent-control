@@ -13,7 +13,7 @@ Custom implementations users can create:
 """
 
 from abc import ABC, abstractmethod
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Literal
 
 from agent_control_models.observability import (
@@ -65,6 +65,20 @@ class StatsResult(BaseModel):
     )
 
 
+class TraceEventsResult(BaseModel):
+    """Events belonging to one trace, ordered oldest first.
+
+    Attributes:
+        events: Events sorted by (timestamp, span_id), capped at the requested limit
+        total: Number of events the trace has in total, before the cap
+    """
+
+    events: list[ControlExecutionEvent] = Field(
+        default_factory=list, description="Events ordered by (timestamp, span_id)"
+    )
+    total: int = Field(default=0, ge=0, description="Total events in the trace")
+
+
 # Re-export query types from models for convenience
 EventQuery = EventQueryRequest
 EventQueryResult = EventQueryResponse
@@ -107,6 +121,18 @@ BUCKET_SIZE_MAP: dict[str, timedelta] = {
 def get_bucket_size(time_range: TimeRange) -> timedelta:
     """Get bucket size for a time range."""
     return BUCKET_SIZE_MAP[time_range]
+
+
+def _trace_order_key(event: ControlExecutionEvent) -> tuple[datetime, str]:
+    """Sort key placing trace events oldest first, ties broken by span.
+
+    Naive timestamps are read as UTC so a trace mixing naive and aware client
+    clocks stays sortable.
+    """
+    timestamp = event.timestamp
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=UTC)
+    return timestamp, event.span_id
 
 
 class EventStore(ABC):
@@ -171,6 +197,12 @@ class EventStore(ABC):
     ) -> EventQueryResult:
         """Query raw events with filters and pagination.
 
+        Implementations must return events newest first (timestamp descending)
+        and must report the pre-pagination match count in ``total``. The
+        default :meth:`query_trace` reads the oldest page by offsetting from
+        the end of that ordering, so a store that orders differently has to
+        override ``query_trace`` as well.
+
         Args:
             query: Query parameters (filters, pagination)
             namespace_key: Namespace whose events should be queried
@@ -179,6 +211,55 @@ class EventStore(ABC):
             EventQueryResult with matching events and pagination info
         """
         pass
+
+    async def query_trace(
+        self,
+        trace_id: str,
+        *,
+        namespace_key: str,
+        limit: int,
+    ) -> TraceEventsResult:
+        """Read one trace's events, oldest first, capped at ``limit``.
+
+        Ordering is by ``(timestamp, span_id)`` so that events sharing a
+        timestamp still come back in a stable order.
+
+        This default is built on :meth:`query_events` so existing stores keep
+        working without changes. It costs two round trips and orders the page
+        in Python; back ends that can sort and count in the query should
+        override it. Because the count and the page come from separate reads,
+        events written between the two shift the offset and can push the
+        oldest hops out of the page, so a store under concurrent ingestion
+        wants the override rather than this fallback.
+
+        Args:
+            trace_id: Trace to read
+            namespace_key: Namespace whose events should be queried
+            limit: Maximum events to return
+
+        Returns:
+            TraceEventsResult with the ordered page and the trace's total size
+        """
+        probe = await self.query_events(
+            EventQueryRequest(trace_id=trace_id, limit=1),
+            namespace_key=namespace_key,
+        )
+        if probe.total == 0:
+            return TraceEventsResult(events=[], total=0)
+
+        # query_events returns newest first, so the oldest events sit at the
+        # end of the result set; offsetting from there yields the earliest page.
+        window = min(limit, probe.total)
+        page = await self.query_events(
+            EventQueryRequest(
+                trace_id=trace_id, limit=window, offset=probe.total - window
+            ),
+            namespace_key=namespace_key,
+        )
+        return TraceEventsResult(
+            events=sorted(page.events, key=_trace_order_key),
+            total=probe.total,
+        )
 
     async def close(self) -> None:
         """Close any resources held by the store.

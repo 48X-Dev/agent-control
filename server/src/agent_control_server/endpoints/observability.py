@@ -19,15 +19,25 @@ from typing import Literal, cast
 from agent_control_models import (
     BatchEventsRequest,
     BatchEventsResponse,
+    ControlExecutionEvent,
     ControlStatsResponse,
     EventQueryRequest,
     EventQueryResponse,
     StatsResponse,
     StatsTotals,
 )
-from fastapi import APIRouter, Depends, Request
+from agent_control_models.traces import (
+    TRACE_HOP_LIMIT_DEFAULT,
+    TRACE_HOP_LIMIT_MAX,
+    TraceResponse,
+)
+from fastapi import APIRouter, Depends, Query, Request
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth_framework import Operation, Principal, require_operation
+from ..db import get_async_db
+from ..models import AgentConfig
 from ..observability.ingest.base import EventIngestor
 from ..observability.store.base import (
     EventStore,
@@ -36,6 +46,7 @@ from ..observability.store.base import (
     parse_time_range,
 )
 from ..services.agent_names import normalize_agent_name_or_422
+from ..services.traces import TraceService
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +82,93 @@ def get_event_store(request: Request) -> EventStore:
 # =============================================================================
 
 
+#: Reserved for values the server authors about an agent's configuration. A
+#: client-supplied key carrying it is dropped on ingest; see below.
+_SERVER_AUTHORED_METADATA_PREFIX = "agent_control."
+
+
+async def _stamp_server_authored_config_metadata(
+    events: list[ControlExecutionEvent],
+    *,
+    db: AsyncSession,
+    namespace_key: str,
+) -> None:
+    """Record what the control plane believes each agent should be running.
+
+    The SDK already reports ``reported.config_etag`` and ``reported.model_id``
+    on every control execution event. Those are self-reports by the audited
+    party, so on their own they answer nothing: an agent running a stale or
+    forged configuration reports exactly what it likes. Stamping the server's
+    own view beside them turns that into a queryable divergence rather than an
+    invisible lie.
+
+    Two properties this deliberately does *not* claim.
+
+    The lookup is a **current-row read at ingest time, not a point-in-time
+    one**, so the two values can disagree for entirely benign reasons when an
+    event is ingested after a configuration change. Any runbook query built on
+    this has to say so, because an operator with no guidance will trust the
+    reported value - it is the one that reads like an answer.
+
+    And the reserved ``agent_control.`` prefix is enforced **here**, on every
+    incoming event, before anything is stamped. The SDK's event builder drops
+    client-supplied keys carrying it too, but that half is a convenience rather
+    than a control: an ingest request is client-authored end to end, so a
+    process that wants to forge the server's view simply does not use the SDK.
+    Stripping only where a configuration row happens to exist would leave the
+    forgery working for every agent that has never been configured, which is
+    most of them. The audited party must not be able to author its own audit
+    record, so the strip is unconditional and the stamp is what refills it.
+
+    One query per distinct agent name per batch, and only agents that actually
+    have a configuration row are stamped.
+    """
+    if not events:
+        return
+
+    stripped: list[ControlExecutionEvent] = []
+    for event in events:
+        metadata = event.metadata or {}
+        if any(key.startswith(_SERVER_AUTHORED_METADATA_PREFIX) for key in metadata):
+            event.metadata = {
+                key: value
+                for key, value in metadata.items()
+                if not key.startswith(_SERVER_AUTHORED_METADATA_PREFIX)
+            }
+            stripped.append(event)
+    if stripped:
+        logger.warning(
+            "Dropped client-supplied %r metadata on %d ingested event(s): that "
+            "prefix is reserved for server-authored values.",
+            _SERVER_AUTHORED_METADATA_PREFIX,
+            len(stripped),
+        )
+
+    agent_names = {event.agent_name for event in events if event.agent_name}
+    if not agent_names:
+        return
+
+    result = await db.execute(
+        select(AgentConfig.agent_name, AgentConfig.etag, AgentConfig.model_id).where(
+            AgentConfig.namespace_key == namespace_key,
+            AgentConfig.agent_name.in_(agent_names),
+        )
+    )
+    current = {row.agent_name: (row.etag, row.model_id) for row in result}
+    if not current:
+        return
+
+    for event in events:
+        row = current.get(event.agent_name)
+        if row is None:
+            continue
+        etag, model_id = row
+        metadata = dict(event.metadata or {})
+        metadata["agent_control.config_etag_current"] = etag
+        metadata["agent_control.model_id_current"] = model_id
+        event.metadata = metadata
+
+
 @router.post(
     "/events",
     status_code=202,
@@ -78,6 +176,7 @@ def get_event_store(request: Request) -> EventStore:
 )
 async def ingest_events(
     request: BatchEventsRequest,
+    db: AsyncSession = Depends(get_async_db),
     ingestor: EventIngestor = Depends(get_event_ingestor),
     principal: Principal = Depends(require_operation(Operation.OBSERVABILITY_WRITE)),
 ) -> BatchEventsResponse:
@@ -86,14 +185,23 @@ async def ingest_events(
 
     Events are stored directly to the database with ~5-20ms latency.
 
+    Before storage, each event is stamped with the server's own view of the
+    reporting agent's configuration. See
+    :func:`_stamp_server_authored_config_metadata`.
+
     Args:
         request: Batch of events to ingest
+        db: Database session, used only for the configuration stamp
         ingestor: Event ingestor (injected)
 
     Returns:
         BatchEventsResponse with counts of received/processed/dropped
     """
     start_time = time.perf_counter()
+
+    await _stamp_server_authored_config_metadata(
+        request.events, db=db, namespace_key=principal.namespace_key
+    )
 
     result = await ingestor.ingest(
         request.events,
@@ -162,6 +270,53 @@ async def query_events(
         EventQueryResponse with matching events and pagination info
     """
     return await store.query_events(request, namespace_key=principal.namespace_key)
+
+
+# =============================================================================
+# Traces
+# =============================================================================
+
+
+@router.get(
+    "/traces/{trace_id}",
+    response_model=TraceResponse,
+    summary="Get the ordered hops of one trace",
+    response_description="Hops in (timestamp, span_id) order",
+)
+async def get_trace(
+    trace_id: str,
+    limit: int = Query(
+        TRACE_HOP_LIMIT_DEFAULT,
+        ge=1,
+        le=TRACE_HOP_LIMIT_MAX,
+        description=(
+            f"Maximum hops to return (default {TRACE_HOP_LIMIT_DEFAULT}, max "
+            f"{TRACE_HOP_LIMIT_MAX}). A longer trace comes back with "
+            "truncated=true and its full total_hop_count."
+        ),
+    ),
+    db: AsyncSession = Depends(get_async_db),
+    store: EventStore = Depends(get_event_store),
+    principal: Principal = Depends(require_operation(Operation.OBSERVABILITY_READ)),
+) -> TraceResponse:
+    """Read one multi-agent task as a chain of hops.
+
+    Each hop is one control execution: which agent ran it, the team that agent
+    belongs to now, the span and timestamp it reported, the control, and what
+    the control decided.
+
+    Hops are sorted by ``(timestamp, span_id)``, so a tie in timestamps still
+    yields the same order on every read. The timestamps come from the clients
+    that emitted the events, so this is an observed sequence and not a causal
+    chain; hops that time could not separate carry ``out_of_order=true``.
+
+    A trace with no events in the caller's namespace is a 404.
+    """
+    return await TraceService(db, store).get_trace(
+        namespace_key=principal.namespace_key,
+        trace_id=trace_id,
+        limit=limit,
+    )
 
 
 # =============================================================================

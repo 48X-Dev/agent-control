@@ -6,6 +6,7 @@ from agent_control_models.base import BaseModel
 from agent_control_models.server import EvaluatorSchema
 from pydantic import Field
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     CheckConstraint,
     Column,
@@ -15,6 +16,7 @@ from sqlalchemy import (
     Index,
     Integer,
     PrimaryKeyConstraint,
+    SmallInteger,
     String,
     Table,
     Text,
@@ -345,6 +347,677 @@ class ControlBinding(Base):
         DateTime(timezone=True),
         server_default=text("CURRENT_TIMESTAMP"),
         onupdate=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+
+
+# =============================================================================
+# Team Models
+# =============================================================================
+
+
+class Team(Base):
+    """A named group of agents, scoped to a namespace.
+
+    Teams are descriptive: binding a control to a team has no effect on the
+    team's members. ``slug`` is the stable key and is immutable once the row
+    exists (enforced at the request boundary, not by the schema); a rename
+    changes ``display_name`` only.
+    """
+
+    __tablename__ = "teams"
+    __table_args__ = (
+        UniqueConstraint("namespace_key", "slug", name="uq_teams_namespace_slug"),
+        # Required so team_members can reference this table through a composite
+        # same-namespace foreign key.
+        UniqueConstraint("namespace_key", "id", name="uq_teams_namespace_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    namespace_key: Mapped[str] = mapped_column(
+        String(255), nullable=False, server_default=_NAMESPACE_SERVER_DEFAULT
+    )
+    slug: Mapped[str] = mapped_column(String(255), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Key of the Linear team milestones are read from. Nullable and
+    # deliberately unconstrained beyond length: teams that predate the Linear
+    # integration, and teams that will never be linked to it, stay valid.
+    linear_team_key: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        onupdate=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+    members: Mapped[list["TeamMember"]] = relationship(
+        "TeamMember",
+        back_populates="team",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+
+class TeamMember(Base):
+    """Membership of one agent in one team.
+
+    The composite primary key lets an agent belong to several teams; a unique
+    constraint on ``(namespace_key, agent_name)`` would later restrict agents to
+    one team each without reshaping either table. ``agent_name`` carries no
+    foreign key to ``agents`` on purpose: grouping is descriptive and should not
+    depend on registration order. The composite foreign key on
+    ``(namespace_key, team_id)`` keeps a member and its team in one namespace.
+    """
+
+    __tablename__ = "team_members"
+    __table_args__ = (
+        PrimaryKeyConstraint(
+            "namespace_key", "team_id", "agent_name", name="team_members_pkey"
+        ),
+        ForeignKeyConstraint(
+            ["namespace_key", "team_id"],
+            ["teams.namespace_key", "teams.id"],
+            name="team_members_team_fkey",
+            ondelete="CASCADE",
+        ),
+        # Reverse lookup ("which teams is this agent in") always filters on the
+        # namespace too, so the index leads with namespace_key.
+        Index("idx_team_members_agent", "namespace_key", "agent_name"),
+    )
+
+    namespace_key: Mapped[str] = mapped_column(
+        String(255), nullable=False, server_default=_NAMESPACE_SERVER_DEFAULT
+    )
+    team_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    agent_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    joined_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+    team: Mapped["Team"] = relationship("Team", back_populates="members")
+
+    @validates("agent_name")
+    def _normalize_agent_name(self, _key: str, value: str) -> str:
+        return normalize_agent_name(value)
+
+
+# =============================================================================
+# Executor Binding and Chat Session Models
+# =============================================================================
+
+
+class AgentRuntime(Base):
+    """Which executor process serves one agent.
+
+    Without this row nothing can answer "where do I send a turn for this
+    agent", so it is the precondition for a session existing at all. One row
+    per agent: the Python SDK holds a single agent per process and the ADK
+    plugin refuses to initialize under a second name, so an agent maps to its
+    own executor rather than sharing one.
+
+    The composite foreign key ties the binding to a registered agent in the
+    same namespace and removes it when the agent goes. ``enabled`` is a soft
+    toggle so an executor can be drained without losing its coordinates.
+    """
+
+    __tablename__ = "agent_runtimes"
+    __table_args__ = (
+        PrimaryKeyConstraint("namespace_key", "agent_name", name="agent_runtimes_pkey"),
+        ForeignKeyConstraint(
+            ["namespace_key", "agent_name"],
+            ["agents.namespace_key", "agents.name"],
+            name="agent_runtimes_agent_fkey",
+            ondelete="CASCADE",
+        ),
+    )
+
+    namespace_key: Mapped[str] = mapped_column(
+        String(255), nullable=False, server_default=_NAMESPACE_SERVER_DEFAULT
+    )
+    agent_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    executor_kind: Mapped[str] = mapped_column(
+        String(32), nullable=False, server_default=text("'google_adk'")
+    )
+    base_url: Mapped[str] = mapped_column(String(512), nullable=False)
+    executor_app_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("TRUE")
+    )
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        onupdate=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+
+    @validates("agent_name")
+    def _normalize_agent_name(self, _key: str, value: str) -> str:
+        return normalize_agent_name(value)
+
+
+class AgentConfig(Base):
+    """One agent's system prompt and its model, versioned together.
+
+    Both fields on one row because they are one editing decision: an operator
+    who moves an agent to a cheaper model usually adjusts its prompt in the same
+    sitting, and the diff of that change belongs in one history. One row also
+    means one ``current_version``, which doubles as the optimistic-concurrency
+    token, so a write validates without a subquery over the versions table.
+
+    **There is no ``base_url``, ``api_base``, ``endpoint`` or ``api_key`` column
+    here, and there is not going to be one.** A per-agent endpoint means every
+    prompt, tool result and piece of customer data an agent handles is posted to
+    a host of the writer's choosing - exfiltration wearing a config field, plus
+    SSRF onto the segment the executor sits on. ADMIN does not defend it,
+    because ``api_key_enabled`` defaults false and installs a provider that
+    authorizes every operation for everyone. The endpoint is the executor
+    process's own environment.
+
+    ``ck_agent_configs_model_id_shape`` is load-bearing rather than cosmetic. A
+    slash prefix re-selects the LiteLLM provider and a configured ``api_base``
+    is ignored for routing, so a slashed id is a destination selector in a field
+    the UI describes as a name. It is rejected at settings load, at the write
+    boundary, here, and again by the SDK.
+
+    There is deliberately **no** constraint enumerating valid model ids and no
+    foreign key to a models table. The allowlist is server configuration an
+    operator edits without a migration, and a membership constraint would turn
+    removing one line of env config into a deployment that will not start
+    against existing rows. Shape is invariant; membership is not.
+    """
+
+    __tablename__ = "agent_configs"
+    __table_args__ = (
+        PrimaryKeyConstraint("namespace_key", "agent_name", name="agent_configs_pkey"),
+        ForeignKeyConstraint(
+            ["namespace_key", "agent_name"],
+            ["agents.namespace_key", "agents.name"],
+            name="agent_configs_agent_fkey",
+            ondelete="CASCADE",
+        ),
+        CheckConstraint(
+            "body IS NULL OR char_length(body) <= 32000",
+            name="ck_agent_configs_body_max_length",
+        ),
+        CheckConstraint(
+            "body_format IN ('text')",
+            name="ck_agent_configs_body_format",
+        ),
+        CheckConstraint(
+            "model_id IS NULL OR ("
+            "char_length(model_id) BETWEEN 1 AND 128"
+            " AND model_id NOT LIKE '%/%'"
+            " AND model_id NOT LIKE '%://%')",
+            name="ck_agent_configs_model_id_shape",
+        ),
+    )
+
+    namespace_key: Mapped[str] = mapped_column(
+        String(255), nullable=False, server_default=_NAMESPACE_SERVER_DEFAULT
+    )
+    agent_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    # NULL means cleared or never set. The agent falls back to whatever its own
+    # code declares, which is what makes the rollout zero-risk: an agent with no
+    # row runs exactly as it does today.
+    body: Mapped[str | None] = mapped_column(Text, nullable=True)
+    body_format: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default=text("'text'")
+    )
+    prompt_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("TRUE")
+    )
+    model_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    current_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
+    etag: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Reported by the agent process under an AUTHENTICATED operation, so this is
+    # untrusted text. Never sent to a model by Agent Control and never used to
+    # pre-fill an editor.
+    source_instruction: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_reported_at: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_by_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    updated_by_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        onupdate=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+
+    @validates("agent_name")
+    def _normalize_agent_name(self, _key: str, value: str) -> str:
+        return normalize_agent_name(value)
+
+
+class AgentConfigVersion(Base):
+    """One entry in an agent config's audit log.
+
+    Full bodies rather than diffs: a prompt is at most tens of kilobytes, and
+    reconstructing text from a diff chain is a class of bug nobody needs. "From
+    what to what" is answered by diffing consecutive rows, which the client does.
+
+    Two divergences from ``ControlVersion``, both deliberate.
+
+    The foreign key targets ``agents``, not ``agent_configs``. Clearing a field
+    is a state change, not a row removal, and history has to survive it - that
+    is the whole point of having history. Only deleting the agent takes the log
+    with it, which is right, since the agent row is the tenancy anchor.
+
+    ``namespace_key`` is a column here. ``ControlVersion`` has none and gets its
+    isolation from the call site loading the parent first, which is correct
+    today and makes every future query against that table namespace-blind by
+    default. Carrying it locally means the filter is a property of the query.
+    """
+
+    __tablename__ = "agent_config_versions"
+    __table_args__ = (
+        UniqueConstraint(
+            "namespace_key",
+            "agent_name",
+            "version_num",
+            name="uq_agent_config_versions_agent_version",
+        ),
+        Index(
+            "idx_agent_config_versions_agent_recent",
+            "namespace_key",
+            "agent_name",
+            text("version_num DESC"),
+        ),
+        ForeignKeyConstraint(
+            ["namespace_key", "agent_name"],
+            ["agents.namespace_key", "agents.name"],
+            name="agent_config_versions_agent_fkey",
+            ondelete="CASCADE",
+        ),
+        CheckConstraint(
+            "event_type IN ('created','updated','prompt_cleared','model_cleared',"
+            "'restored','enabled','disabled')",
+            name="ck_agent_config_versions_event_type",
+        ),
+        CheckConstraint(
+            "origin IN ('authored','copied_from_reported','restored')",
+            name="ck_agent_config_versions_origin",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    namespace_key: Mapped[str] = mapped_column(
+        String(255), nullable=False, server_default=_NAMESPACE_SERVER_DEFAULT
+    )
+    agent_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    version_num: Mapped[int] = mapped_column(Integer, nullable=False)
+    event_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    origin: Mapped[str] = mapped_column(
+        String(32), nullable=False, server_default=text("'authored'")
+    )
+    body: Mapped[str | None] = mapped_column(Text, nullable=True)
+    body_format: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default=text("'text'")
+    )
+    model_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    etag: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Advisory only. The value is the record, including the record that a human
+    # saw a finding and saved anyway.
+    scan_findings: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, nullable=False, server_default=text("'[]'::jsonb")
+    )
+    # Identifies a credential, not a person. Under the shipped default provider
+    # every dashboard caller hashes to the same value, so the UI column is
+    # labelled "credential".
+    changed_by_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+
+    @validates("agent_name")
+    def _normalize_agent_name(self, _key: str, value: str) -> str:
+        return normalize_agent_name(value)
+
+
+class AgentSession(Base):
+    """One chat session, mapped from namespace-scoped identity onto an executor.
+
+    The executor owns the conversation. This row owns who is allowed to see it.
+    That makes four things load-bearing, and each one is here for a reason that
+    is not obvious from the column list.
+
+    ``uq_agent_sessions_executor_global`` has no ``namespace_key`` in it. The
+    executor's session store knows nothing about namespaces, so a per-namespace
+    constraint would let namespace B insert a row pointing at exactly the same
+    executor session as a namespace-A row and then read A's whole transcript
+    through a lookup that passes every namespace filter in the service layer.
+    The constraint has to prevent adoption, not merely prevent duplication.
+    ``executor_user_id`` is minted as ``f"{namespace_key}:{uuid4().hex}"`` for
+    the same reason, and no request model accepts any part of the triple.
+
+    ``team_id`` carries no foreign key. A composite ``ON DELETE SET NULL`` would
+    null every referencing column, including ``namespace_key``, which is NOT
+    NULL - so deleting a team with a live session would abort. Same-namespace
+    membership is enforced in the service, and the team-delete path clears this
+    column so the sessions survive.
+
+    ``in_flight_since`` and ``in_flight_trace_id`` are unused until turns exist.
+    They are here anyway, because splitting them into a second migration to save
+    two columns nobody reads is not a saving.
+
+    ``created_by_hash`` is a hash, not an identifier. ``caller_id`` is the first
+    eight characters of a live API key under the default provider; storing it
+    raw and serializing it would be credential disclosure. It is never returned
+    by any endpoint.
+    """
+
+    __tablename__ = "agent_sessions"
+    __table_args__ = (
+        UniqueConstraint(
+            "namespace_key", "session_key", name="uq_agent_sessions_namespace_key"
+        ),
+        UniqueConstraint(
+            "executor_app_name",
+            "executor_user_id",
+            "executor_session_id",
+            name="uq_agent_sessions_executor_global",
+        ),
+        UniqueConstraint("namespace_key", "id", name="uq_agent_sessions_namespace_id"),
+        Index(
+            "idx_agent_sessions_agent_recent",
+            "namespace_key",
+            "agent_name",
+            text("last_activity_at DESC"),
+        ),
+        Index(
+            "idx_agent_sessions_in_flight",
+            "namespace_key",
+            "status",
+            "in_flight_since",
+        ),
+        Index("idx_agent_sessions_team", "namespace_key", "team_id"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    namespace_key: Mapped[str] = mapped_column(
+        String(255), nullable=False, server_default=_NAMESPACE_SERVER_DEFAULT
+    )
+    session_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    agent_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    team_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    executor_kind: Mapped[str] = mapped_column(
+        String(32), nullable=False, server_default=text("'google_adk'")
+    )
+    executor_app_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    executor_user_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    executor_session_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    title: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    status: Mapped[str] = mapped_column(
+        String(32), nullable=False, server_default=text("'active'")
+    )
+    created_by_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    last_trace_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    in_flight_since: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    in_flight_trace_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    last_activity_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        onupdate=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+
+    @validates("agent_name")
+    def _normalize_agent_name(self, _key: str, value: str) -> str:
+        return normalize_agent_name(value)
+
+
+class AgentSessionNudge(Base):
+    """One piece of human guidance waiting for an agent's next model call.
+
+    A queue, with the two properties that make at-least-once delivery honest.
+
+    ``claim_count`` and ``injection_attempts`` are separate columns because
+    they answer different questions and only one of them may expire a row.
+    A claim taken by an executor that then died has to be redelivered, so
+    ``claim_count`` moves and nothing else does. An injection that was really
+    attempted and failed is the only thing that counts against the row's life,
+    so expiry keys on ``injection_attempts`` alone. Collapse them into one
+    counter and a queue of ten nudges reports seven as undelivered after three
+    claim cycles without any of them having been attempted - which is the
+    failure the whole design exists to prevent, arrived at from the other side.
+
+    ``claimed_by`` records the actor the claiming runtime token was minted for.
+    Under the session-bound token that identifies the *session*, not the
+    process, so it is constant for every claim on one session and cannot
+    distinguish a swallowed nudge from a delivered one. It is kept because it
+    is the only machine-side attribution available and it costs a column; it is
+    deliberately not surfaced as "who read this".
+    """
+
+    __tablename__ = "agent_session_nudges"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["namespace_key", "session_id"],
+            ["agent_sessions.namespace_key", "agent_sessions.id"],
+            name="agent_session_nudges_session_fkey",
+            ondelete="CASCADE",
+        ),
+        Index(
+            "idx_agent_session_nudges_drain",
+            "namespace_key",
+            "session_id",
+            "status",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    namespace_key: Mapped[str] = mapped_column(
+        String(255), nullable=False, server_default=_NAMESPACE_SERVER_DEFAULT
+    )
+    session_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default=text("'pending'")
+    )
+    created_by_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+    claimed_at: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    claimed_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    claim_expires_at: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    applied_at: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    applied_trace_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    claim_count: Mapped[int] = mapped_column(
+        SmallInteger, nullable=False, server_default=text("0")
+    )
+    injection_attempts: Mapped[int] = mapped_column(
+        SmallInteger, nullable=False, server_default=text("0")
+    )
+    rejected_by_control: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+
+class AgentSessionHalt(Base):
+    """One operator stop, latched to one turn.
+
+    Not a ``kind`` column on the nudge table, because the two behave in
+    opposite directions on every mechanism that table has. A nudge is bound to
+    a session and lands at whatever model call happens next, possibly hours
+    later; a halt is bound to ``target_trace_id`` and is unclaimable outside
+    that turn, which is what stops a stale stop from killing a turn the human
+    deliberately started afterwards. A nudge queue has an ordering and a
+    per-call cap; a halt is a latch, which the unique constraint states
+    directly. And a nudge whose claiming process died must be redelivered,
+    while a halt whose claiming process died already got what the human asked
+    for.
+
+    ``target_trace_id`` is copied from ``agent_sessions.in_flight_trace_id``,
+    the liveness marker, and never from ``in_flight_since``, the lock. Those
+    two stop being synonyms the moment a turn outlives this server's patience,
+    and binding to the lock would hide the stop button at exactly T+timeout -
+    the single most likely moment for somebody to reach for it, behind a panel
+    showing nothing in flight. That the marker outlives the lock does not mean
+    the invocation does: the executor ends one when the request it arrived on
+    is dropped, so a halt bound to a timed-out turn is a record rather than a
+    delivery, and the next acquire ages it out.
+    """
+
+    __tablename__ = "agent_session_halts"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["namespace_key", "session_id"],
+            ["agent_sessions.namespace_key", "agent_sessions.id"],
+            name="agent_session_halts_session_fkey",
+            ondelete="CASCADE",
+        ),
+        # One row per turn, unconditionally rather than partially. A halt is a
+        # latch, so two halts against one turn are the same event, and a full
+        # unique constraint makes double-clicking idempotent by construction.
+        UniqueConstraint(
+            "namespace_key",
+            "session_id",
+            "target_trace_id",
+            name="uq_agent_session_halts_turn",
+        ),
+        Index(
+            "idx_agent_session_halts_drain",
+            "namespace_key",
+            "session_id",
+            "status",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    namespace_key: Mapped[str] = mapped_column(
+        String(255), nullable=False, server_default=_NAMESPACE_SERVER_DEFAULT
+    )
+    session_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    target_trace_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    mode: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default=text("'graceful'")
+    )
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default=text("'pending'")
+    )
+    created_by_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+    applied_at: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    applied_at_boundary: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    applied_tool_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    turn_ended_at: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
+class AgentSessionPlanStep(Base):
+    """One step of one plan an agent declared for itself.
+
+    Every row here is a claim by the agent, not an observation of it. That is
+    the reason the table exists at all: an executor's events are not progress,
+    and any number derived from counting them moves without meaning. A declared
+    plan is the only progress signal in this stack with an author, and it is
+    stored so a console can attribute it to that author rather than present it
+    as measurement.
+
+    The primary key carries ``plan_revision`` because agents replan, and a
+    re-declared plan is a new revision rather than an edit. Earlier revisions
+    are kept: a replan is a thing that happened, and a table that overwrote it
+    would show a person different steps than the ones they read a minute ago,
+    with nothing saying why.
+
+    ``updated_at`` is per step and is what staleness is read from. A plan whose
+    last write was an hour ago is an old plan; it is emphatically not a plan
+    that is 40% done, and no column here can be turned into that number.
+
+    ``declared_at`` is stored rather than derived from the earliest
+    ``updated_at``. The two agree only until every step has been marked, after
+    which the earliest update is later than the declaration and a console would
+    report a plan as declared at a moment it was not.
+    """
+
+    __tablename__ = "agent_session_plan_steps"
+    __table_args__ = (
+        PrimaryKeyConstraint(
+            "namespace_key",
+            "session_id",
+            "plan_revision",
+            "step_index",
+            name="agent_session_plan_steps_pkey",
+        ),
+        ForeignKeyConstraint(
+            ["namespace_key", "session_id"],
+            ["agent_sessions.namespace_key", "agent_sessions.id"],
+            name="agent_session_plan_steps_session_fkey",
+            ondelete="CASCADE",
+        ),
+    )
+
+    namespace_key: Mapped[str] = mapped_column(
+        String(255), nullable=False, server_default=_NAMESPACE_SERVER_DEFAULT
+    )
+    session_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    plan_revision: Mapped[int] = mapped_column(
+        SmallInteger, nullable=False, server_default=text("1")
+    )
+    step_index: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default=text("'pending'")
+    )
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    declared_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
         nullable=False,
     )
 

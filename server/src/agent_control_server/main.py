@@ -18,8 +18,22 @@ from starlette_exporter import PrometheusMiddleware, handle_metrics
 
 from . import __version__ as server_version
 from .auth import get_api_key_from_header
-from .config import observability_settings, settings
+from .config import (
+    auth_settings,
+    check_agent_config_startup_requirements,
+    check_executor_startup_requirements,
+    executor_settings,
+    observability_settings,
+    settings,
+)
 from .db import AsyncSessionLocal, async_engine
+from .endpoints.agent_configs import model_router as agent_model_router
+from .endpoints.agent_configs import router as agent_config_router
+from .endpoints.agent_halts import router as agent_halt_router
+from .endpoints.agent_nudges import router as agent_nudge_router
+from .endpoints.agent_plans import router as agent_plan_router
+from .endpoints.agent_runtimes import router as agent_runtime_router
+from .endpoints.agent_sessions import router as agent_session_router
 from .endpoints.agents import router as agent_router
 from .endpoints.auth import router as auth_router
 from .endpoints.control_bindings import router as control_binding_router
@@ -30,6 +44,7 @@ from .endpoints.evaluators import router as evaluator_router
 from .endpoints.observability import router as observability_router
 from .endpoints.policies import router as policy_router
 from .endpoints.system import router as system_router
+from .endpoints.teams import router as team_router
 from .errors import (
     APIError,
     api_error_handler,
@@ -67,6 +82,16 @@ PROMETHEUS_BUCKETS = [
     60.0,
     float("inf"),
 ]
+CORS_ALLOW_CREDENTIALS = True
+"""Cookie-based browser auth needs credentialed cross-origin requests.
+
+Named rather than inlined because the executor startup check has to reason
+about it: credentialed requests plus a wildcard origin means any page in any tab
+can drive this API as the logged-in operator, which is tolerable for a
+configuration console and is not tolerable once the same session can spend model
+quota.
+"""
+
 PROMETHEUS_SKIP_PATHS = [
     METRICS_PATH,
     "/health",
@@ -137,6 +162,26 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Lifespan context manager for FastAPI app startup and shutdown."""
     _configure_logging_once()
 
+    # Refuse to start an executor-enabled server that cannot protect the
+    # endpoints the executor adds. Before chat, an unauthenticated caller on a
+    # published port could tamper with configuration; after it, the same caller
+    # can spend the operator's model quota and put text in front of a running
+    # agent. This runs before anything else in startup so the failure is a
+    # refusal to boot rather than a window of exposure.
+    check_executor_startup_requirements(
+        executor=executor_settings,
+        auth=auth_settings,
+        cors_origins=settings.get_cors_origins(),
+        allow_credentials=CORS_ALLOW_CREDENTIALS,
+    )
+
+    # Decide whether saved agent configuration may reach a running agent.
+    # Unlike the executor check this never refuses to boot: a gated config store
+    # is still a working config store, and editing on a laptop with no
+    # credentials configured is how everybody first meets this feature. What it
+    # suppresses is the one thing that changes a running agent.
+    check_agent_config_startup_requirements(auth=auth_settings)
+
     # Install the request-auth provider selected by environment variables.
     from .auth_framework.config import configure_auth_from_env
 
@@ -193,6 +238,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     await teardown_auth()
 
+    # Shutdown: release the Linear HTTP client, if milestones were ever read.
+    from .services.linear_milestones import shutdown_milestone_service
+
+    await shutdown_milestone_service()
+
+    # Shutdown: release the executor connection pool, if a session was ever
+    # opened. Built on first use, so a server that never chats never opens it.
+    from .services.executor_factory import shutdown_executor_clients
+
+    await shutdown_executor_clients()
+
     # Shutdown: Clean up observability
     if observability_settings.enabled and hasattr(app.state, "event_store"):
         logger.info("Shutting down observability components...")
@@ -243,7 +299,7 @@ add_prometheus_metrics(app, settings.prometheus_metrics_prefix)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.get_cors_origins(),
-    allow_credentials=True,
+    allow_credentials=CORS_ALLOW_CREDENTIALS,
     allow_methods=settings.get_allow_methods(),
     allow_headers=settings.get_allow_headers(),
 )
@@ -336,6 +392,73 @@ app.include_router(
 
 app.include_router(
     observability_router,
+    prefix=api_v1_prefix,
+    dependencies=[Depends(get_api_key_from_header)],
+)
+
+app.include_router(
+    # Same rationale as control bindings: each endpoint's ``require_operation``
+    # owns authn + authz, and the header extractor is attached so the generated
+    # OpenAPI spec still advertises X-API-Key on these routes.
+    team_router,
+    prefix=api_v1_prefix,
+    dependencies=[Depends(get_api_key_from_header)],
+)
+
+app.include_router(
+    # Executor bindings and chat sessions. Same rationale as control bindings:
+    # each endpoint's ``require_operation`` owns authn + authz, and the header
+    # extractor is attached so the generated OpenAPI spec advertises X-API-Key.
+    agent_runtime_router,
+    prefix=api_v1_prefix,
+    dependencies=[Depends(get_api_key_from_header)],
+)
+
+app.include_router(
+    agent_session_router,
+    prefix=api_v1_prefix,
+    dependencies=[Depends(get_api_key_from_header)],
+)
+
+app.include_router(
+    # Per-agent system prompt and model. Reads are AUTHENTICATED because the
+    # agent process fetches its own config here on the refresh loop; writes are
+    # ADMIN because the body lands in a field no control evaluates and the model
+    # spends the operator's quota on every turn.
+    agent_config_router,
+    prefix=api_v1_prefix,
+    dependencies=[Depends(get_api_key_from_header)],
+)
+
+app.include_router(
+    # The model allowlist. Deployment-wide, namespace-independent, and gated on
+    # the write operation: at read tier it would be cross-tenant vendor
+    # reconnaissance readable by any agent process key.
+    agent_model_router,
+    prefix=api_v1_prefix,
+    dependencies=[Depends(get_api_key_from_header)],
+)
+
+# Nudges and halts hang off the session path. Their machine-side routes are
+# authorized by a session-bound runtime token rather than by the header
+# extractor mounted here, which is advertisement for OpenAPI only.
+app.include_router(
+    agent_nudge_router,
+    prefix=api_v1_prefix,
+    dependencies=[Depends(get_api_key_from_header)],
+)
+
+app.include_router(
+    agent_halt_router,
+    prefix=api_v1_prefix,
+    dependencies=[Depends(get_api_key_from_header)],
+)
+
+# The agent's own account of what it is doing. Reads sit with the transcript's
+# operation; writes are the agent's, under the same session-bound runtime token
+# the nudge and halt claims use.
+app.include_router(
+    agent_plan_router,
     prefix=api_v1_prefix,
     dependencies=[Depends(get_api_key_from_header)],
 )

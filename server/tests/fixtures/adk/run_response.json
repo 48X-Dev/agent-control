@@ -1,0 +1,132 @@
+{
+  "name": "run_blocking_with_stateDelta",
+  "request": {
+    "method": "POST",
+    "path": "/run",
+    "body": {
+      "appName": "spike_app",
+      "userId": "ns-demo:u-spike",
+      "sessionId": "spike-session-1",
+      "newMessage": {
+        "role": "user",
+        "parts": [
+          {
+            "text": "Report the phrase HELLO_API."
+          }
+        ]
+      },
+      "streaming": false,
+      "stateDelta": {
+        "agent_control.turn_trace_id": "trace-turn-42"
+      }
+    }
+  },
+  "response": {
+    "status": 200,
+    "content_type": "application/json",
+    "body": [
+      {
+        "modelVersion": "gpt-5.4-mini",
+        "content": {
+          "parts": [
+            {
+              "functionCall": {
+                "id": "call_77Qaf93uvnfHpVy4Bn8DSA8S",
+                "args": {
+                  "text": "HELLO_API"
+                },
+                "name": "send_report"
+              }
+            }
+          ],
+          "role": "model"
+        },
+        "partial": false,
+        "finishReason": "STOP",
+        "usageMetadata": {
+          "cachedContentTokenCount": 0,
+          "candidatesTokenCount": 117,
+          "promptTokenCount": 116,
+          "thoughtsTokenCount": 95,
+          "totalTokenCount": 233
+        },
+        "invocationId": "e-b024e0ff-e240-4d31-8c32-bd1b882c7de5",
+        "author": "root_agent",
+        "actions": {
+          "stateDelta": {},
+          "artifactDelta": {},
+          "requestedAuthConfigs": {},
+          "requestedToolConfirmations": {}
+        },
+        "nodeInfo": {
+          "path": "root_agent@1"
+        },
+        "longRunningToolIds": [],
+        "id": "bb65b36b-74c6-493e-99fe-70066d119018",
+        "timestamp": 1785687834.385799
+      },
+      {
+        "content": {
+          "parts": [
+            {
+              "functionResponse": {
+                "id": "call_77Qaf93uvnfHpVy4Bn8DSA8S",
+                "name": "send_report",
+                "response": {
+                  "status": "sent",
+                  "text": "HELLO_API"
+                }
+              }
+            }
+          ],
+          "role": "user"
+        },
+        "invocationId": "e-b024e0ff-e240-4d31-8c32-bd1b882c7de5",
+        "author": "root_agent",
+        "actions": {
+          "stateDelta": {},
+          "artifactDelta": {},
+          "requestedAuthConfigs": {},
+          "requestedToolConfirmations": {}
+        },
+        "nodeInfo": {
+          "path": "root_agent@1"
+        },
+        "id": "7711f7ee-856c-4e7a-8b30-a75bcd0939eb",
+        "timestamp": 1785687838.1308439
+      },
+      {
+        "modelVersion": "gpt-5.4-mini",
+        "content": {
+          "parts": [
+            {
+              "text": "Done."
+            }
+          ],
+          "role": "model"
+        },
+        "partial": false,
+        "finishReason": "STOP",
+        "usageMetadata": {
+          "cachedContentTokenCount": 0,
+          "candidatesTokenCount": 6,
+          "promptTokenCount": 158,
+          "totalTokenCount": 164
+        },
+        "invocationId": "e-b024e0ff-e240-4d31-8c32-bd1b882c7de5",
+        "author": "root_agent",
+        "actions": {
+          "stateDelta": {},
+          "artifactDelta": {},
+          "requestedAuthConfigs": {},
+          "requestedToolConfirmations": {}
+        },
+        "nodeInfo": {
+          "path": "root_agent@1"
+        },
+        "id": "1eff91ed-db05-432e-84dd-da5b51d64c64",
+        "timestamp": 1785687838.1358988
+      }
+    ]
+  }
+}

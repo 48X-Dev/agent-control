@@ -1,0 +1,31 @@
+{
+  "name": "run_missing_session",
+  "request": {
+    "method": "POST",
+    "path": "/run",
+    "body": {
+      "appName": "spike_app",
+      "userId": "ns-demo:u-spike",
+      "sessionId": "does-not-exist",
+      "newMessage": {
+        "role": "user",
+        "parts": [
+          {
+            "text": "Report the phrase HELLO_API."
+          }
+        ]
+      },
+      "streaming": false,
+      "stateDelta": {
+        "agent_control.turn_trace_id": "trace-turn-42"
+      }
+    }
+  },
+  "response": {
+    "status": 404,
+    "content_type": "application/json",
+    "body": {
+      "detail": "Session not found: does-not-exist"
+    }
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "name": "delete_session",
+  "request": {
+    "method": "DELETE",
+    "path": "/apps/spike_app/users/ns-demo:u-spike/sessions/spike-session-1",
+    "body": null
+  },
+  "response": {
+    "status": 200,
+    "content_type": "application/json",
+    "body": null
+  }
+}

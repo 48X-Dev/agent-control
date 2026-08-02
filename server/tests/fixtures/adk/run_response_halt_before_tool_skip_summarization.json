@@ -1,0 +1,200 @@
+{
+  "mode": "block_tool_skip_summarization",
+  "run_status": 200,
+  "run_event_count": 2,
+  "run_events": [
+    {
+      "modelVersion": "gpt-5.4-mini",
+      "content": {
+        "parts": [
+          {
+            "functionCall": {
+              "id": "call_I39F29pBoBR0rmLO42SqV2o9",
+              "args": {
+                "text": "HELLO_A9C"
+              },
+              "name": "send_report"
+            }
+          }
+        ],
+        "role": "model"
+      },
+      "partial": false,
+      "finishReason": "STOP",
+      "usageMetadata": {
+        "cachedContentTokenCount": 0,
+        "candidatesTokenCount": 140,
+        "promptTokenCount": 118,
+        "thoughtsTokenCount": 116,
+        "totalTokenCount": 258
+      },
+      "invocationId": "e-0c7e6bf4-e438-4b9d-aa2c-caf867cfea83",
+      "author": "root_agent",
+      "actions": {
+        "stateDelta": {},
+        "artifactDelta": {},
+        "requestedAuthConfigs": {},
+        "requestedToolConfirmations": {}
+      },
+      "nodeInfo": {
+        "path": "root_agent@1"
+      },
+      "longRunningToolIds": [],
+      "id": "d9e3e6e2-49f1-4210-ae69-20048f1a79d8",
+      "timestamp": 1785688017.93876
+    },
+    {
+      "content": {
+        "parts": [
+          {
+            "functionResponse": {
+              "id": "call_I39F29pBoBR0rmLO42SqV2o9",
+              "name": "send_report",
+              "response": {
+                "status": "blocked",
+                "message": "BLOCKED_BY_HALT_TOOL"
+              }
+            }
+          },
+          {
+            "text": "{\"status\": \"blocked\", \"message\": \"BLOCKED_BY_HALT_TOOL\"}"
+          }
+        ],
+        "role": "user"
+      },
+      "invocationId": "e-0c7e6bf4-e438-4b9d-aa2c-caf867cfea83",
+      "author": "root_agent",
+      "actions": {
+        "skipSummarization": true,
+        "stateDelta": {},
+        "artifactDelta": {},
+        "requestedAuthConfigs": {},
+        "requestedToolConfirmations": {}
+      },
+      "nodeInfo": {
+        "path": "root_agent@1"
+      },
+      "id": "1ff7d6f5-adfa-409f-a986-8eb18dfa80d6",
+      "timestamp": 1785688020.724742
+    }
+  ],
+  "callbacks": [
+    "before_model",
+    "after_model",
+    "before_tool",
+    "after_tool"
+  ],
+  "tool_body_executed": false,
+  "side_effect_exists": false,
+  "side_effect": null,
+  "session_after": {
+    "id": "a9-skip",
+    "appName": "spike_app",
+    "userId": "ns-demo:u-spike",
+    "state": {
+      "agent_control.trace_id": "trace-0001",
+      "agent_control.session_key": "sess-abc-123",
+      "agent_control.runtime_token": "tok-xyz-789"
+    },
+    "events": [
+      {
+        "content": {
+          "parts": [
+            {
+              "text": "Report the phrase HELLO_A9C."
+            }
+          ],
+          "role": "user"
+        },
+        "invocationId": "e-0c7e6bf4-e438-4b9d-aa2c-caf867cfea83",
+        "author": "user",
+        "actions": {
+          "stateDelta": {},
+          "artifactDelta": {},
+          "requestedAuthConfigs": {},
+          "requestedToolConfirmations": {}
+        },
+        "nodeInfo": {
+          "path": ""
+        },
+        "id": "f36bbf7d-3462-45f5-a66d-f0ca8982e2ed",
+        "timestamp": 1785688017.932649
+      },
+      {
+        "modelVersion": "gpt-5.4-mini",
+        "content": {
+          "parts": [
+            {
+              "functionCall": {
+                "id": "call_I39F29pBoBR0rmLO42SqV2o9",
+                "args": {
+                  "text": "HELLO_A9C"
+                },
+                "name": "send_report"
+              }
+            }
+          ],
+          "role": "model"
+        },
+        "partial": false,
+        "finishReason": "STOP",
+        "usageMetadata": {
+          "cachedContentTokenCount": 0,
+          "candidatesTokenCount": 140,
+          "promptTokenCount": 118,
+          "thoughtsTokenCount": 116,
+          "totalTokenCount": 258
+        },
+        "invocationId": "e-0c7e6bf4-e438-4b9d-aa2c-caf867cfea83",
+        "author": "root_agent",
+        "actions": {
+          "stateDelta": {},
+          "artifactDelta": {},
+          "requestedAuthConfigs": {},
+          "requestedToolConfirmations": {}
+        },
+        "nodeInfo": {
+          "path": "root_agent@1"
+        },
+        "longRunningToolIds": [],
+        "id": "d9e3e6e2-49f1-4210-ae69-20048f1a79d8",
+        "timestamp": 1785688017.93876
+      },
+      {
+        "content": {
+          "parts": [
+            {
+              "functionResponse": {
+                "id": "call_I39F29pBoBR0rmLO42SqV2o9",
+                "name": "send_report",
+                "response": {
+                  "status": "blocked",
+                  "message": "BLOCKED_BY_HALT_TOOL"
+                }
+              }
+            },
+            {
+              "text": "{\"status\": \"blocked\", \"message\": \"BLOCKED_BY_HALT_TOOL\"}"
+            }
+          ],
+          "role": "user"
+        },
+        "invocationId": "e-0c7e6bf4-e438-4b9d-aa2c-caf867cfea83",
+        "author": "root_agent",
+        "actions": {
+          "skipSummarization": true,
+          "stateDelta": {},
+          "artifactDelta": {},
+          "requestedAuthConfigs": {},
+          "requestedToolConfirmations": {}
+        },
+        "nodeInfo": {
+          "path": "root_agent@1"
+        },
+        "id": "1ff7d6f5-adfa-409f-a986-8eb18dfa80d6",
+        "timestamp": 1785688020.724742
+      }
+    ],
+    "lastUpdateTime": 1785688020.724742
+  }
+}

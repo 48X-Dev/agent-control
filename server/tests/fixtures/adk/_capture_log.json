@@ -1,0 +1,588 @@
+[
+  {
+    "name": "create_session_with_id__wrapped_state_body",
+    "request": {
+      "method": "POST",
+      "path": "/apps/spike_app/users/ns-demo:u-spike/sessions/spike-session-1",
+      "body": {
+        "state": {
+          "agent_control.session_key": "sess-abc-123",
+          "agent_control.runtime_token": "tok-xyz-789",
+          "agent_control.trace_id": "trace-0001"
+        }
+      }
+    },
+    "response": {
+      "status": 200,
+      "content_type": "application/json",
+      "body": {
+        "id": "spike-session-1",
+        "appName": "spike_app",
+        "userId": "ns-demo:u-spike",
+        "state": {
+          "state": {
+            "agent_control.session_key": "sess-abc-123",
+            "agent_control.runtime_token": "tok-xyz-789",
+            "agent_control.trace_id": "trace-0001"
+          }
+        },
+        "events": [],
+        "lastUpdateTime": 1785687833.737636
+      }
+    }
+  },
+  {
+    "name": "create_session_with_id__bare_state_body",
+    "request": {
+      "method": "POST",
+      "path": "/apps/spike_app/users/ns-demo:u-spike/sessions/spike-session-1",
+      "body": {
+        "agent_control.session_key": "sess-abc-123",
+        "agent_control.runtime_token": "tok-xyz-789",
+        "agent_control.trace_id": "trace-0001"
+      }
+    },
+    "response": {
+      "status": 200,
+      "content_type": "application/json",
+      "body": {
+        "id": "spike-session-1",
+        "appName": "spike_app",
+        "userId": "ns-demo:u-spike",
+        "state": {
+          "agent_control.session_key": "sess-abc-123",
+          "agent_control.runtime_token": "tok-xyz-789",
+          "agent_control.trace_id": "trace-0001"
+        },
+        "events": [],
+        "lastUpdateTime": 1785687833.750768
+      }
+    }
+  },
+  {
+    "name": "get_session_empty",
+    "request": {
+      "method": "GET",
+      "path": "/apps/spike_app/users/ns-demo:u-spike/sessions/spike-session-1",
+      "body": null
+    },
+    "response": {
+      "status": 200,
+      "content_type": "application/json",
+      "body": {
+        "id": "spike-session-1",
+        "appName": "spike_app",
+        "userId": "ns-demo:u-spike",
+        "state": {
+          "agent_control.trace_id": "trace-0001",
+          "agent_control.session_key": "sess-abc-123",
+          "agent_control.runtime_token": "tok-xyz-789"
+        },
+        "events": [],
+        "lastUpdateTime": 1785687833.750768
+      }
+    }
+  },
+  {
+    "name": "get_session_missing",
+    "request": {
+      "method": "GET",
+      "path": "/apps/spike_app/users/ns-demo:u-spike/sessions/does-not-exist",
+      "body": null
+    },
+    "response": {
+      "status": 404,
+      "content_type": "application/json",
+      "body": {
+        "detail": "Session not found"
+      }
+    }
+  },
+  {
+    "name": "run_blocking_with_stateDelta",
+    "request": {
+      "method": "POST",
+      "path": "/run",
+      "body": {
+        "appName": "spike_app",
+        "userId": "ns-demo:u-spike",
+        "sessionId": "spike-session-1",
+        "newMessage": {
+          "role": "user",
+          "parts": [
+            {
+              "text": "Report the phrase HELLO_API."
+            }
+          ]
+        },
+        "streaming": false,
+        "stateDelta": {
+          "agent_control.turn_trace_id": "trace-turn-42"
+        }
+      }
+    },
+    "response": {
+      "status": 200,
+      "content_type": "application/json",
+      "body": [
+        {
+          "modelVersion": "gpt-5.4-mini",
+          "content": {
+            "parts": [
+              {
+                "functionCall": {
+                  "id": "call_77Qaf93uvnfHpVy4Bn8DSA8S",
+                  "args": {
+                    "text": "HELLO_API"
+                  },
+                  "name": "send_report"
+                }
+              }
+            ],
+            "role": "model"
+          },
+          "partial": false,
+          "finishReason": "STOP",
+          "usageMetadata": {
+            "cachedContentTokenCount": 0,
+            "candidatesTokenCount": 117,
+            "promptTokenCount": 116,
+            "thoughtsTokenCount": 95,
+            "totalTokenCount": 233
+          },
+          "invocationId": "e-b024e0ff-e240-4d31-8c32-bd1b882c7de5",
+          "author": "root_agent",
+          "actions": {
+            "stateDelta": {},
+            "artifactDelta": {},
+            "requestedAuthConfigs": {},
+            "requestedToolConfirmations": {}
+          },
+          "nodeInfo": {
+            "path": "root_agent@1"
+          },
+          "longRunningToolIds": [],
+          "id": "bb65b36b-74c6-493e-99fe-70066d119018",
+          "timestamp": 1785687834.385799
+        },
+        {
+          "content": {
+            "parts": [
+              {
+                "functionResponse": {
+                  "id": "call_77Qaf93uvnfHpVy4Bn8DSA8S",
+                  "name": "send_report",
+                  "response": {
+                    "status": "sent",
+                    "text": "HELLO_API"
+                  }
+                }
+              }
+            ],
+            "role": "user"
+          },
+          "invocationId": "e-b024e0ff-e240-4d31-8c32-bd1b882c7de5",
+          "author": "root_agent",
+          "actions": {
+            "stateDelta": {},
+            "artifactDelta": {},
+            "requestedAuthConfigs": {},
+            "requestedToolConfirmations": {}
+          },
+          "nodeInfo": {
+            "path": "root_agent@1"
+          },
+          "id": "7711f7ee-856c-4e7a-8b30-a75bcd0939eb",
+          "timestamp": 1785687838.1308439
+        },
+        {
+          "modelVersion": "gpt-5.4-mini",
+          "content": {
+            "parts": [
+              {
+                "text": "Done."
+              }
+            ],
+            "role": "model"
+          },
+          "partial": false,
+          "finishReason": "STOP",
+          "usageMetadata": {
+            "cachedContentTokenCount": 0,
+            "candidatesTokenCount": 6,
+            "promptTokenCount": 158,
+            "totalTokenCount": 164
+          },
+          "invocationId": "e-b024e0ff-e240-4d31-8c32-bd1b882c7de5",
+          "author": "root_agent",
+          "actions": {
+            "stateDelta": {},
+            "artifactDelta": {},
+            "requestedAuthConfigs": {},
+            "requestedToolConfirmations": {}
+          },
+          "nodeInfo": {
+            "path": "root_agent@1"
+          },
+          "id": "1eff91ed-db05-432e-84dd-da5b51d64c64",
+          "timestamp": 1785687838.1358988
+        }
+      ]
+    }
+  },
+  {
+    "name": "get_session_after_turn",
+    "request": {
+      "method": "GET",
+      "path": "/apps/spike_app/users/ns-demo:u-spike/sessions/spike-session-1",
+      "body": null
+    },
+    "response": {
+      "status": 200,
+      "content_type": "application/json",
+      "body": {
+        "id": "spike-session-1",
+        "appName": "spike_app",
+        "userId": "ns-demo:u-spike",
+        "state": {
+          "agent_control.trace_id": "trace-0001",
+          "agent_control.session_key": "sess-abc-123",
+          "agent_control.runtime_token": "tok-xyz-789",
+          "agent_control.turn_trace_id": "trace-turn-42"
+        },
+        "events": [
+          {
+            "content": {
+              "parts": [
+                {
+                  "text": "Report the phrase HELLO_API."
+                }
+              ],
+              "role": "user"
+            },
+            "invocationId": "e-b024e0ff-e240-4d31-8c32-bd1b882c7de5",
+            "author": "user",
+            "actions": {
+              "stateDelta": {
+                "agent_control.turn_trace_id": "trace-turn-42"
+              },
+              "artifactDelta": {},
+              "requestedAuthConfigs": {},
+              "requestedToolConfirmations": {}
+            },
+            "nodeInfo": {
+              "path": ""
+            },
+            "id": "51d630bb-4836-4a2e-8dbc-715cdebce454",
+            "timestamp": 1785687833.772765
+          },
+          {
+            "modelVersion": "gpt-5.4-mini",
+            "content": {
+              "parts": [
+                {
+                  "functionCall": {
+                    "id": "call_77Qaf93uvnfHpVy4Bn8DSA8S",
+                    "args": {
+                      "text": "HELLO_API"
+                    },
+                    "name": "send_report"
+                  }
+                }
+              ],
+              "role": "model"
+            },
+            "partial": false,
+            "finishReason": "STOP",
+            "usageMetadata": {
+              "cachedContentTokenCount": 0,
+              "candidatesTokenCount": 117,
+              "promptTokenCount": 116,
+              "thoughtsTokenCount": 95,
+              "totalTokenCount": 233
+            },
+            "invocationId": "e-b024e0ff-e240-4d31-8c32-bd1b882c7de5",
+            "author": "root_agent",
+            "actions": {
+              "stateDelta": {},
+              "artifactDelta": {},
+              "requestedAuthConfigs": {},
+              "requestedToolConfirmations": {}
+            },
+            "nodeInfo": {
+              "path": "root_agent@1"
+            },
+            "longRunningToolIds": [],
+            "id": "bb65b36b-74c6-493e-99fe-70066d119018",
+            "timestamp": 1785687834.385799
+          },
+          {
+            "content": {
+              "parts": [
+                {
+                  "functionResponse": {
+                    "id": "call_77Qaf93uvnfHpVy4Bn8DSA8S",
+                    "name": "send_report",
+                    "response": {
+                      "text": "HELLO_API",
+                      "status": "sent"
+                    }
+                  }
+                }
+              ],
+              "role": "user"
+            },
+            "invocationId": "e-b024e0ff-e240-4d31-8c32-bd1b882c7de5",
+            "author": "root_agent",
+            "actions": {
+              "stateDelta": {},
+              "artifactDelta": {},
+              "requestedAuthConfigs": {},
+              "requestedToolConfirmations": {}
+            },
+            "nodeInfo": {
+              "path": "root_agent@1"
+            },
+            "id": "7711f7ee-856c-4e7a-8b30-a75bcd0939eb",
+            "timestamp": 1785687838.130844
+          },
+          {
+            "modelVersion": "gpt-5.4-mini",
+            "content": {
+              "parts": [
+                {
+                  "text": "Done."
+                }
+              ],
+              "role": "model"
+            },
+            "partial": false,
+            "finishReason": "STOP",
+            "usageMetadata": {
+              "cachedContentTokenCount": 0,
+              "candidatesTokenCount": 6,
+              "promptTokenCount": 158,
+              "totalTokenCount": 164
+            },
+            "invocationId": "e-b024e0ff-e240-4d31-8c32-bd1b882c7de5",
+            "author": "root_agent",
+            "actions": {
+              "stateDelta": {},
+              "artifactDelta": {},
+              "requestedAuthConfigs": {},
+              "requestedToolConfirmations": {}
+            },
+            "nodeInfo": {
+              "path": "root_agent@1"
+            },
+            "id": "1eff91ed-db05-432e-84dd-da5b51d64c64",
+            "timestamp": 1785687838.135899
+          }
+        ],
+        "lastUpdateTime": 1785687838.135899
+      }
+    }
+  },
+  {
+    "name": "list_sessions",
+    "request": {
+      "method": "GET",
+      "path": "/apps/spike_app/users/ns-demo:u-spike/sessions",
+      "body": null
+    },
+    "response": {
+      "status": 200,
+      "content_type": "application/json",
+      "body": [
+        {
+          "id": "spike-session-1",
+          "appName": "spike_app",
+          "userId": "ns-demo:u-spike",
+          "state": {
+            "agent_control.trace_id": "trace-0001",
+            "agent_control.session_key": "sess-abc-123",
+            "agent_control.runtime_token": "tok-xyz-789",
+            "agent_control.turn_trace_id": "trace-turn-42"
+          },
+          "events": [],
+          "lastUpdateTime": 1785687838.135899
+        }
+      ]
+    }
+  },
+  {
+    "name": "run_unknown_app",
+    "request": {
+      "method": "POST",
+      "path": "/run",
+      "body": {
+        "appName": "no_such_app",
+        "userId": "ns-demo:u-spike",
+        "sessionId": "spike-session-1",
+        "newMessage": {
+          "role": "user",
+          "parts": [
+            {
+              "text": "Report the phrase HELLO_API."
+            }
+          ]
+        },
+        "streaming": false,
+        "stateDelta": {
+          "agent_control.turn_trace_id": "trace-turn-42"
+        }
+      }
+    },
+    "response": {
+      "status": 404,
+      "content_type": "application/json",
+      "body": {
+        "detail": "Agent not found: 'no_such_app'. No matching directory or module exists in '/private/tmp/claude-501/-Users-paulaldea-git-agent-control/3637184e-41a7-4029-a317-159484b11325/scratchpad/spike/agents/no_such_app'."
+      }
+    }
+  },
+  {
+    "name": "run_missing_session",
+    "request": {
+      "method": "POST",
+      "path": "/run",
+      "body": {
+        "appName": "spike_app",
+        "userId": "ns-demo:u-spike",
+        "sessionId": "does-not-exist",
+        "newMessage": {
+          "role": "user",
+          "parts": [
+            {
+              "text": "Report the phrase HELLO_API."
+            }
+          ]
+        },
+        "streaming": false,
+        "stateDelta": {
+          "agent_control.turn_trace_id": "trace-turn-42"
+        }
+      }
+    },
+    "response": {
+      "status": 404,
+      "content_type": "application/json",
+      "body": {
+        "detail": "Session not found: does-not-exist"
+      }
+    }
+  },
+  {
+    "name": "run_missing_required_fields",
+    "request": {
+      "method": "POST",
+      "path": "/run",
+      "body": {
+        "appName": "spike_app"
+      }
+    },
+    "response": {
+      "status": 422,
+      "content_type": "application/json",
+      "body": {
+        "detail": [
+          {
+            "type": "missing",
+            "loc": [
+              "body",
+              "userId"
+            ],
+            "msg": "Field required",
+            "input": {
+              "appName": "spike_app"
+            }
+          },
+          {
+            "type": "missing",
+            "loc": [
+              "body",
+              "sessionId"
+            ],
+            "msg": "Field required",
+            "input": {
+              "appName": "spike_app"
+            }
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "health",
+    "request": {
+      "method": "GET",
+      "path": "/health",
+      "body": null
+    },
+    "response": {
+      "status": 200,
+      "content_type": "application/json",
+      "body": {
+        "status": "ok"
+      }
+    }
+  },
+  {
+    "name": "list_apps",
+    "request": {
+      "method": "GET",
+      "path": "/list-apps",
+      "body": null
+    },
+    "response": {
+      "status": 200,
+      "content_type": "application/json",
+      "body": [
+        "spike_app"
+      ]
+    }
+  },
+  {
+    "name": "version",
+    "request": {
+      "method": "GET",
+      "path": "/version",
+      "body": null
+    },
+    "response": {
+      "status": 200,
+      "content_type": "application/json",
+      "body": {
+        "version": "2.6.1",
+        "language": "python",
+        "language_version": "3.12.10"
+      }
+    }
+  },
+  {
+    "name": "delete_session",
+    "request": {
+      "method": "DELETE",
+      "path": "/apps/spike_app/users/ns-demo:u-spike/sessions/spike-session-1",
+      "body": null
+    },
+    "response": {
+      "status": 200,
+      "content_type": "application/json",
+      "body": null
+    }
+  },
+  {
+    "name": "delete_session_again",
+    "request": {
+      "method": "DELETE",
+      "path": "/apps/spike_app/users/ns-demo:u-spike/sessions/spike-session-1",
+      "body": null
+    },
+    "response": {
+      "status": 200,
+      "content_type": "application/json",
+      "body": null
+    }
+  }
+]
