@@ -64,6 +64,15 @@ class ErrorCode(StrEnum):
     CONTROL_VERSION_NOT_FOUND = "CONTROL_VERSION_NOT_FOUND"
     CONTROL_BINDING_NOT_FOUND = "CONTROL_BINDING_NOT_FOUND"
     EVALUATOR_NOT_FOUND = "EVALUATOR_NOT_FOUND"
+    TEAM_NOT_FOUND = "TEAM_NOT_FOUND"
+    AGENT_SESSION_NOT_FOUND = "AGENT_SESSION_NOT_FOUND"
+    NUDGE_NOT_FOUND = "NUDGE_NOT_FOUND"
+    HALT_NOT_FOUND = "HALT_NOT_FOUND"
+    AGENT_CONFIG_NOT_FOUND = "AGENT_CONFIG_NOT_FOUND"
+    # An agent that never declared a plan is the ordinary case on a read, which
+    # answers with an empty plan rather than this. This is for a step update
+    # against a session that has no plan at all to update.
+    PLAN_NOT_FOUND = "PLAN_NOT_FOUND"
 
     # Conflict Errors (3xx pattern)
     AGENT_NAME_CONFLICT = "AGENT_NAME_CONFLICT"
@@ -75,21 +84,57 @@ class ErrorCode(StrEnum):
     CONTROL_TEMPLATE_CONFLICT = "CONTROL_TEMPLATE_CONFLICT"
     EVALUATOR_IN_USE = "EVALUATOR_IN_USE"
     SCHEMA_INCOMPATIBLE = "SCHEMA_INCOMPATIBLE"
+    TEAM_HAS_MEMBERS = "TEAM_HAS_MEMBERS"
+    AGENT_RUNTIME_NOT_BOUND = "AGENT_RUNTIME_NOT_BOUND"
+    # Optimistic concurrency on the agent config row. One row carries the
+    # system prompt and the model, so a prompt edit and a model edit conflict
+    # with each other - which is correct, they are one version.
+    AGENT_CONFIG_VERSION_CONFLICT = "AGENT_CONFIG_VERSION_CONFLICT"
+    # A session runs one turn at a time. A second turn against a session that
+    # already has one in flight is a conflict rather than a queue: the caller
+    # has to decide whether to wait or to stop what is running.
+    TURN_IN_FLIGHT = "TURN_IN_FLIGHT"
+    # The mirror image, and a conflict for the same reason: whether a turn is
+    # running is state, not something the caller got wrong. A halt is bound to
+    # one turn, so a session running nothing has nothing to bind to.
+    TURN_NOT_IN_FLIGHT = "TURN_NOT_IN_FLIGHT"
+    # A step update naming a plan that has since been re-declared. A conflict
+    # rather than a validation failure: the request was well formed and would
+    # have been correct a moment earlier. Guessing "they must mean the latest
+    # plan" marks a step of the new plan done because a step of the old one
+    # finished.
+    PLAN_REVISION_STALE = "PLAN_REVISION_STALE"
 
     # Validation Errors (4xx pattern)
     VALIDATION_ERROR = "VALIDATION_ERROR"
     INVALID_CONFIG = "INVALID_CONFIG"
+    # A model id that is well formed but not offered by this deployment.
+    # 400 on a save, where the caller can pick another; 409 on a restore,
+    # where the caller asked for a state the server no longer understands.
+    MODEL_NOT_ALLOWED = "MODEL_NOT_ALLOWED"
     INVALID_SCHEMA = "INVALID_SCHEMA"
     CORRUPTED_DATA = "CORRUPTED_DATA"
     POLICY_CONTROL_INCOMPATIBLE = "POLICY_CONTROL_INCOMPATIBLE"
     CONTROL_BINDING_INCOMPATIBLE = "CONTROL_BINDING_INCOMPATIBLE"
     TEMPLATE_PARAMETER_INVALID = "TEMPLATE_PARAMETER_INVALID"
     TEMPLATE_RENDER_ERROR = "TEMPLATE_RENDER_ERROR"
+    # Marking step 7 of a five-step plan. Refused whole: a step that does not
+    # exist cannot be half written, and an agent whose index is wrong should
+    # learn that rather than have a neighbouring step marked for it.
+    PLAN_STEP_OUT_OF_RANGE = "PLAN_STEP_OUT_OF_RANGE"
+
+    # Capacity (429)
+    QUOTA_EXCEEDED = "QUOTA_EXCEEDED"
 
     # Server Errors (5xx pattern)
     DATABASE_ERROR = "DATABASE_ERROR"
     INTERNAL_ERROR = "INTERNAL_ERROR"
     EVALUATION_FAILED = "EVALUATION_FAILED"
+    # The executor is the process that runs an agent. It is a separate service,
+    # so its failures are reported as its own, and the detail text is written
+    # here rather than lifted from whatever the executor returned.
+    EXECUTOR_UNAVAILABLE = "EXECUTOR_UNAVAILABLE"
+    EXECUTOR_REJECTED = "EXECUTOR_REJECTED"
 
 
 class ErrorReason(StrEnum):
@@ -373,6 +418,12 @@ ERROR_TITLES: dict[ErrorCode, str] = {
     ErrorCode.CONTROL_VERSION_NOT_FOUND: "Control Version Not Found",
     ErrorCode.CONTROL_BINDING_NOT_FOUND: "Control Binding Not Found",
     ErrorCode.EVALUATOR_NOT_FOUND: "Evaluator Not Found",
+    ErrorCode.TEAM_NOT_FOUND: "Team Not Found",
+    ErrorCode.AGENT_SESSION_NOT_FOUND: "Agent Session Not Found",
+    ErrorCode.NUDGE_NOT_FOUND: "Nudge Not Found",
+    ErrorCode.AGENT_CONFIG_NOT_FOUND: "Agent Configuration Not Found",
+    ErrorCode.HALT_NOT_FOUND: "Halt Not Found",
+    ErrorCode.PLAN_NOT_FOUND: "No Plan Was Declared",
     # Conflict errors
     ErrorCode.AGENT_NAME_CONFLICT: "Agent Name Already Exists",
     ErrorCode.POLICY_NAME_CONFLICT: "Policy Name Already Exists",
@@ -383,19 +434,31 @@ ERROR_TITLES: dict[ErrorCode, str] = {
     ErrorCode.CONTROL_TEMPLATE_CONFLICT: "Control Template Conflict",
     ErrorCode.EVALUATOR_IN_USE: "Evaluator In Use",
     ErrorCode.SCHEMA_INCOMPATIBLE: "Schema Incompatible",
+    ErrorCode.TEAM_HAS_MEMBERS: "Team Still Has Members",
+    ErrorCode.AGENT_RUNTIME_NOT_BOUND: "Agent Has No Executor Binding",
+    ErrorCode.AGENT_CONFIG_VERSION_CONFLICT: "Agent Configuration Was Changed",
+    ErrorCode.TURN_IN_FLIGHT: "A Turn Is Already Running",
+    ErrorCode.TURN_NOT_IN_FLIGHT: "No Turn Is Running",
+    ErrorCode.PLAN_REVISION_STALE: "The Plan Was Revised",
     # Validation errors
     ErrorCode.VALIDATION_ERROR: "Validation Error",
     ErrorCode.INVALID_CONFIG: "Invalid Configuration",
+    ErrorCode.MODEL_NOT_ALLOWED: "Model Not Allowed",
     ErrorCode.INVALID_SCHEMA: "Invalid Schema",
     ErrorCode.CORRUPTED_DATA: "Corrupted Data",
     ErrorCode.POLICY_CONTROL_INCOMPATIBLE: "Policy Control Incompatible",
     ErrorCode.CONTROL_BINDING_INCOMPATIBLE: "Control Binding Incompatible",
     ErrorCode.TEMPLATE_PARAMETER_INVALID: "Template Parameter Invalid",
     ErrorCode.TEMPLATE_RENDER_ERROR: "Template Render Error",
+    ErrorCode.PLAN_STEP_OUT_OF_RANGE: "No Such Step In This Plan",
+    # Capacity
+    ErrorCode.QUOTA_EXCEEDED: "Quota Exceeded",
     # Server errors
     ErrorCode.DATABASE_ERROR: "Database Error",
     ErrorCode.INTERNAL_ERROR: "Internal Server Error",
     ErrorCode.EVALUATION_FAILED: "Evaluation Failed",
+    ErrorCode.EXECUTOR_UNAVAILABLE: "Executor Unavailable",
+    ErrorCode.EXECUTOR_REJECTED: "Executor Rejected The Request",
 }
 
 
