@@ -7,15 +7,16 @@
 #
 # Services:
 #   - PostgreSQL database (port 5432)
-#   - Agent Control Server API (port 8000)
-#   - Agent Control UI Dashboard (port 4000)
+#   - Agent Control Server API (port 8000), which also serves the UI dashboard
+#     at http://localhost:8000/ui
 #
-# The images are published to Docker Hub at:
+# The image is published to Docker Hub at:
 #   galileoai/agent-control-server:latest
-#   galileoai/agent-control-ui:latest
 #
-# This compose file pulls prebuilt images for both server and UI from Docker Hub.
-# For local development (run server with uvicorn or build UI locally), use:
+# This compose file pulls the prebuilt server image from Docker Hub.
+# For local development (run the server with uvicorn, or run the UI separately
+# from ui/ with `make ui-dev`, which serves it on port 4000 - the default of
+# AGENT_CONTROL_CORS_ORIGINS below), use:
 #   docker compose -f docker-compose.dev.yml up -d
 
 services:
@@ -38,8 +39,13 @@ services:
     restart: unless-stopped
 
   server:
-    platform: linux/amd64
-    image: galileoai/agent-control-server:latest
+    # Both default to the published amd64 image. To run a locally built image
+    # (e.g. to test unreleased changes), set these in .env:
+    #   docker build -t agent-control-server:local -f server/Dockerfile .
+    #   AGENT_CONTROL_SERVER_IMAGE=agent-control-server:local
+    #   AGENT_CONTROL_SERVER_PLATFORM=linux/arm64   # match your host
+    platform: ${AGENT_CONTROL_SERVER_PLATFORM:-linux/amd64}
+    image: ${AGENT_CONTROL_SERVER_IMAGE:-galileoai/agent-control-server:latest}
     container_name: agent_control_server
     ports:
       - "${AGENT_CONTROL_SERVER_HOST_PORT:-8000}:8000"
@@ -56,6 +62,19 @@ services:
       AGENT_CONTROL_ADMIN_API_KEYS: ${AGENT_CONTROL_ADMIN_API_KEYS:-}
       AGENT_CONTROL_SESSION_SECRET: ${AGENT_CONTROL_SESSION_SECRET:-}
       AGENT_CONTROL_CORS_ORIGINS: ${AGENT_CONTROL_CORS_ORIGINS:-http://localhost:4000}
+      # Agent executor. Off by default; while off the chat endpoints answer 503
+      # and nothing else changes. Read the "Agent executor" block in
+      # server/.env.example before enabling - it requires API keys to be on.
+      AGENT_CONTROL_EXECUTOR_ENABLED: ${AGENT_CONTROL_EXECUTOR_ENABLED:-false}
+      AGENT_CONTROL_EXECUTOR_SHARED_SECRET: ${AGENT_CONTROL_EXECUTOR_SHARED_SECRET:-}
+      AGENT_CONTROL_EXECUTOR_TIMEOUT_SECONDS: ${AGENT_CONTROL_EXECUTOR_TIMEOUT_SECONDS:-30}
+      AGENT_CONTROL_EXECUTOR_TURN_TIMEOUT_SECONDS: ${AGENT_CONTROL_EXECUTOR_TURN_TIMEOUT_SECONDS:-300}
+      AGENT_CONTROL_EXECUTOR_ALLOW_INSECURE_LOCAL_DEV: ${AGENT_CONTROL_EXECUTOR_ALLOW_INSECURE_LOCAL_DEV:-false}
+      # Linear milestones. The key is held server-side and never reaches the
+      # browser; unset simply leaves the panel in its not-configured state.
+      AGENT_CONTROL_LINEAR_API_KEY: ${AGENT_CONTROL_LINEAR_API_KEY:-}
+      AGENT_CONTROL_LINEAR_TIMEOUT_SECONDS: ${AGENT_CONTROL_LINEAR_TIMEOUT_SECONDS:-10}
+      AGENT_CONTROL_LINEAR_CACHE_TTL_SECONDS: ${AGENT_CONTROL_LINEAR_CACHE_TTL_SECONDS:-60}
     depends_on:
       postgres:
         condition: service_healthy
