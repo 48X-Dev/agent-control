@@ -21,6 +21,7 @@ members = [
     "telemetry",
     "engine",
     "evaluators/builtin",
+    "dispatcher",
     # NOTE: evaluators/contrib/* excluded - install separately when needed
 ]
 
