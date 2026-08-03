@@ -590,12 +590,50 @@ back to the public website. It could see the link in the body and could not dere
 because `web_fetch_exa` is an unauthenticated public-web fetcher and the Linear key is
 server-held by design.
 
-**So ingress reads both channels**: `attachments { nodes { url } }` *and* markdown links
-matching the `uploads.linear.app` host allowlist extracted from `description`. Body
-extraction is a host-allowlisted regex over a field the tracker's own users write, which is
-untrusted input, so it is subject to the same allowlist, the same per-step count ceiling and
-the same byte ceiling as the connection. A link to any other host is dropped without a
-fetch, not followed.
+**So ingress does not enumerate channels. It sweeps text fields for the upload host and
+dedupes by URL.** Enumerating channels is how you find six of twelve files and believe you
+are done. Measured across the same 43 issues:
+
+| channel | distinct upload URLs |
+|---|---|
+| `attachments { nodes { url } }` | 6 |
+| `description` body | 6 |
+| **overlap between those two** | **0** |
+| `documentContent.content` | identical set to `description` |
+| comment bodies | 0 today, and the channel exists |
+| **total distinct** | **12** |
+
+The two populated channels are wholly disjoint, so reading only the structured connection
+delivers half the corpus and reports no error. `documentContent` is the rich-text rendering
+of `description` and returns the identical set, which is exactly why dedup by URL is the
+mechanism rather than careful field selection: overlapping fields become harmless and a
+field nobody thought of is still covered.
+
+Comments measure zero in this workspace today. That is a fact about this workspace, not
+about Linear, and it is not a reason to leave the channel out: a person answering "can you
+look at this?" in a comment is the most natural way for a file to arrive.
+
+The rule, therefore:
+
+1. Take `attachments { nodes { url } }`, the structured connection.
+2. Sweep **every text field the issue exposes** - `description`, comment bodies,
+   `documentContent` - with a host-allowlisted match for `uploads.linear.app`.
+3. Dedupe by URL. This is what makes (2) safe to over-cover.
+4. Apply the same per-step count ceiling and byte ceiling to the union. These fields are
+   written by tracker users and are untrusted input; the sweep widens what is *found*, never
+   what is *spent*.
+
+**A link to any other host is dropped without a fetch, not followed.** So the promise is
+"every file uploaded to Linear", never "every file linked from Linear". A Drive or Dropbox
+URL in a description is not fetched, because dereferencing arbitrary URLs is the SSRF pivot
+`orchestration-plan.md` section 5 already names, and no trust decision about Linear's authors
+touches egress. An operator who needs that file attaches it to the issue.
+
+**And the count is reconciled rather than assumed.** The step reports how many distinct URLs
+it found against how many it delivered, which is what 3.10's "2 of 3 files were delivered"
+line renders. Silent under-delivery is the failure this whole section exists to prevent: an
+agent that is told nothing was attached will confidently answer from the title, exactly as
+one did on OPS-2.
 
 Verified the fetch works for this channel: the server-held key returns **HTTP 200,
 1,414,578 bytes**, `application/vnd.openxmlformats-officedocument.presentationml.presentation`,
