@@ -50,6 +50,8 @@ from .agent_sessions import (
     require_content_access,
     require_executor_enabled,
 )
+from .attachment_binding import load_for_turn, record_bindings, unique_keys
+from .attachment_delivery import DeliveredTurn, build_turn_message
 from .executor_client import (
     ExecutorClientFactory,
     ExecutorError,
@@ -59,6 +61,7 @@ from .executor_client import (
 from .executor_metrics import (
     TURN_DURATION,
     TURN_OUTCOME_ABANDONED,
+    TURN_OUTCOME_ATTACHMENT_REFUSED,
     TURN_OUTCOME_COMPLETED,
     TURN_OUTCOME_EXECUTOR_ERROR,
     TURN_OUTCOME_TIMEOUT,
@@ -106,6 +109,7 @@ async def run_turn(
     message: str,
     factory: ExecutorClientFactory,
     settings: ExecutorSettings,
+    attachment_keys: list[str] | None = None,
 ) -> TurnResponse:
     """Run one turn to completion and answer with what it produced.
 
@@ -140,6 +144,30 @@ async def run_turn(
     outcome = TURN_OUTCOME_ABANDONED
     turn_ended = False
     try:
+        try:
+            delivery = await _prepare_attachments(
+                namespace_key=namespace_key,
+                session_id=target.session_id,
+                trace_id=trace_id,
+                message=message,
+                attachment_keys=attachment_keys or [],
+                settings=settings,
+            )
+        except APIError:
+            # A named file that cannot be sent refuses the turn rather than
+            # running without it. Nothing left the process, so the turn did not
+            # start and both lock columns clear.
+            #
+            # Labelled rather than left at the initialiser: an unknown key, a
+            # file that is not ready and an oversize set are all refusals this
+            # deployment made, and recording them as ``abandoned`` would file a
+            # per-turn cap set too low under "people are giving up on this
+            # agent".
+            outcome = TURN_OUTCOME_ATTACHMENT_REFUSED
+            turn_ended = True
+            raise
+        message = delivery.message
+
         try:
             client = factory.client_for(
                 executor_kind=target.executor_kind, base_url=target.base_url
@@ -227,6 +255,75 @@ async def run_turn(
                 target.session_id,
             )
             raise
+
+
+async def _prepare_attachments(
+    *,
+    namespace_key: str,
+    session_id: int,
+    trace_id: str,
+    message: str,
+    attachment_keys: list[str],
+    settings: ExecutorSettings,
+) -> DeliveredTurn:
+    """Resolve this turn's files and fold them into the message it will send.
+
+    One short-lived session, committed before the executor is contacted, for
+    the same reason every other database step in this module is: the pool is
+    five plus ten and a turn can last minutes.
+
+    The bindings are written **before** the call rather than after it, because
+    they record what this turn carried and that is true the moment the request
+    is built. Writing them afterwards would leave a turn that timed out with no
+    record of the documents it had already put in front of a model.
+    """
+    if not attachment_keys:
+        return DeliveredTurn(
+            message=message,
+            included_keys=(),
+            named_keys=(),
+            overflowed=False,
+            render_failed=False,
+        )
+    # Deduplicated once, here, so the renderer and the ledger are handed the
+    # same list. Doing it in only one of them is how a message that carried two
+    # copies of one file gets recorded as having carried one.
+    attachment_keys = unique_keys(attachment_keys)
+
+    async with AsyncSessionLocal() as db:
+        deliverables = await load_for_turn(
+            db,
+            namespace_key=namespace_key,
+            session_id=session_id,
+            attachment_keys=attachment_keys,
+            settings=settings,
+        )
+        delivery = build_turn_message(message, deliverables)
+        # Only a genuine overflow refuses. ``render_failed`` is a bug in this
+        # server, and answering it with "shorten your message" would send the
+        # operator round a loop that cannot end: the turn runs instead, with
+        # every file named as not included.
+        if delivery.overflowed:
+            raise APIError(
+                status_code=413,
+                error_code=ErrorCode.ATTACHMENT_TOO_LARGE,
+                reason=ErrorReason.INVALID,
+                detail=(
+                    "This message is too long to carry its files as well. "
+                    "Nothing was sent to the agent."
+                ),
+                hint="Shorten the message, or send the files on their own.",
+            )
+        await record_bindings(
+            db,
+            namespace_key=namespace_key,
+            session_id=session_id,
+            trace_id=trace_id,
+            attachment_keys=attachment_keys,
+            included_keys=delivery.included_keys,
+        )
+        await db.commit()
+    return delivery
 
 
 def _turn_state(

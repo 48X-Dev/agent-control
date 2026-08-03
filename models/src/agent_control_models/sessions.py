@@ -31,6 +31,7 @@ from pydantic import ConfigDict, Field, StringConstraints, field_validator
 
 from .agent import JSONObject
 from .agent_runtimes import AgentName, ExecutorKind
+from .attachments import ATTACHMENT_MAX_PER_TURN, AttachmentKey
 from .base import BaseModel
 from .server import PaginationInfo
 from .teams import TeamSlug
@@ -407,10 +408,15 @@ class ListSessionMessagesResponse(BaseModel):
 class StartTurnRequest(BaseModel):
     """Say something to the agent and wait for it to finish answering.
 
-    One field, deliberately. Anything that steers the agent belongs in a control
-    or in a nudge, both of which the control engine evaluates; a per-turn
-    override here would be an unevaluated instruction channel opened by the
-    cheapest possible route.
+    Two fields, and the second one is consistent with why there was only ever
+    one. Anything that *steers* the agent belongs in a control or in a nudge,
+    both of which the control engine evaluates; a per-turn override here would
+    be an unevaluated instruction channel opened by the cheapest possible
+    route. An attachment key is not that. It names content this server already
+    stored, typed and evaluated, it carries no free text, and the bytes are
+    resolved server-side from a row the caller had to be authorized to create.
+    A caller cannot supply an inline file here, and naming a key they do not
+    own is a 404 rather than a delivery.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -419,6 +425,18 @@ class StartTurnRequest(BaseModel):
         str,
         StringConstraints(min_length=1, max_length=TURN_MESSAGE_MAX_LENGTH),
     ] = Field(..., description="What to say to the agent, as a user turn.")
+
+    attachment_keys: Annotated[
+        list[AttachmentKey], Field(max_length=ATTACHMENT_MAX_PER_TURN)
+    ] = Field(
+        default_factory=list,
+        description=(
+            "Attachments already stored on this session to carry with this "
+            "turn. Each must be 'ready'; anything else is refused rather than "
+            "quietly dropped, because a turn that ran without its file is the "
+            "half-done job this whole path exists to prevent."
+        ),
+    )
 
 
 class TurnResponse(BaseModel):

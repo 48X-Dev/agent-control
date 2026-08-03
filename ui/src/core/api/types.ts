@@ -293,7 +293,81 @@ export type ListSessionMessagesResponse = {
   notice?: string | null;
 };
 
-export type StartTurnRequest = { message: string };
+export type StartTurnRequest = {
+  message: string;
+  /**
+   * Files already stored on this session to carry with this turn.
+   *
+   * Keys, never bytes. The server resolves them against rows this caller had to
+   * be authorized to create, and a key naming anything else is a 404. A key
+   * whose attachment is not `ready` refuses the whole turn rather than sending
+   * a message the operator thinks carried a file.
+   */
+  attachment_keys?: string[];
+};
+
+// =============================================================================
+// Attachments (manual until API types are regenerated)
+//
+// Nothing in this block is markup and nothing may be rendered as markup.
+// `display_name` is chosen by whoever uploaded the file - or, on the Linear
+// path, by whoever filed the issue - and the console session cookie is a
+// credential on every admin endpoint. It is text in a text node, always.
+// =============================================================================
+
+export type AttachmentStatus =
+  | 'pending'
+  | 'converting'
+  | 'ready'
+  | 'rejected'
+  | 'failed'
+  | 'tombstoned';
+
+export type AttachmentOrigin = 'operator_upload' | 'linear';
+
+export type Attachment = {
+  attachment_key: string;
+  session_key: string;
+  /** Server-normalized. Untrusted text; render it, never interpret it. */
+  display_name: string;
+  /** True when normalization changed the name it was given. */
+  display_name_normalized: boolean;
+  declared_mime: string;
+  /** What the magic bytes say. The declared type decides nothing. */
+  sniffed_mime: string;
+  mime_mismatch: boolean;
+  size_bytes: number;
+  source_sha256: string;
+  delivered_sha256?: string | null;
+  delivered_mime?: string | null;
+  delivered_size_bytes?: number | null;
+  status: AttachmentStatus;
+  failure_code?: string | null;
+  page_count?: number | null;
+  estimated_tokens?: number | null;
+  converted_from?: string | null;
+  origin: AttachmentOrigin;
+  origin_ref?: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type CreateAttachmentResponse = {
+  attachment: Attachment;
+  /** The same bytes were already on this session. Not a conflict. */
+  deduplicated: boolean;
+};
+
+export type ListAttachmentsResponse = {
+  attachments?: Attachment[];
+  count: number;
+  total_bytes: number;
+};
+
+export type DeleteAttachmentResponse = {
+  deleted: boolean;
+  notice: string;
+};
 
 /**
  * One completed turn.

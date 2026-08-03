@@ -80,6 +80,17 @@ class Operation(StrEnum):
     # it. The scoping that keeps this from being a denial-of-service primitive
     # is creator scoping in the service, not the tier.
     AGENT_HALTS_WRITE = "agent_halts.write"
+    # Uploading a file is per-caller working state on the caller's own session,
+    # the same class as starting a turn, and it is scoped in the service by the
+    # same predicate that gates a turn because it is the same act: it puts
+    # caller-chosen bytes into somebody's conversation and in front of a model.
+    #
+    # One member, not three. Reading an attachment's name and downloading its
+    # bytes is the same sensitivity class as reading the transcript it appears
+    # in, and ``agent_sessions.content_read`` already exists at that tier for
+    # exactly that. Minting a second read operation beside it would document a
+    # boundary that does not exist.
+    AGENT_ATTACHMENTS_WRITE = "agent_attachments.write"
     # Binding an agent to an executor URL is deployment configuration.
     AGENT_RUNTIMES_WRITE = "agent_runtimes.write"
 

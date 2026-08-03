@@ -13,6 +13,7 @@ from agent_control_models.agent_configs import (
     ModelCostTier,
     ModelProvider,
 )
+from agent_control_models.attachments import ATTACHMENT_MAX_PER_TURN
 from agent_control_models.dispatch import (
     DEFAULT_MAX_TASKS_PER_HOUR,
     DEFAULT_MAX_TURNS_PER_HOUR,
@@ -444,10 +445,92 @@ class ExecutorSettings(BaseSettings):
     max_connections: int = Field(default=32, ge=1)
     max_keepalive_connections: int = Field(default=8, ge=0)
 
+    # ---------------------------------------------------------------------
+    # Attachments. Off by default, like everything else here.
+    #
+    # The byte caps are what they are because a byte is the only thing this
+    # server can measure without opening the file. Pages and tokens are not
+    # derivable from a length - a text-heavy thousand-page PDF can be three
+    # megabytes and a forty-page scan can be twenty - so nothing below claims
+    # to bound either.
+    # ---------------------------------------------------------------------
+    attachments_enabled: bool = False
+
+    # Exactly the types the sniffer can name and a model can use. Office
+    # formats are ZIP containers, sniff as application/zip, and are refused
+    # with a sentence that says to export a PDF instead.
+    attachment_accepted_mimes: set[str] = {
+        "application/pdf",
+        "image/png",
+        "image/jpeg",
+        "image/webp",
+    }
+
+    # Twenty megabytes is a very large document and the resident cost of one is
+    # twenty-seven once base64 inflates it inside a process that is also
+    # evaluating policy for every other agent. Enforced three times: streamed in
+    # the handler, as the CHECK on the row, and as a pre-check in the UI. The
+    # hard constant the CHECK carries stays at 52,428,800.
+    attachment_max_bytes: int = Field(default=20_971_520, ge=1, le=52_428_800)
+
+    # Bounded by the models-side constant rather than merely defaulting to the
+    # same number. ``StartTurnRequest.attachment_keys`` validates its length
+    # against that constant, so an operator who raised this setting alone would
+    # get a 422 naming no setting and offering no remedy.
+    attachment_max_per_turn: int = Field(
+        default=ATTACHMENT_MAX_PER_TURN, ge=1, le=ATTACHMENT_MAX_PER_TURN
+    )
+    attachment_max_per_session: int = Field(default=10, ge=1)
+    attachment_turn_total_bytes: int = Field(default=20_971_520, ge=1)
+    attachment_session_total_bytes: int = Field(default=104_857_600, ge=1)
+    attachment_namespace_total_bytes: int = Field(default=2_147_483_648, ge=1)
+
+    # Two rates, because a stored-bytes ceiling is not a rate and upload
+    # flooding fills the namespace ceiling long before anyone notices.
+    attachment_uploads_per_minute: int = Field(default=20, ge=1)
+    attachment_uploads_per_namespace_hour: int = Field(default=200, ge=1)
+
+    # An attachment uploaded and never bound to a turn otherwise lives forever.
+    attachment_orphan_ttl_hours: int = Field(default=72, ge=1)
+
+    # Bytes are reclaimed on a timer and the tombstone stays. This is not
+    # belt and braces: dispatch sessions persist by default, so the cascade
+    # that would reclaim them may never fire, and without this sweep the
+    # namespace ceiling is reachable with no documented remedy.
+    attachment_blob_ttl_days: int = Field(default=14, ge=1)
+
+    # Inert. Counting pages means opening the file and nothing in this server
+    # opens one, so ``page_count`` is null and none of the three below can
+    # fire until a converter runs. They are here rather than deleted because a
+    # deleted limit comes back under a different name and a different default,
+    # and because bytes are not a proxy for pages in either direction: a
+    # text-heavy thousand-page PDF can be three megabytes and a forty-page scan
+    # can be twenty.
+    attachment_max_pages: int = Field(default=1000, ge=1)
+    attachment_warn_pages: int = Field(default=100, ge=1)
+    attachment_session_total_pages: int = Field(default=400, ge=1)
+
     # Local-development escape hatch for the startup refusal below. Never set
     # this in a deployment: it re-opens an unauthenticated path to endpoints
     # that spend money and inject text into running agents.
     allow_insecure_local_dev: bool = False
+
+    @model_validator(mode="after")
+    def _per_turn_bytes_must_fit_a_single_file(self) -> "ExecutorSettings":
+        """Refuse a per-turn total smaller than one permitted file.
+
+        Set that way, every upload the size cap allows is refused at delivery
+        by a different ceiling, and the operator sees a file accepted at 201
+        and then never sent. Cheaper to refuse at import than to explain in a
+        support thread.
+        """
+        if self.attachment_turn_total_bytes < self.attachment_max_bytes:
+            raise ValueError(
+                "AGENT_CONTROL_EXECUTOR_ATTACHMENT_TURN_TOTAL_BYTES must be at "
+                "least AGENT_CONTROL_EXECUTOR_ATTACHMENT_MAX_BYTES. Below it, a "
+                "file this server accepts can never be delivered."
+            )
+        return self
 
     @model_validator(mode="after")
     def _stale_window_must_outlast_a_turn(self) -> "ExecutorSettings":

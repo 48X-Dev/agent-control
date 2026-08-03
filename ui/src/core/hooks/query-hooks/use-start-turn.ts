@@ -26,6 +26,19 @@ export function isTurnAbandoned(error: unknown): error is TurnAbandonedError {
   return error instanceof TurnAbandonedError;
 }
 
+export type StartTurnVariables = {
+  message: string;
+  /**
+   * Files to carry with this turn, by key.
+   *
+   * Omitted entirely when empty, so a turn with no files sends exactly the body
+   * this endpoint has always been sent. A key naming anything not `ready`
+   * refuses the whole turn and nothing is spent, which is why the composer
+   * disables send rather than letting the server discover it.
+   */
+  attachmentKeys?: string[];
+};
+
 /**
  * Send one message and wait for the agent to finish answering.
  *
@@ -60,14 +73,16 @@ export function useStartTurn(sessionKey: string | null) {
     });
   }, [queryClient, sessionKey]);
 
-  const mutation = useMutation<TurnResponse, Error, string>({
-    mutationFn: async (message: string) => {
+  const mutation = useMutation<TurnResponse, Error, StartTurnVariables>({
+    mutationFn: async ({ message, attachmentKeys }: StartTurnVariables) => {
       const controller = new AbortController();
       abortRef.current = controller;
       try {
         const { data, error, response } = await api.agentSessions.startTurn(
           sessionKey!,
-          { message },
+          attachmentKeys?.length
+            ? { message, attachment_keys: attachmentKeys }
+            : { message },
           { signal: controller.signal }
         );
         if (error) {

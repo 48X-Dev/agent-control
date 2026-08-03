@@ -7,6 +7,7 @@ import type {
   AgentSessionDetail,
   AgentSessionSummary,
   AgentSummary,
+  Attachment,
   ClearAgentConfigFieldRequest,
   Control,
   ControlSummary,
@@ -1103,6 +1104,22 @@ function problemBody(problem: ProblemMock) {
   });
 }
 
+/**
+ * The filename out of a multipart upload body.
+ *
+ * Read off the raw body rather than through a form parser, because the point of
+ * these tests is what the panel does with a name it did not choose, and a
+ * parser that normalized or rejected one would hide exactly that.
+ */
+function uploadedFilename(request: {
+  postData(): string | null;
+}): string | null {
+  const body = request.postData();
+  if (!body) return null;
+  const match = /filename="([^"]*)"/.exec(body);
+  return match ? match[1] : null;
+}
+
 export type AgentSessionsMockOptions = {
   /** Newest first. An empty array is an agent nobody has chatted with. */
   sessions?: AgentSessionSummary[];
@@ -1131,6 +1148,10 @@ export type AgentSessionsMockOptions = {
   nudgeCancelError?: ProblemMock;
   /** Refusal for `POST /halts`, e.g. nothing in flight to stop. */
   haltCreateError?: ProblemMock;
+  /** Files already stored per session key, oldest first, as the server lists them. */
+  attachments?: Record<string, Attachment[]>;
+  /** Refusal for the upload, e.g. a 415 on a type this deployment will not take. */
+  attachmentUploadError?: ProblemMock;
   /**
    * The plan each session's agent declared, if it declared one.
    *
@@ -1143,6 +1164,21 @@ export type AgentSessionsMockOptions = {
 export type AgentSessionsMock = {
   /** Every turn the browser started, in order. */
   turns: Array<{ sessionKey: string; message: string }>;
+  /**
+   * The attachment keys each turn carried, in order.
+   *
+   * Recorded separately from `turns` rather than added to it: a turn with no
+   * files must go out with exactly the body this endpoint has always been
+   * sent, and a single list would make "sent no field" and "sent an empty
+   * list" indistinguishable in the assertion.
+   */
+  turnAttachmentKeys: Array<{ sessionKey: string; keys: string[] | undefined }>;
+  /** Every file the browser uploaded, in order. */
+  attachmentsUploaded: Array<{ sessionKey: string; name: string }>;
+  /** Every file the browser removed, in order. */
+  attachmentsDeleted: Array<{ sessionKey: string; attachmentKey: string }>;
+  /** Stored attachments per session, mutable so a test can spoil one. */
+  attachments: Record<string, Attachment[]>;
   /** Every transcript read, for asserting a poll did or did not happen. */
   messageReads: string[];
   /** Live transcripts, so a test can assert what the panel was given. */
@@ -1196,6 +1232,10 @@ async function mockAgentSessions(
 
   const state: AgentSessionsMock = {
     turns: [],
+    turnAttachmentKeys: [],
+    attachmentsUploaded: [],
+    attachmentsDeleted: [],
+    attachments: cloneByKey(options.attachments),
     messageReads: [],
     transcripts,
     nudgesQueued: [],
@@ -1309,8 +1349,15 @@ async function mockAgentSessions(
     }
 
     if (sub === 'turns' && method === 'POST') {
-      const body = (request.postDataJSON() ?? {}) as { message?: string };
+      const body = (request.postDataJSON() ?? {}) as {
+        message?: string;
+        attachment_keys?: string[];
+      };
       state.turns.push({ sessionKey, message: body.message ?? '' });
+      state.turnAttachmentKeys.push({
+        sessionKey,
+        keys: body.attachment_keys,
+      });
       inFlightSince.set(sessionKey, new Date().toISOString());
       try {
         if (options.turnGate) await options.turnGate;
@@ -1352,6 +1399,67 @@ async function mockAgentSessions(
       } finally {
         inFlightSince.delete(sessionKey);
       }
+      return;
+    }
+
+    // Files stored against one session. The upload answers with the row the
+    // server would have written, including the normalized display name, so a
+    // test can hand the panel a filename nobody should ever render as markup
+    // and assert what it did with it.
+    if (sub === 'attachments') {
+      const stored = (state.attachments[sessionKey] ??= []);
+      const attachmentKey = segments[5]
+        ? decodeURIComponent(segments[5])
+        : null;
+
+      if (method === 'DELETE' && attachmentKey !== null) {
+        state.attachmentsDeleted.push({ sessionKey, attachmentKey });
+        const index = stored.findIndex(
+          (row) => row.attachment_key === attachmentKey
+        );
+        if (index !== -1) stored.splice(index, 1);
+        await json({
+          deleted: true,
+          notice:
+            'Removed from Agent Control and from future turns. A model that ' +
+            'already read this file has already read it.',
+        });
+        return;
+      }
+
+      if (method === 'POST') {
+        const name = uploadedFilename(request) ?? 'file';
+        state.attachmentsUploaded.push({ sessionKey, name });
+        if (options.attachmentUploadError) {
+          await problem(options.attachmentUploadError);
+          return;
+        }
+        nextOperatorId += 1;
+        const attachment: Attachment = {
+          attachment_key: `att-${nextOperatorId}`,
+          session_key: sessionKey,
+          display_name: name,
+          display_name_normalized: false,
+          declared_mime: 'application/pdf',
+          sniffed_mime: 'application/pdf',
+          mime_mismatch: false,
+          size_bytes: 2_400_000,
+          source_sha256: 'a'.repeat(64),
+          status: 'ready',
+          origin: 'operator_upload',
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        };
+        stored.push(attachment);
+        await json({ attachment, deduplicated: false }, 201);
+        return;
+      }
+
+      await json({
+        attachments: stored,
+        count: stored.length,
+        total_bytes: stored.reduce((sum, row) => sum + row.size_bytes, 0),
+      });
       return;
     }
 

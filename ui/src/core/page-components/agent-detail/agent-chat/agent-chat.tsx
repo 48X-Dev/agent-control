@@ -258,11 +258,11 @@ export function AgentChat({ agentName }: { agentName: string }) {
   }, [createSession, handleSelectSession]);
 
   const handleSend = useCallback(
-    (message: string) => {
+    (message: string, attachmentKeys: string[]) => {
       if (!activeSessionKey) return;
       setTranscriptWindow(null);
       setLocalTurnStart({ sessionKey: activeSessionKey, at: Date.now() });
-      startTurn.mutate(message);
+      startTurn.mutate({ message, attachmentKeys });
     },
     [activeSessionKey, startTurn]
   );
@@ -520,8 +520,16 @@ export function AgentChat({ agentName }: { agentName: string }) {
             agentName={agentName}
           />
 
+          {/* Keyed on the session, so switching chats starts a fresh composer.
+              Its files are the load-bearing part: a chip holds an attachment
+              key that only its own session can resolve, and carrying one across
+              a switch would post it against a session that 404s it - refusing
+              the turn after the draft had already been cleared. The draft goes
+              with it, which is the same rule the transcript already follows. */}
           <MessageComposer
+            key={activeSessionKey}
             onSend={handleSend}
+            sessionKey={activeSessionKey}
             onStopWaiting={startTurn.abandon}
             onStop={handleStop}
             canStop={Boolean(liveTraceId)}

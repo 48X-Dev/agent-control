@@ -389,7 +389,11 @@ async def start_turn(
     The failures are worth reading before writing a client:
 
     * **409** - a turn is already in flight on this session. Sessions answer one
-      at a time.
+      at a time. Also: a named attachment is not ``ready``, in which case
+      **nothing was sent** - a turn that ran without the file somebody attached
+      on purpose is the half-done job this refusal exists to prevent.
+    * **413** - the named files are larger together than one turn carries, or
+      the message leaves no room for them.
     * **429** - this credential has started too many turns this minute.
     * **502** - the executor answered and refused, which includes its model
       credentials being missing, rejected or out of quota. Retrying will not
@@ -416,4 +420,5 @@ async def start_turn(
         message=request.message,
         factory=factory,
         settings=executor_settings,
+        attachment_keys=list(request.attachment_keys),
     )

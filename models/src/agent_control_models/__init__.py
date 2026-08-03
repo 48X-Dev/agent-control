@@ -67,6 +67,25 @@ from .agent_runtimes import (
     UpsertAgentRuntimeRequest,
     validate_executor_base_url,
 )
+from .attachments import (
+    ATTACHMENT_DISPLAY_NAME_MAX_LENGTH,
+    ATTACHMENT_FAILURE_CODE_MAX_LENGTH,
+    ATTACHMENT_HARD_MAX_BYTES,
+    ATTACHMENT_KEY_LENGTH,
+    ATTACHMENT_MAX_PER_TURN,
+    ATTACHMENT_ORIGIN_REF_MAX_LENGTH,
+    Attachment,
+    AttachmentKey,
+    AttachmentOrigin,
+    AttachmentStatus,
+    AttachmentVariant,
+    CreateAttachmentResponse,
+    DeleteAttachmentResponse,
+    GetAttachmentResponse,
+    ListAttachmentsResponse,
+    StepAttachmentSummary,
+    TurnAttachmentVerdict,
+)
 from .controls import (
     BooleanTemplateParameter,
     ConditionNode,
@@ -119,6 +138,12 @@ from .evaluation import (
     EvaluationRequest,
     EvaluationResponse,
     EvaluationResult,
+)
+from .files import (
+    MAX_DISPLAY_NAME_CHARS,
+    is_mime_mismatch,
+    normalize_display_name,
+    sniff_mime,
 )
 from .halts import (
     HALT_TOOL_NAME_MAX_LENGTH,
@@ -356,6 +381,27 @@ from .workflows import (
 )
 
 __all__ = [
+    "ATTACHMENT_DISPLAY_NAME_MAX_LENGTH",
+    "ATTACHMENT_FAILURE_CODE_MAX_LENGTH",
+    "ATTACHMENT_HARD_MAX_BYTES",
+    "ATTACHMENT_KEY_LENGTH",
+    "ATTACHMENT_MAX_PER_TURN",
+    "ATTACHMENT_ORIGIN_REF_MAX_LENGTH",
+    "Attachment",
+    "AttachmentKey",
+    "AttachmentOrigin",
+    "AttachmentStatus",
+    "AttachmentVariant",
+    "CreateAttachmentResponse",
+    "DeleteAttachmentResponse",
+    "GetAttachmentResponse",
+    "ListAttachmentsResponse",
+    "StepAttachmentSummary",
+    "TurnAttachmentVerdict",
+    "MAX_DISPLAY_NAME_CHARS",
+    "is_mime_mismatch",
+    "normalize_display_name",
+    "sniff_mime",
     # Health
     "HealthResponse",
     # Agent

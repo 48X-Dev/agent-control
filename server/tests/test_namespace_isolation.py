@@ -729,3 +729,244 @@ def test_deleting_one_namespaces_agent_leaves_the_others_configuration(
 
     assert list(configs) == ["ns-two"]
     assert list(versions) == ["ns-two"]
+
+
+# ---------------------------------------------------------------------------
+# Attachments: the file, its bytes, and which turn carried it
+#
+# Three tables, and the chain is two hops deep: a session owns an attachment,
+# an attachment owns its bytes. Every hop is a composite foreign key leading
+# with ``namespace_key``, and that is the only thing making a mistake here fail
+# rather than succeed quietly. A single-column key would leave every statement
+# in ``services/attachment_blobs.py`` valid SQL against another namespace's
+# rows, and every one of those statements would return a plausible answer.
+#
+# The bytes are why this is the sharpest boundary in the schema. A leaked
+# control name is a configuration disclosure; a leaked blob is somebody's
+# document.
+# ---------------------------------------------------------------------------
+
+
+def _insert_attachment(
+    engine: Engine,
+    *,
+    namespace_key: str,
+    session_id: int,
+    attachment_key: str | None = None,
+    source_sha256: str | None = None,
+    size_bytes: int = 11,
+) -> int:
+    with engine.begin() as conn:
+        return int(
+            conn.execute(
+                text(
+                    "INSERT INTO agent_session_attachments "
+                    "  (namespace_key, session_id, attachment_key, display_name, "
+                    "   original_name_sha256, declared_mime, sniffed_mime, "
+                    "   size_bytes, source_sha256) "
+                    "VALUES (:ns, :sid, :key, 'brief.pdf', :name_sha, "
+                    "        'application/pdf', 'application/pdf', :size, :sha) "
+                    "RETURNING id"
+                ),
+                {
+                    "ns": namespace_key,
+                    "sid": session_id,
+                    "key": attachment_key or uuid.uuid4().hex,
+                    "name_sha": uuid.uuid4().hex + uuid.uuid4().hex,
+                    "size": size_bytes,
+                    "sha": source_sha256 or (uuid.uuid4().hex + uuid.uuid4().hex),
+                },
+            ).scalar_one()
+        )
+
+
+def _insert_attachment_blob(
+    engine: Engine, *, namespace_key: str, attachment_id: int
+) -> None:
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO agent_session_attachment_blobs "
+                "  (namespace_key, attachment_id, variant, content_type, "
+                "   size_bytes, sha256, data) "
+                "VALUES (:ns, :aid, 'original', 'application/pdf', 11, :sha, :data)"
+            ),
+            {
+                "ns": namespace_key,
+                "aid": attachment_id,
+                "sha": uuid.uuid4().hex + uuid.uuid4().hex,
+                "data": b"%PDF-1.4\n%%",
+            },
+        )
+
+
+def _insert_turn_attachment(
+    engine: Engine, *, namespace_key: str, session_id: int, attachment_id: int
+) -> None:
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO agent_turn_attachments "
+                "  (namespace_key, session_id, trace_id, attachment_id, position) "
+                "VALUES (:ns, :sid, :trace, :aid, 0)"
+            ),
+            {
+                "ns": namespace_key,
+                "sid": session_id,
+                "trace": uuid.uuid4().hex,
+                "aid": attachment_id,
+            },
+        )
+
+
+def test_an_attachment_cannot_reference_a_session_in_another_namespace(
+    db_engine: Engine,
+) -> None:
+    """A file uploaded in one namespace must not land in another's chat."""
+    session_id = _insert_session(db_engine, namespace_key="ns-one")
+
+    with pytest.raises(IntegrityError):
+        _insert_attachment(db_engine, namespace_key="ns-two", session_id=session_id)
+
+
+def test_blob_bytes_cannot_reference_an_attachment_in_another_namespace(
+    db_engine: Engine,
+) -> None:
+    """The second hop, and the one that decides whether bytes can cross.
+
+    Every statement in the blob store filters on ``namespace_key`` beside the
+    attachment id. This asserts the database would refuse one that did not,
+    rather than trusting each call site to remember.
+    """
+    session_id = _insert_session(db_engine, namespace_key="ns-one")
+    attachment_id = _insert_attachment(
+        db_engine, namespace_key="ns-one", session_id=session_id
+    )
+
+    with pytest.raises(IntegrityError):
+        _insert_attachment_blob(
+            db_engine, namespace_key="ns-two", attachment_id=attachment_id
+        )
+
+
+def test_a_turn_binding_cannot_reference_an_attachment_in_another_namespace(
+    db_engine: Engine,
+) -> None:
+    """Binding is what puts a file in front of a model, so it crosses last."""
+    session_id = _insert_session(db_engine, namespace_key="ns-one")
+    attachment_id = _insert_attachment(
+        db_engine, namespace_key="ns-one", session_id=session_id
+    )
+
+    with pytest.raises(IntegrityError):
+        _insert_turn_attachment(
+            db_engine,
+            namespace_key="ns-two",
+            session_id=session_id,
+            attachment_id=attachment_id,
+        )
+
+
+def test_two_namespaces_may_hold_the_same_attachment_key(db_engine: Engine) -> None:
+    """The key a browser sees is unique per namespace, not globally.
+
+    It is a ``uuid4`` so a natural collision will not happen, but a uniqueness
+    constraint that omitted ``namespace_key`` would let one tenant's insert
+    refuse another's, which is a cross-tenant denial of an ordinary write.
+    """
+    shared_key = uuid.uuid4().hex
+    first = _insert_session(db_engine, namespace_key="ns-one")
+    second = _insert_session(db_engine, namespace_key="ns-two")
+
+    _insert_attachment(
+        db_engine,
+        namespace_key="ns-one",
+        session_id=first,
+        attachment_key=shared_key,
+    )
+    _insert_attachment(
+        db_engine,
+        namespace_key="ns-two",
+        session_id=second,
+        attachment_key=shared_key,
+    )
+
+    with db_engine.begin() as conn:
+        owners = conn.execute(
+            text(
+                "SELECT namespace_key FROM agent_session_attachments "
+                " WHERE attachment_key = :key ORDER BY namespace_key"
+            ),
+            {"key": shared_key},
+        ).scalars().all()
+    assert list(owners) == ["ns-one", "ns-two"]
+
+
+def test_the_same_file_in_two_namespaces_is_two_attachments(
+    db_engine: Engine,
+) -> None:
+    """Content uniqueness is per session, so it never spans a namespace.
+
+    Scoped any wider it would be a content oracle: a caller could learn that
+    somebody else already held a given file by watching for a dedupe hit. Here
+    the same bytes in two tenants are simply two rows.
+    """
+    shared_sha = uuid.uuid4().hex + uuid.uuid4().hex
+    first = _insert_session(db_engine, namespace_key="ns-one")
+    second = _insert_session(db_engine, namespace_key="ns-two")
+
+    _insert_attachment(
+        db_engine, namespace_key="ns-one", session_id=first, source_sha256=shared_sha
+    )
+    _insert_attachment(
+        db_engine, namespace_key="ns-two", session_id=second, source_sha256=shared_sha
+    )
+
+    with db_engine.begin() as conn:
+        holders = conn.execute(
+            text(
+                "SELECT namespace_key FROM agent_session_attachments "
+                " WHERE source_sha256 = :sha ORDER BY namespace_key"
+            ),
+            {"sha": shared_sha},
+        ).scalars().all()
+    assert list(holders) == ["ns-one", "ns-two"]
+
+
+def test_deleting_one_namespaces_session_leaves_the_others_file_and_bytes(
+    db_engine: Engine,
+) -> None:
+    """The cascade follows the tenancy anchor two hops down and stops there.
+
+    Session delete is the one path that reclaims attachment *metadata*, so a
+    cascade that overreached would destroy another tenant's audit record along
+    with their document.
+    """
+    first = _insert_session(db_engine, namespace_key="ns-one")
+    second = _insert_session(db_engine, namespace_key="ns-two")
+    doomed = _insert_attachment(db_engine, namespace_key="ns-one", session_id=first)
+    survivor = _insert_attachment(db_engine, namespace_key="ns-two", session_id=second)
+    _insert_attachment_blob(db_engine, namespace_key="ns-one", attachment_id=doomed)
+    _insert_attachment_blob(db_engine, namespace_key="ns-two", attachment_id=survivor)
+    _insert_turn_attachment(
+        db_engine, namespace_key="ns-one", session_id=first, attachment_id=doomed
+    )
+    _insert_turn_attachment(
+        db_engine, namespace_key="ns-two", session_id=second, attachment_id=survivor
+    )
+
+    with db_engine.begin() as conn:
+        conn.execute(text("DELETE FROM agent_sessions WHERE id = :id"), {"id": first})
+        attachments = conn.execute(
+            text("SELECT namespace_key FROM agent_session_attachments")
+        ).scalars().all()
+        blobs = conn.execute(
+            text("SELECT namespace_key FROM agent_session_attachment_blobs")
+        ).scalars().all()
+        bindings = conn.execute(
+            text("SELECT namespace_key FROM agent_turn_attachments")
+        ).scalars().all()
+
+    assert list(attachments) == ["ns-two"]
+    assert list(blobs) == ["ns-two"]
+    assert list(bindings) == ["ns-two"]

@@ -82,6 +82,10 @@ class ErrorCode(StrEnum):
     # answers with an empty plan rather than this. This is for a step update
     # against a session that has no plan at all to update.
     PLAN_NOT_FOUND = "PLAN_NOT_FOUND"
+    # An attachment key that names nothing in this namespace, or names
+    # something on another caller's session. The two are indistinguishable on
+    # purpose: whether a key exists elsewhere is not this caller's business.
+    ATTACHMENT_NOT_FOUND = "ATTACHMENT_NOT_FOUND"
 
     # Conflict Errors (3xx pattern)
     AGENT_NAME_CONFLICT = "AGENT_NAME_CONFLICT"
@@ -164,6 +168,11 @@ class ErrorCode(StrEnum):
     # request was well formed; what is missing is a membership somebody has to
     # add on purpose.
     AGENT_NOT_IN_TEAM = "AGENT_NOT_IN_TEAM"
+    # A turn naming an attachment that is not ``ready``. State rather than a
+    # malformed request: the same call succeeds unchanged once conversion
+    # finishes, and sending a file whose bytes are still being decided is how a
+    # model reads half a document.
+    ATTACHMENT_NOT_READY = "ATTACHMENT_NOT_READY"
 
     # Validation Errors (4xx pattern)
     VALIDATION_ERROR = "VALIDATION_ERROR"
@@ -182,6 +191,20 @@ class ErrorCode(StrEnum):
     # exist cannot be half written, and an agent whose index is wrong should
     # learn that rather than have a neighbouring step marked for it.
     PLAN_STEP_OUT_OF_RANGE = "PLAN_STEP_OUT_OF_RANGE"
+    # The sniffed type is not one this deployment accepts. A 415, and it names
+    # both the declared type and the sniffed one, because "your PDF is a ZIP"
+    # is the only version of this message anyone can act on.
+    ATTACHMENT_REJECTED = "ATTACHMENT_REJECTED"
+    # A body past the byte cap, whether the header said so or the stream did.
+    # 413 either way: a small ``Content-Length`` over a large body is aborted
+    # mid-stream on the counted total, not on what the header promised.
+    ATTACHMENT_TOO_LARGE = "ATTACHMENT_TOO_LARGE"
+    # Where a file came from, refused. A host outside the allowlist, a link
+    # rather than a file, a scheme that is not HTTPS. Deliberately not folded
+    # into ATTACHMENT_REJECTED: "we will not go and get that" and "we looked
+    # and it is the wrong type" are different facts, and only one of them is
+    # about the content.
+    ATTACHMENT_SOURCE_REFUSED = "ATTACHMENT_SOURCE_REFUSED"
 
     # Capacity (429)
     QUOTA_EXCEEDED = "QUOTA_EXCEEDED"
@@ -490,6 +513,7 @@ ERROR_TITLES: dict[ErrorCode, str] = {
     ErrorCode.AGENT_CONFIG_NOT_FOUND: "Agent Configuration Not Found",
     ErrorCode.HALT_NOT_FOUND: "Halt Not Found",
     ErrorCode.PLAN_NOT_FOUND: "No Plan Was Declared",
+    ErrorCode.ATTACHMENT_NOT_FOUND: "Attachment Not Found",
     # Conflict errors
     ErrorCode.AGENT_NAME_CONFLICT: "Agent Name Already Exists",
     ErrorCode.POLICY_NAME_CONFLICT: "Policy Name Already Exists",
@@ -517,6 +541,7 @@ ERROR_TITLES: dict[ErrorCode, str] = {
     ErrorCode.AGENT_WORKFLOW_NOT_FOUND: "Workflow Not Found",
     ErrorCode.NO_AGENT_SELECTED: "No Agent Is Configured For This Step",
     ErrorCode.AGENT_NOT_IN_TEAM: "Agent Is Not In This Team",
+    ErrorCode.ATTACHMENT_NOT_READY: "Attachment Is Not Ready",
     # Validation errors
     ErrorCode.VALIDATION_ERROR: "Validation Error",
     ErrorCode.INVALID_CONFIG: "Invalid Configuration",
@@ -528,6 +553,9 @@ ERROR_TITLES: dict[ErrorCode, str] = {
     ErrorCode.TEMPLATE_PARAMETER_INVALID: "Template Parameter Invalid",
     ErrorCode.TEMPLATE_RENDER_ERROR: "Template Render Error",
     ErrorCode.PLAN_STEP_OUT_OF_RANGE: "No Such Step In This Plan",
+    ErrorCode.ATTACHMENT_REJECTED: "Attachment Type Not Accepted",
+    ErrorCode.ATTACHMENT_TOO_LARGE: "Attachment Too Large",
+    ErrorCode.ATTACHMENT_SOURCE_REFUSED: "Attachment Source Refused",
     # Capacity
     ErrorCode.QUOTA_EXCEEDED: "Quota Exceeded",
     ErrorCode.DISPATCH_BUDGET_EXCEEDED: "Dispatch Budget Exhausted",

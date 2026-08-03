@@ -2,6 +2,7 @@ import datetime as dt
 from typing import Any
 
 from agent_control_models.agent import StepSchema, normalize_agent_name
+from agent_control_models.attachments import ATTACHMENT_HARD_MAX_BYTES
 from agent_control_models.base import BaseModel
 from agent_control_models.server import EvaluatorSchema
 from pydantic import Field
@@ -15,6 +16,7 @@ from sqlalchemy import (
     ForeignKeyConstraint,
     Index,
     Integer,
+    LargeBinary,
     PrimaryKeyConstraint,
     SmallInteger,
     String,
@@ -1042,6 +1044,323 @@ class AgentSessionPlanStep(Base):
     )
 
 
+class AgentSessionAttachment(Base):
+    """One file attached to one session, and everything about it except bytes.
+
+    Split from the blob table on purpose, and the split is load-bearing. This
+    row is read by listing, by the metadata gate and by anything rendering a
+    transcript; the bytes are read by exactly two paths, download and delivery.
+    One table would put a twenty-megabyte ``bytea`` one careless
+    ``select(AgentSessionAttachment)`` away from every one of those readers.
+
+    Neither of those two paths streams as shipped. A download reads the whole
+    ``data`` column into memory and answers with it, so a concurrent download
+    holds up to ``attachment_max_bytes`` resident in the process that is also
+    evaluating policy for every other agent. The split is what keeps that cost
+    on the two paths that have a reason to pay it instead of on all of them.
+
+    ``source_sha256`` and ``delivered_sha256`` are separate columns because for
+    a converted file they are different artifacts. The delivery path hashes the
+    blob it reads and refuses to send on a mismatch, so the control layer and
+    the model are guaranteed to have seen the same bytes.
+
+    **Content uniqueness is per session, not per namespace.** Per namespace
+    would let a caller in a shared namespace learn that somebody else had
+    already uploaded a given file by observing a dedupe hit, which is a content
+    oracle over a hash. Per session it tells a caller only about their own
+    conversation.
+
+    ``created_by_hash`` identifies a credential, not a person, and under the
+    default provider it is NULL on every row because ``NoAuthProvider`` supplies
+    no caller at all. "Who attached this" is not answerable in either state and
+    no endpoint claims it is.
+    """
+
+    __tablename__ = "agent_session_attachments"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["namespace_key", "session_id"],
+            ["agent_sessions.namespace_key", "agent_sessions.id"],
+            name="agent_session_attachments_session_fkey",
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint(
+            "namespace_key", "id", name="uq_agent_session_attachments_ns_id"
+        ),
+        UniqueConstraint(
+            "namespace_key", "attachment_key", name="uq_agent_session_attachments_key"
+        ),
+        UniqueConstraint(
+            "namespace_key",
+            "session_id",
+            "source_sha256",
+            name="uq_agent_session_attachments_content",
+        ),
+        Index(
+            "idx_agent_session_attachments_session",
+            "namespace_key",
+            "session_id",
+            "created_at",
+        ),
+        Index(
+            "idx_agent_session_attachments_sweep",
+            "namespace_key",
+            "status",
+            "created_at",
+        ),
+        Index(
+            "idx_agent_session_attachments_origin",
+            "namespace_key",
+            "session_id",
+            "origin",
+        ),
+        CheckConstraint(
+            f"size_bytes > 0 AND size_bytes <= {ATTACHMENT_HARD_MAX_BYTES}",
+            name="ck_agent_session_attachments_size",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    namespace_key: Mapped[str] = mapped_column(
+        String(255), nullable=False, server_default=_NAMESPACE_SERVER_DEFAULT
+    )
+    session_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    attachment_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    display_name_normalized: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+    # The name as supplied survives only as a hash. A name that had to be
+    # defused is not a name to store and render later.
+    original_name_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    declared_mime: Mapped[str] = mapped_column(String(128), nullable=False)
+    sniffed_mime: Mapped[str] = mapped_column(String(128), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    source_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    delivered_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    delivered_mime: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    delivered_size_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default=text("'pending'")
+    )
+    failure_code: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # Null until a deployment runs the converter. Counting pages means opening
+    # the file, and this process does not open files.
+    page_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    estimated_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    converted_from: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    origin: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default=text("'operator_upload'")
+    )
+    origin_ref: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_by_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        onupdate=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+
+
+class AgentSessionAttachmentBlob(Base):
+    """The bytes. One row per artifact of one attachment.
+
+    ``extracted_text`` lives here rather than in a ``TEXT`` column on the parent
+    for the same reason the split exists at all: it can reach millions of
+    characters and must never be pulled by an incautious ``select()`` of the
+    metadata row.
+
+    Deleting rows here is the ordinary way an attachment ends. The bytes are
+    reclaimed on a timer and the metadata row stays as a tombstone, so the
+    order is: bytes on a clock, metadata on the cascade, and the cascade may
+    never run.
+    """
+
+    __tablename__ = "agent_session_attachment_blobs"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["namespace_key", "attachment_id"],
+            [
+                "agent_session_attachments.namespace_key",
+                "agent_session_attachments.id",
+            ],
+            name="agent_session_attachment_blobs_attachment_fkey",
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint(
+            "namespace_key",
+            "attachment_id",
+            "variant",
+            name="uq_attachment_blobs_variant",
+        ),
+        CheckConstraint(
+            f"size_bytes > 0 AND size_bytes <= {ATTACHMENT_HARD_MAX_BYTES}",
+            name="ck_attachment_blobs_size",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    namespace_key: Mapped[str] = mapped_column(
+        String(255), nullable=False, server_default=_NAMESPACE_SERVER_DEFAULT
+    )
+    attachment_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    variant: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default=text("'original'")
+    )
+    content_type: Mapped[str] = mapped_column(String(128), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    data: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+
+
+class AgentTurnAttachment(Base):
+    """Which files one turn carried, and what happened to each.
+
+    The composite primary key makes binding one file to one turn twice
+    idempotent by construction, which is the reasoning one-halt-per-turn
+    already uses.
+
+    **The verdict lives here rather than on the attachment.** Controls change
+    between turns, so a ``blocked`` marker on the file itself would leave a row
+    permanently condemned by a control that may no longer exist, or leave a
+    ``ready`` row unchanged after a control was added that would now deny it.
+    Per binding, "was this ever sent" is answerable and each answer is about one
+    evaluation at one moment.
+    """
+
+    __tablename__ = "agent_turn_attachments"
+    __table_args__ = (
+        PrimaryKeyConstraint(
+            "namespace_key",
+            "session_id",
+            "trace_id",
+            "attachment_id",
+            name="agent_turn_attachments_pkey",
+        ),
+        ForeignKeyConstraint(
+            ["namespace_key", "attachment_id"],
+            [
+                "agent_session_attachments.namespace_key",
+                "agent_session_attachments.id",
+            ],
+            name="agent_turn_attachments_attachment_fkey",
+            ondelete="CASCADE",
+        ),
+        Index(
+            "idx_agent_turn_attachments_recent",
+            "namespace_key",
+            "attachment_id",
+            "created_at",
+        ),
+    )
+
+    namespace_key: Mapped[str] = mapped_column(
+        String(255), nullable=False, server_default=_NAMESPACE_SERVER_DEFAULT
+    )
+    session_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    trace_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    attachment_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    position: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    verdict: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default=text("'pending'")
+    )
+    blocked_by_control_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    blocked_reason: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+
+
+class AgentAttachmentConversion(Base):
+    """One conversion result, keyed by what was converted rather than by which
+    attachment asked for it.
+
+    **Not a column on the attachment**, and the key is the reason. Converting
+    is expensive - about twenty seconds of OCR per image on the measured
+    corpus - and the same bytes arrive repeatedly: the same spec re-uploaded
+    into a second session, the same tracker file fetched by two steps of one
+    chain. Keying on content means the second arrival is free. Keying on the
+    attachment would mean paying again for a file this deployment has already
+    read.
+
+    ``cache_key`` rather than ``source_sha256`` alone is what makes the entry
+    safe to reuse. It folds in the contract version and which converters are
+    installed, so installing Docling does not leave every zero-character PNG
+    answering from the day OCR was unavailable. ``source_sha256`` is kept
+    beside it only so a human can join this back to an attachment.
+
+    ``text`` is deferred. It can run to millions of characters and this row is
+    read by the delivery path on every turn that carries a file; an incautious
+    ``select(AgentAttachmentConversion)`` pulling the text of every cached
+    conversion into the process is the same defect the blob table was split out
+    to avoid, one table further down.
+    """
+
+    __tablename__ = "agent_attachment_conversions"
+    __table_args__ = (
+        UniqueConstraint(
+            "namespace_key", "cache_key", name="uq_agent_attachment_conversions_key"
+        ),
+        Index(
+            "idx_agent_attachment_conversions_content",
+            "namespace_key",
+            "source_sha256",
+        ),
+        Index("idx_agent_attachment_conversions_sweep", "updated_at"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    namespace_key: Mapped[str] = mapped_column(
+        String(255), nullable=False, server_default=_NAMESPACE_SERVER_DEFAULT
+    )
+    cache_key: Mapped[str] = mapped_column(String(96), nullable=False)
+    source_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    state: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default=text("'queued'")
+    )
+    status: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    converter: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    text_body: Mapped[str | None] = mapped_column(
+        "text_body", Text, nullable=True, deferred=True
+    )
+    text_chars: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
+    meaningful_chars: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
+    stored_truncated: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+    failure_code: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    duration_seconds: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        onupdate=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+
+
 _TERMINAL_TASK_STATUS_SQL = "status NOT IN ('completed', 'failed', 'cancelled')"
 """The predicate both task indexes are partial on.
 
@@ -1302,6 +1621,15 @@ class AgentTaskStep(Base):
     )
     failure_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     failure_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # What this hop actually carried, one small object per delivered or refused
+    # file. The step row is the queryable audit record of one hop: it survives
+    # whether or not the session does, and after the blob TTL reclaims the bytes
+    # it is what still answers "did this step have the spec" a week later.
+    # Bounded by the per-turn attachment ceiling, so it is a small column and
+    # not a blob wearing a JSON costume. No bytes, no text, no URL.
+    attachments_summary: Mapped[list[dict[str, Any]] | None] = mapped_column(
+        JSONB, nullable=True
+    )
     started_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=text("CURRENT_TIMESTAMP"),

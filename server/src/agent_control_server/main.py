@@ -27,6 +27,7 @@ from .config import (
     settings,
 )
 from .db import AsyncSessionLocal, async_engine
+from .endpoints.agent_attachments import router as agent_attachment_router
 from .endpoints.agent_configs import model_router as agent_model_router
 from .endpoints.agent_configs import router as agent_config_router
 from .endpoints.agent_dispatch import router as agent_dispatch_router
@@ -61,6 +62,7 @@ from .logging_utils import (
     get_uvicorn_log_level_name,
     should_configure_logging,
 )
+from .middleware import AttachmentUploadBodyLimit
 from .observability.ingest import DirectEventIngestor
 from .observability.sinks import (
     EventStoreControlEventSink,
@@ -252,6 +254,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     await shutdown_executor_clients()
 
+    # Shutdown: let any background attachment conversion land, briefly. What it
+    # would have written is a cache entry, so losing one costs a repeat rather
+    # than data, and a process that waited out an OCR run would look hung.
+    from .services.attachment_conversions import shutdown_attachment_conversions
+
+    await shutdown_attachment_conversions()
+
     # Shutdown: Clean up observability
     if observability_settings.enabled and hasattr(app.state, "event_store"):
         logger.info("Shutting down observability components...")
@@ -297,6 +306,11 @@ Agent → Policy → Control(s)
 )
 
 add_prometheus_metrics(app, settings.prometheus_metrics_prefix)
+
+# Bound the attachment upload body on the receive channel. Added before CORS so
+# that CORS ends up outside it and decorates the 413: a browser that cannot read
+# the refusal reports a network error instead of "your file is too big".
+app.add_middleware(AttachmentUploadBodyLimit)
 
 # Configure CORS
 app.add_middleware(
@@ -419,6 +433,24 @@ app.include_router(
 
 app.include_router(
     agent_session_router,
+    prefix=api_v1_prefix,
+    dependencies=[Depends(get_api_key_from_header)],
+)
+
+# Files attached to a session. Mounted next to the session router and after it,
+# so the literal ``/attachments`` sub-paths are matched by this router rather
+# than swallowed by anything the session router declares.
+#
+# Registered unconditionally and gated per route instead of at mount time. The
+# plan asks for registration only when the executor is enabled; a mount-time
+# condition reads the settings singleton once at import, which makes the feature
+# untestable and would let a restart-time settings change silently remove routes
+# a client is already calling. Every handler calls the same executor gate the
+# session routes use, so a disabled deployment answers a written 503 rather than
+# a 404, and the startup refusal that covers an enabled executor on an
+# unauthenticated server covers this router with it.
+app.include_router(
+    agent_attachment_router,
     prefix=api_v1_prefix,
     dependencies=[Depends(get_api_key_from_header)],
 )
