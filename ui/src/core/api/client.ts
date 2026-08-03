@@ -2,6 +2,7 @@ import createClient from 'openapi-fetch';
 
 import type { paths } from './generated/api-types';
 import type {
+  AgentTaskStatus,
   CancelNudgeResponse,
   ClearAgentConfigFieldRequest,
   ClearAgentConfigFieldResponse,
@@ -16,8 +17,12 @@ import type {
   GetAgentControlsPathParams,
   GetAgentPathParams,
   GetAgentSessionResponse,
+  GetAgentTaskChainResponse,
   GetControlSchemaResponse,
+  GetDispatchStateResponse,
   GetTeamResponse,
+  ImportAgentTasksRequest,
+  ImportAgentTasksResponse,
   InitAgentRequestBody,
   ListAgentConfigVersionsQueryParams,
   ListAgentConfigVersionsResponse,
@@ -26,7 +31,10 @@ import type {
   ListAgentSessionsResponse,
   ListAgentsQueryParams,
   ListAgentsResponse,
+  ListAgentTasksResponse,
+  ListAgentWorkflowsResponse,
   ListHaltsResponse,
+  ListMilestoneIssuesResponse,
   ListNudgesResponse,
   ListSessionMessagesQueryParams,
   ListSessionMessagesResponse,
@@ -470,6 +478,16 @@ export const api = {
       getJson<ListTeamMilestonesResponse>(
         `/api/v1/teams/${encodeURIComponent(slug)}/milestones`
       ),
+    // The scope of this read is decided on the server: the milestone plus the
+    // team's own `linear_team_key`, both in the GraphQL filter. Issues in the
+    // same milestone that belong to another team come back counted, never
+    // listed, so no id sent from here can widen what a press would cover.
+    getMilestoneIssues: (slug: string, milestoneId: string) =>
+      getJson<ListMilestoneIssuesResponse>(
+        `/api/v1/teams/${encodeURIComponent(slug)}/milestones/${encodeURIComponent(
+          milestoneId
+        )}/issues`
+      ),
     patch: (slug: string, body: PatchTeamRequest) =>
       patchJson<PatchTeamResponse>(
         `/api/v1/teams/${encodeURIComponent(slug)}`,
@@ -592,6 +610,39 @@ export const api = {
   // answer to "may this caller save?".
   agentModels: {
     list: () => getJson<ListAgentModelsResponse>('/api/v1/agent-models'),
+  },
+  // The dispatch ledger. Reads are how the console shows what agents did;
+  // the one write here is the import, and it is two calls rather than one:
+  // a preview that inserts nothing and a commit that carries the digest of
+  // the set the operator was shown.
+  agentTasks: {
+    list: (params?: {
+      status?: AgentTaskStatus;
+      team?: string;
+      limit?: number;
+      cursor?: string;
+    }) =>
+      getJson<ListAgentTasksResponse>(
+        `/api/v1/agent-tasks${toQueryString(params)}`
+      ),
+    // Built from the ledger's own step rows and the resolved plan, never from
+    // a trace: a trace rollup is assembled from control-execution events, so
+    // an agent with no control that fired would vanish from it entirely.
+    getChain: (taskKey: string) =>
+      getJson<GetAgentTaskChainResponse>(
+        `/api/v1/agent-tasks/${encodeURIComponent(taskKey)}/chain`
+      ),
+    import: (body: ImportAgentTasksRequest) =>
+      postJson<ImportAgentTasksResponse>('/api/v1/agent-tasks/import', body),
+  },
+  agentWorkflows: {
+    list: () => getJson<ListAgentWorkflowsResponse>('/api/v1/agent-workflows'),
+  },
+  // Read-only from this client. Pausing and halting are ADMIN operations and
+  // the console does not offer them yet; what it does is render the state, so
+  // a stop nobody can see is not a stop somebody presses twice.
+  agentDispatch: {
+    get: () => getJson<GetDispatchStateResponse>('/api/v1/agent-dispatch'),
   },
   observability: {
     getStats: (params: {

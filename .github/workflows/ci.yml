@@ -195,6 +195,56 @@ jobs:
           path: ui/test-results/
           retention-days: 3
 
+  # sdks/python/tests/test_google_adk_managed_config_contract.py checks the five
+  # ADK behaviours per-agent configuration is built on, against a real install.
+  # Two of them are internal framework behaviour with no stability guarantee, so
+  # a future google-adk can break the feature with no symptom anyone would trace
+  # back: saves succeed, the dashboard reports the change, and the agent keeps
+  # calling the old vendor. In the default suite the file skips, so it only
+  # defends anything if a job like this one runs it.
+  adk-contract-ci:
+    runs-on: ubuntu-latest
+    env:
+      # Pinned rather than floating. A green build should mean "the version we
+      # ship against still behaves"; tracking latest would instead turn an
+      # upstream release into a red build on an unrelated PR on a day nobody
+      # chose. Bump this deliberately - the failure it produces is the point.
+      GOOGLE_ADK_VERSION: "2.6.1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Sync dependencies
+        run: make sync
+
+      # `python -m pytest`, NOT `pytest`, and `--no-sync`, NOT a plain `uv run`.
+      # The console script resolves out of the project venv, which does not
+      # carry the overlay that `--with` installs, so `pytest` here reports 15
+      # skips and a green tick while testing nothing - the precise failure this
+      # job exists to catch. `--no-sync` is the other half: a plain sync drops
+      # the workspace packages back out of the overlay. Simplifying either one
+      # silently disarms the check, so the skip guard below fails the build
+      # instead of letting that pass unnoticed.
+      - name: Google ADK managed config contract
+        run: |
+          set -o pipefail
+          uv run --no-sync --with "google-adk[extensions]==${GOOGLE_ADK_VERSION}" \
+            python -m pytest \
+            sdks/python/tests/test_google_adk_managed_config_contract.py -q -rs \
+            2>&1 | tee adk-contract.log
+          if grep -Eq "[0-9]+ skipped" adk-contract.log; then
+            echo "::error::The google-adk contract suite skipped instead of running, so it proved nothing. Check that google-adk installed and that this step still uses 'python -m pytest' with '--no-sync'."
+            exit 1
+          fi
+
   sdk-ts-ci:
     runs-on: ubuntu-latest
     env:

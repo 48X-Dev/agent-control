@@ -765,3 +765,271 @@ export type GetAgentControlsPathParams = ExtractPathParams<
 export type InitAgentRequestBody = ExtractRequestBody<
   operations['init_agent_api_v1_agents_initAgent_post']
 >;
+
+// =============================================================================
+// Dispatch: milestone issues, the task ledger, workflows, fleet state
+// (manual until API types are regenerated)
+//
+// Everything on this surface that came from a tracker is untrusted input
+// written by whoever can file an issue: titles, bodies, and every word of
+// agent output derived from them. It renders as text nodes, never as markup,
+// everywhere it appears.
+// =============================================================================
+
+/** One issue in a milestone, as the server read it from Linear. */
+export type MilestoneIssue = {
+  /** Linear's internal id. This is what the ledger deduplicates on. */
+  ref: string;
+  /** The human-facing key, e.g. `OPS-114`. */
+  identifier: string;
+  title: string;
+  description?: string | null;
+  url?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+  creator_id?: string | null;
+  creator_display_name?: string | null;
+};
+
+/**
+ * Why an issue in this milestone was left out.
+ *
+ * Counted in Python rather than filtered away in the query, so the confirm can
+ * say "2 issues are assigned to a person and were skipped" instead of showing
+ * a shorter list with no explanation.
+ */
+export type MilestoneIssueSkipCounts = {
+  started: number;
+  assigned: number;
+  other_team: number;
+};
+
+export type MilestoneIssueCounts = {
+  fetched: number;
+  eligible: number;
+  skipped: MilestoneIssueSkipCounts;
+  /** True when the read came back at its hard cap, so more may exist. */
+  beyond_page_cap: boolean;
+};
+
+export type ListMilestoneIssuesResponse = {
+  status: MilestonesStatus;
+  slug: string;
+  linear_team_key: string;
+  milestone_id: string;
+  issues: MilestoneIssue[];
+  counts: MilestoneIssueCounts;
+  error?: string | null;
+  retry_after_seconds?: number | null;
+  cached: boolean;
+  fetched_at?: string | null;
+};
+
+export type TaskSourceKind = 'linear' | 'file';
+
+export type AgentTaskStatus =
+  | 'queued'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'blocked'
+  | 'paused_quota'
+  | 'running_unknown'
+  | 'awaiting_approval'
+  | 'cancelled';
+
+export type AgentTaskStepStatus =
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'abandoned';
+
+export type AgentTaskSummary = {
+  task_key: string;
+  source_kind: TaskSourceKind;
+  source_ref: string;
+  source_url?: string | null;
+  source_scope_kind?: 'milestone' | 'team_label' | null;
+  source_scope_ref?: string | null;
+  source_scope_name?: string | null;
+  source_team_key?: string | null;
+  /** Untrusted. Written by whoever filed the item. */
+  title: string;
+  team_slug?: string | null;
+  workflow_key: string;
+  status: AgentTaskStatus;
+  dry_run: boolean;
+  current_step: number;
+  turns_used: number;
+  claimed_by?: string | null;
+  claimed_at?: string | null;
+  heartbeat_at?: string | null;
+  lease_expires_at?: string | null;
+  deadline_at: string;
+  chain_trace_id?: string | null;
+  failure_code?: string | null;
+  failure_detail?: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ListAgentTasksResponse = {
+  tasks: AgentTaskSummary[];
+  pagination: {
+    limit: number;
+    total: number;
+    next_cursor?: string | null;
+    has_more: boolean;
+  };
+};
+
+/**
+ * One position in a chain, planned or run.
+ *
+ * `ran: false` is the whole reason this is a chain rather than a list of rows:
+ * a two-step workflow that stopped after its first agent has one step row, and
+ * a view built from rows alone would render that as a finished one-agent task.
+ */
+export type AgentTaskChainHop = {
+  step_index: number;
+  agent_name?: string | null;
+  brief: string;
+  ran: boolean;
+  status?: AgentTaskStepStatus | null;
+  session_key?: string | null;
+  turn_trace_id?: string | null;
+  /** The agent's own words. Untrusted, and rendered as text. */
+  output_text?: string | null;
+  output_truncated: boolean;
+  attempts: number;
+  failure_code?: string | null;
+  failure_detail?: string | null;
+  started_at?: string | null;
+  ended_at?: string | null;
+};
+
+export type AgentTaskChain = {
+  task_key: string;
+  source_kind: string;
+  source_ref: string;
+  source_url?: string | null;
+  title: string;
+  team_slug?: string | null;
+  workflow_key: string;
+  workflow_display_name: string;
+  status: AgentTaskStatus;
+  dry_run: boolean;
+  chain_trace_id?: string | null;
+  hops: AgentTaskChainHop[];
+  hops_planned: number;
+  hops_ran: number;
+  failure_code?: string | null;
+  failure_detail?: string | null;
+};
+
+export type GetAgentTaskChainResponse = { chain: AgentTaskChain };
+
+/** One candidate row the operator is being asked to agree to. */
+export type ImportCandidate = {
+  source_ref: string;
+  title: string;
+  source_url?: string | null;
+  flags: string[];
+};
+
+export type ImportSkipCounts = {
+  already_queued: number;
+  already_worked: number;
+  other_team: number;
+  assigned: number;
+  in_progress: number;
+  label_filtered: number;
+  beyond_page_cap: number;
+};
+
+export type DispatchBudget = {
+  max_turns_per_hour: number;
+  turns_used_this_hour: number;
+  turns_remaining_this_hour: number;
+  max_tasks_per_hour: number;
+  tasks_created_this_hour: number;
+  tasks_remaining_this_hour: number;
+  window_started_at: string;
+  window_resets_at: string;
+};
+
+/**
+ * The two stop switches and the hourly budget.
+ *
+ * Advisory wherever it is rendered: enforcement lives on the turn path inside
+ * the server, and a screen that reports a budget is not the thing that spends
+ * it. The `*_by_hash` fields identify a credential and not a person, because
+ * every browser caller hashes identically today.
+ */
+export type DispatchStateSnapshot = {
+  paused: boolean;
+  paused_at?: string | null;
+  paused_by_hash?: string | null;
+  paused_reason?: string | null;
+  executors_halted: boolean;
+  executors_halted_at?: string | null;
+  executors_halted_by_hash?: string | null;
+  executors_halted_reason?: string | null;
+  budget: DispatchBudget;
+  updated_at: string;
+};
+
+export type GetDispatchStateResponse = { state: DispatchStateSnapshot };
+
+export type ImportTaskItem = {
+  source_ref: string;
+  title: string;
+  body?: string;
+  source_url?: string | null;
+};
+
+export type ImportAgentTasksRequest = {
+  scope: {
+    kind: 'items';
+    source_kind: TaskSourceKind;
+    items: ImportTaskItem[];
+  };
+  team_slug?: string | null;
+  workflow_key?: string | null;
+  dry_run: boolean;
+  requeue_completed?: boolean;
+  mode: 'preview' | 'commit';
+  /** Required on commit: sha256 over the sorted refs that were displayed. */
+  expected_refs_digest?: string | null;
+};
+
+export type ImportAgentTasksResponse = {
+  mode: 'preview' | 'commit';
+  eligible: ImportCandidate[];
+  refs_digest: string;
+  skipped: ImportSkipCounts;
+  workflow_key: string;
+  dry_run: boolean;
+  created: number;
+  task_keys: string[];
+  dispatch_state?: DispatchStateSnapshot | null;
+};
+
+export type AgentWorkflowStep = {
+  agent_name?: string | null;
+  brief: string;
+  max_turns: number;
+  required_output: 'text' | 'none';
+  idempotent: boolean;
+};
+
+export type AgentWorkflow = {
+  workflow_key: string;
+  display_name: string;
+  team_slug?: string | null;
+  steps: AgentWorkflowStep[];
+  created_at: string;
+  updated_at: string;
+};
+
+export type ListAgentWorkflowsResponse = { workflows: AgentWorkflow[] };
