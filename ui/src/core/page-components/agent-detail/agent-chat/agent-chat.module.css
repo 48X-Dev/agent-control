@@ -1,11 +1,15 @@
 .panel {
   display: flex;
   flex-direction: column;
-  /* Sized so the composer stays on screen under the agent header on a 720px
-     tall window, which is where a chat panel that scrolls off the bottom
-     stops being a chat panel. */
-  height: min(60vh, 720px);
-  min-height: 360px;
+  /* Sized so the composer stays on screen under the agent header, which is
+     where a chat panel that scrolls off the bottom stops being a chat panel.
+
+     At 60vh the four fixed rows below the transcript - rail, nudge box and
+     composer - consumed nearly the whole panel and left the transcript a
+     sliver you had to scroll to read one message in. The transcript is the
+     thing people came for, so the panel takes the height instead. */
+  height: min(84vh, 1040px);
+  min-height: 520px;
   overflow: hidden;
   border: 1px solid var(--jds-color-border);
   border-radius: var(--mantine-radius-md);
@@ -28,8 +32,11 @@
 }
 
 .transcript {
-  flex: 1;
-  min-height: 0;
+  /* Takes every pixel the fixed rows below it do not need, and keeps a floor
+     so a long plan or a queued-nudge list cannot squeeze the conversation
+     back down to one visible line. */
+  flex: 1 1 auto;
+  min-height: 220px;
 }
 
 .transcriptBody {

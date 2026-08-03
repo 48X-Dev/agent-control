@@ -1,30 +1,64 @@
 import {
+  ActionIcon,
   Badge,
   Box,
+  Collapse,
   Group,
+  Loader,
   Progress,
   Skeleton,
   Stack,
   Text,
+  Tooltip,
 } from '@mantine/core';
 import { Button } from '@rungalileo/jupiter-ds';
 import {
   IconCalendarEvent,
   IconExternalLink,
   IconFlag,
+  IconPlayerPlay,
   IconPlugConnected,
   IconRefresh,
   IconSettings,
+  IconX,
 } from '@tabler/icons-react';
-import { useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 
-import type { Milestone } from '@/core/api/types';
+import type {
+  AgentTaskSummary,
+  DispatchStateSnapshot,
+  Milestone,
+} from '@/core/api/types';
+import {
+  isLiveStatus,
+  useAgentTasks,
+} from '@/core/hooks/query-hooks/use-agent-tasks';
+import { useDispatchState } from '@/core/hooks/query-hooks/use-dispatch-state';
 import { useTeamMilestones } from '@/core/hooks/query-hooks/use-team-milestones';
+import { useNow } from '@/core/page-components/agent-detail/agent-chat/use-now';
 
+import { AgentStepProgress } from './dispatch/agent-step-progress';
+import { safeHttpUrl } from './dispatch/formatting';
+import type { MilestoneScope } from './dispatch/milestone-work';
+import { MilestoneWork } from './dispatch/milestone-work';
+import { tallySteps } from './dispatch/tally';
 import { LinkLinearTeam } from './link-linear-team';
 import classes from './team-detail.module.css';
 
 const SKELETON_ROW_COUNT = 3;
+
+/**
+ * How old a cached milestone list has to be before the play control refuses.
+ *
+ * The server's own cache lives for a minute; past that, a list still marked
+ * cached is being served from the degraded path while Linear is in a cooldown.
+ * The eligible set cannot be recomputed against that, and a press that fails
+ * after the operator has committed to the gesture is worse than a control that
+ * says why it is off.
+ */
+const STALE_LIST_AFTER_MS = 120_000;
+
+const CLOCK_INTERVAL_MS = 30_000;
 
 const DATE_FORMATTER = new Intl.DateTimeFormat(undefined, {
   year: 'numeric',
@@ -59,12 +93,144 @@ function formatFetchedAt(value: string | null | undefined): string | null {
   return Number.isNaN(parsed.getTime()) ? null : TIME_FORMATTER.format(parsed);
 }
 
-function MilestoneRow({ milestone }: { milestone: Milestone }) {
+/**
+ * Whether a cached milestone list is the degraded one.
+ *
+ * `cached` on its own is an ordinary TTL hit and means nothing is wrong. A
+ * cached read older than the server's own TTL means Linear is in a cooldown and
+ * the last good copy is being served, which is fine for reading a board and not
+ * fine for deciding what to start.
+ */
+function isStaleRead(
+  cached: boolean | undefined,
+  fetchedAt: string | null | undefined,
+  now: number
+): boolean {
+  if (!cached || !fetchedAt) return false;
+  const readAt = new Date(fetchedAt).getTime();
+  if (Number.isNaN(readAt)) return false;
+  return now - readAt > STALE_LIST_AFTER_MS;
+}
+
+type MilestoneRowProps = {
+  milestone: Milestone;
+  teamSlug: string;
+  linearTeamKey: string | null;
+  open: boolean;
+  onToggle: () => void;
+  scope: MilestoneScope | undefined;
+  teamTasks: AgentTaskSummary[];
+  dispatchState: DispatchStateSnapshot | null | undefined;
+  listIsStale: boolean;
+  listFetchedAt: string | null;
+  now: number;
+  onScopeResolved: (scope: MilestoneScope) => void;
+};
+
+/**
+ * Why the play control is off, in the words the tooltip uses.
+ *
+ * Returns null when it should be live. A disabled control with no explanation
+ * is a control somebody clicks four times and then files a bug about.
+ */
+function playDisabledReason({
+  linearTeamKey,
+  dispatchState,
+  listIsStale,
+  listFetchedAt,
+  scope,
+}: {
+  linearTeamKey: string | null;
+  dispatchState: DispatchStateSnapshot | null | undefined;
+  listIsStale: boolean;
+  listFetchedAt: string | null;
+  scope: MilestoneScope | undefined;
+}): string | null {
+  // An unlinked team has no milestone list and therefore no rows, so this is
+  // defensive rather than reachable. It stays because the alternative is a
+  // control that opens an empty panel.
+  if (!linearTeamKey) {
+    return 'This team is not linked to a Linear team.';
+  }
+  if (dispatchState?.paused) {
+    return 'New agent work is paused in this namespace.';
+  }
+  if (dispatchState?.executors_halted) {
+    return 'Executors are halted in this namespace.';
+  }
+  if (listIsStale) {
+    const when = formatFetchedAt(listFetchedAt);
+    return `This milestone list was last read${when ? ` at ${when}` : ''} and could not be refreshed, so the set a press would cover cannot be worked out.`;
+  }
+  if (scope && scope.eligibleCount === 0) {
+    return 'Nothing to work on in this milestone.';
+  }
+  return null;
+}
+
+function MilestoneRow({
+  milestone,
+  teamSlug,
+  linearTeamKey,
+  open,
+  onToggle,
+  scope,
+  teamTasks,
+  dispatchState,
+  listIsStale,
+  listFetchedAt,
+  now,
+  onScopeResolved,
+}: MilestoneRowProps) {
   const targetDate = formatTargetDate(milestone.target_date);
   const percent =
     typeof milestone.progress === 'number'
       ? Math.round(milestone.progress * 100)
       : null;
+
+  // Same treatment the issue links get: a url read out of a third party is not
+  // a scheme the browser should be handed unchecked.
+  const projectUrl = safeHttpUrl(milestone.project_url);
+
+  const refs = useMemo(() => new Set(scope?.refs ?? []), [scope]);
+  const milestoneTasks = useMemo(
+    () =>
+      teamTasks.filter(
+        (task) => task.source_kind === 'linear' && refs.has(task.source_ref)
+      ),
+    [teamTasks, refs]
+  );
+  const tally = tallySteps(milestoneTasks, scope?.stepsPerTask ?? 1);
+  const liveTasks = milestoneTasks.filter((task) => isLiveStatus(task.status));
+
+  const disabledReason = playDisabledReason({
+    linearTeamKey,
+    dispatchState,
+    listIsStale,
+    listFetchedAt,
+    scope,
+  });
+  // Closing is always allowed: a panel that cannot be shut because the
+  // namespace paused while it was open is a trap, not a safeguard.
+  const playDisabled = !open && disabledReason !== null;
+
+  const control = (
+    <ActionIcon
+      variant="subtle"
+      size="sm"
+      color="gray"
+      onClick={onToggle}
+      disabled={playDisabled}
+      aria-label={
+        open
+          ? `Close the work scope for ${milestone.name}`
+          : `Start work on ${milestone.name}`
+      }
+      data-testid="milestone-start-work"
+    >
+      {open ? <IconX size={16} /> : <IconPlayerPlay size={16} />}
+    </ActionIcon>
+  );
 
   return (
     <Box className={classes.milestone} data-testid="milestone-row">
@@ -73,16 +239,40 @@ function MilestoneRow({ milestone }: { milestone: Milestone }) {
           <Text size="sm" fw={500} lineClamp={2}>
             {milestone.name}
           </Text>
-          {milestone.status ? (
-            <Badge
-              size="sm"
-              variant="light"
-              color={STATUS_COLORS[milestone.status] ?? 'gray'}
-              data-testid="milestone-status"
-            >
-              {milestone.status}
-            </Badge>
-          ) : null}
+          <Group gap={6} align="center" wrap="nowrap">
+            {liveTasks.length > 0 ? (
+              <Group gap={4} align="center" wrap="nowrap">
+                <Loader size={12} data-testid="milestone-running-spinner" />
+                <Text
+                  size="xs"
+                  c="dimmed"
+                  data-testid="milestone-running-count"
+                >
+                  {liveTasks.length} running
+                </Text>
+              </Group>
+            ) : null}
+            {milestone.status ? (
+              <Badge
+                size="sm"
+                variant="light"
+                color={STATUS_COLORS[milestone.status] ?? 'gray'}
+                data-testid="milestone-status"
+              >
+                {milestone.status}
+              </Badge>
+            ) : null}
+            {/* Pressing this starts nothing. It opens the panel below, which
+                shows the issues a run would cover; a second, labelled button
+                in there is what creates anything. */}
+            {disabledReason && !open ? (
+              <Tooltip label={disabledReason} withArrow multiline maw={280}>
+                <Box>{control}</Box>
+              </Tooltip>
+            ) : (
+              control
+            )}
+          </Group>
         </Group>
 
         <Group gap="md" align="center" wrap="wrap">
@@ -107,17 +297,15 @@ function MilestoneRow({ milestone }: { milestone: Milestone }) {
             <Text
               size="xs"
               c="dimmed"
-              component={milestone.project_url ? 'a' : 'span'}
-              href={milestone.project_url ?? undefined}
-              target={milestone.project_url ? '_blank' : undefined}
-              rel={milestone.project_url ? 'noopener noreferrer' : undefined}
-              className={
-                milestone.project_url ? classes.projectLink : undefined
-              }
+              component={projectUrl ? 'a' : 'span'}
+              href={projectUrl ?? undefined}
+              target={projectUrl ? '_blank' : undefined}
+              rel={projectUrl ? 'noopener noreferrer' : undefined}
+              className={projectUrl ? classes.projectLink : undefined}
               lineClamp={1}
             >
               {milestone.project_name}
-              {milestone.project_url ? (
+              {projectUrl ? (
                 <IconExternalLink
                   size={11}
                   style={{ marginLeft: 4, verticalAlign: 'middle' }}
@@ -134,13 +322,33 @@ function MilestoneRow({ milestone }: { milestone: Milestone }) {
               size="sm"
               radius="xl"
               style={{ flex: 1 }}
-              aria-label={`${milestone.name} progress`}
+              aria-label={`${milestone.name} issue completion`}
             />
             <Text size="xs" c="dimmed" data-testid="milestone-progress">
               {percent}%
             </Text>
           </Group>
         )}
+
+        {/* Under Linear's bar, never merged with it. That one is issue
+            completion in the tracker; this one counts steps agents say they
+            finished. */}
+        <AgentStepProgress tally={tally} />
+
+        <Collapse in={open}>
+          {open && linearTeamKey ? (
+            <MilestoneWork
+              teamSlug={teamSlug}
+              milestoneId={milestone.id}
+              milestoneName={milestone.name}
+              linearTeamKey={linearTeamKey}
+              teamTasks={teamTasks}
+              dispatchState={dispatchState}
+              now={now}
+              onScopeResolved={onScopeResolved}
+            />
+          ) : null}
+        </Collapse>
       </Stack>
     </Box>
   );
@@ -247,10 +455,34 @@ export function TeamMilestones({ slug }: { slug: string }) {
   const { data, error, isLoading, isFetching, refetch } =
     useTeamMilestones(slug);
   const [changingLink, setChangingLink] = useState(false);
+  const [openMilestoneId, setOpenMilestoneId] = useState<string | null>(null);
+  const [scopes, setScopes] = useState<Record<string, MilestoneScope>>({});
 
   const linkedKey = data?.linear_team_key ?? null;
   const canChangeLink = Boolean(linkedKey) && data?.status !== 'not_configured';
   const fetchedAt = formatFetchedAt(data?.fetched_at);
+  const linked = data?.status === 'ok' && Boolean(linkedKey);
+
+  // One ledger read for the whole panel rather than one per row, and one
+  // dispatch-state read for every banner and every tooltip on this screen.
+  const tasksQuery = useAgentTasks({ team: slug, enabled: linked });
+  const dispatchQuery = useDispatchState({ enabled: linked });
+  const teamTasks = useMemo(
+    () => tasksQuery.data?.tasks ?? [],
+    [tasksQuery.data]
+  );
+  const dispatchState = dispatchQuery.data?.state ?? null;
+
+  const now = useNow(linked, CLOCK_INTERVAL_MS);
+
+  // `cached` alone is an ordinary TTL hit and means nothing is wrong. A cached
+  // list whose read is older than the server's own TTL is the degraded path:
+  // Linear is in a cooldown and the eligible set cannot be recomputed.
+  const listIsStale = isStaleRead(data?.cached, data?.fetched_at, now);
+
+  const onScopeResolved = useCallback((scope: MilestoneScope) => {
+    setScopes((previous) => ({ ...previous, [scope.milestoneId]: scope }));
+  }, []);
 
   const renderBody = () => {
     if (isLoading) {
@@ -318,7 +550,25 @@ export function TeamMilestones({ slug }: { slug: string }) {
         return (
           <Stack gap="sm" data-testid="milestones-list">
             {data.milestones.map((milestone) => (
-              <MilestoneRow key={milestone.id} milestone={milestone} />
+              <MilestoneRow
+                key={milestone.id}
+                milestone={milestone}
+                teamSlug={slug}
+                linearTeamKey={linkedKey}
+                open={openMilestoneId === milestone.id}
+                onToggle={() =>
+                  setOpenMilestoneId((current) =>
+                    current === milestone.id ? null : milestone.id
+                  )
+                }
+                scope={scopes[milestone.id]}
+                teamTasks={teamTasks}
+                dispatchState={dispatchState}
+                listIsStale={listIsStale}
+                listFetchedAt={data.fetched_at ?? null}
+                now={now}
+                onScopeResolved={onScopeResolved}
+              />
             ))}
           </Stack>
         );

@@ -1,0 +1,83 @@
+/* The scope panel that opens under a milestone row, and everything in it. */
+
+.panel {
+  margin-top: var(--mantine-spacing-xs);
+  padding: var(--mantine-spacing-md);
+  border: 1px solid var(--jds-color-border);
+  border-radius: var(--mantine-radius-sm);
+  background-color: var(--mantine-color-gray-0);
+}
+
+[data-mantine-color-scheme='dark'] .panel {
+  background-color: var(--mantine-color-dark-6);
+  border-color: var(--mantine-color-dark-4);
+}
+
+.issueRow {
+  padding: var(--mantine-spacing-xs) var(--mantine-spacing-sm);
+  border: 1px solid var(--jds-color-border);
+  border-radius: var(--mantine-radius-sm);
+  background-color: var(--mantine-color-white);
+}
+
+[data-mantine-color-scheme='dark'] .issueRow {
+  background-color: var(--mantine-color-dark-7);
+  border-color: var(--mantine-color-dark-4);
+}
+
+/* A row somebody should look at twice before pressing. The flag beside it says
+   why, and the copy under the list says the flags are heuristics. */
+.issueRowFlagged {
+  border-color: var(--mantine-color-yellow-5);
+}
+
+.scroller {
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+/* The agent bar is not Linear's bar and must never look like it: thinner, its
+   own label, its own place in the layout. Issue completion is a fact about the
+   tracker; steps an agent says it finished are a self-report. */
+.agentProgress {
+  padding-top: 2px;
+}
+
+.identifier {
+  font-family: var(--mantine-font-family-monospace);
+  font-size: var(--mantine-font-size-xs);
+}
+
+/* Agent output, verbatim and wrapped. Never markup: this is the string an
+   injected agent would choose. */
+.outputText {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: var(--mantine-font-family-monospace);
+  font-size: var(--mantine-font-size-xs);
+  line-height: 1.5;
+  max-height: 240px;
+  overflow-y: auto;
+  padding: var(--mantine-spacing-xs);
+  border-radius: var(--mantine-radius-sm);
+  background-color: var(--mantine-color-gray-0);
+}
+
+[data-mantine-color-scheme='dark'] .outputText {
+  background-color: var(--mantine-color-dark-8);
+}
+
+.stepRail {
+  padding-left: var(--mantine-spacing-sm);
+  border-left: 2px solid var(--jds-color-border);
+}
+
+.taskRow {
+  padding: var(--mantine-spacing-xs) var(--mantine-spacing-sm);
+  border: 1px solid var(--jds-color-border);
+  border-radius: var(--mantine-radius-sm);
+}
+
+[data-mantine-color-scheme='dark'] .taskRow {
+  border-color: var(--mantine-color-dark-4);
+}
