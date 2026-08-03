@@ -72,6 +72,9 @@ services:
       AGENT_CONTROL_EXECUTOR_ALLOW_INSECURE_LOCAL_DEV: ${AGENT_CONTROL_EXECUTOR_ALLOW_INSECURE_LOCAL_DEV:-false}
       # Linear milestones. The key is held server-side and never reaches the
       # browser; unset simply leaves the panel in its not-configured state.
+      # Models an agent may be configured to run on. Empty list keeps the model
+      # half of agent configuration inert; the system prompt works regardless.
+      AGENT_CONTROL_MODELS_ALLOWLIST: ${AGENT_CONTROL_MODELS_ALLOWLIST:-[]}
       AGENT_CONTROL_LINEAR_API_KEY: ${AGENT_CONTROL_LINEAR_API_KEY:-}
       AGENT_CONTROL_LINEAR_TIMEOUT_SECONDS: ${AGENT_CONTROL_LINEAR_TIMEOUT_SECONDS:-10}
       AGENT_CONTROL_LINEAR_CACHE_TTL_SECONDS: ${AGENT_CONTROL_LINEAR_CACHE_TTL_SECONDS:-60}
