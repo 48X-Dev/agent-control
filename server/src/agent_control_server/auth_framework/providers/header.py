@@ -69,6 +69,13 @@ DEFAULT_OPERATION_ACCESS: dict[Operation, AccessLevel] = {
     # opened the session, which is what keeps an AUTHENTICATED stop from being
     # a way to end everybody else's turns for free.
     Operation.AGENT_HALTS_WRITE: AccessLevel.AUTHENTICATED,
+    # AUTHENTICATED on the AGENT_SESSIONS_RUN precedent: whoever may start a
+    # turn may attach a file to it, and an admin-only attach is a feature
+    # nobody can use. The tier is defensible because the accepted set is
+    # decided by a magic-byte sniff rather than by what the upload claimed, and
+    # because the service scopes the write to the caller who opened the session
+    # - a session belonging to a dispatch task refuses a bystander outright.
+    Operation.AGENT_ATTACHMENTS_WRITE: AccessLevel.AUTHENTICATED,
     # Deployment configuration, same tier as CONTROL_BINDINGS_WRITE.
     Operation.AGENT_RUNTIMES_WRITE: AccessLevel.ADMIN,
     # Readable by any key in the namespace, including agent process keys,

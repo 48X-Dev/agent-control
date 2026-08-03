@@ -35,6 +35,13 @@ TURN_OUTCOME_COMPLETED = "completed"
 TURN_OUTCOME_TIMEOUT = "timeout"
 TURN_OUTCOME_ABANDONED = "abandoned"
 TURN_OUTCOME_EXECUTOR_ERROR = "executor_error"
+TURN_OUTCOME_ATTACHMENT_REFUSED = "attachment_refused"
+"""A turn refused over the files it named, before anything left the process.
+
+Separate from ``abandoned`` because they read as opposite things: abandoned is
+people giving up on an agent, and this is a configured ceiling or a missing
+file refusing them. A deployment whose per-turn attachment cap is set too low
+would otherwise show up as a user-behaviour problem."""
 
 TURNS_REJECTED = Counter(
     "agent_control_server_turns_rejected_total",
@@ -201,3 +208,76 @@ HALTS_APPLIED_STILL_IN_FLIGHT = Counter(
 """The gap between "the executor says it blocked" and "the turn actually
 ended". Acknowledged by the party being stopped, so it is attested rather than
 observed; this counts how often the two disagree."""
+
+ATTACHMENT_UPLOADS = Counter(
+    "agent_control_server_attachment_uploads_total",
+    "Attachment uploads, by how they ended.",
+    ("result",),
+)
+"""A refused upload writes no row, so without this a deployment whose byte cap
+is set too low and a deployment nobody attaches files to produce identical
+graphs. ``rejected`` is the type gate, which is the one an operator can fix."""
+
+ATTACHMENT_UPLOAD_ACCEPTED = "accepted"
+ATTACHMENT_UPLOAD_DEDUPLICATED = "deduplicated"
+ATTACHMENT_UPLOAD_REJECTED = "rejected"
+ATTACHMENT_UPLOAD_TOO_LARGE = "too_large"
+ATTACHMENT_UPLOAD_QUOTA = "quota"
+ATTACHMENT_UPLOAD_RATE_LIMITED = "rate_limited"
+
+ATTACHMENT_BLOBS_RECLAIMED = Counter(
+    "agent_control_server_attachment_blobs_reclaimed_total",
+    "Attachment blobs deleted by a retention sweep, by which sweep.",
+    ("sweep",),
+)
+"""Dispatch sessions persist by default, so the cascade that would reclaim
+attachment bytes may never fire. These sweeps are the only thing standing
+between that and a namespace ceiling with no documented remedy, which makes a
+flat line here on a busy deployment a fault rather than good news."""
+
+ATTACHMENT_SWEEP_ORPHAN = "orphan"
+ATTACHMENT_SWEEP_BLOB_TTL = "blob_ttl"
+
+ATTACHMENT_CONVERSIONS = Counter(
+    "agent_control_server_attachment_conversions_total",
+    "Out-of-band conversions, by how they ended.",
+    ("result",),
+)
+"""``dropped`` is the one to watch. It means the queue was full when a file
+arrived, so nothing converted it and the turn that carried it told the agent so.
+A deployment seeing it steadily is one whose converter cannot keep up with its
+uploads, which no other counter here would distinguish from a deployment where
+every file happens to be unreadable."""
+
+ATTACHMENT_CONVERSION_OK = "ok"
+ATTACHMENT_CONVERSION_EMPTY = "empty"
+ATTACHMENT_CONVERSION_FAILED = "failed"
+ATTACHMENT_CONVERSION_DROPPED = "dropped"
+
+ATTACHMENT_CONVERSION_DURATION = Histogram(
+    "agent_control_server_attachment_conversion_duration_seconds",
+    "Wall clock spent converting one attachment, whatever the outcome.",
+    buckets=(0.1, 0.5, 1, 5, 15, 30, 60, 120, 300),
+)
+
+ATTACHMENT_DELIVERIES = Counter(
+    "agent_control_server_attachment_deliveries_total",
+    "Attachments carried by a turn, by what the agent was told about each.",
+    ("result",),
+)
+"""``not_converted`` is the honest half of the cache-miss design: the file was
+delivered as a named descriptor with no contents, and an agent reading that
+line knows not to guess. A deployment where it never falls to zero is one whose
+conversions never finish."""
+
+ATTACHMENT_DELIVERY_SENT = "sent"
+ATTACHMENT_DELIVERY_NOT_CONVERTED = "not_converted"
+ATTACHMENT_DELIVERY_NO_TEXT = "no_text"
+ATTACHMENT_DELIVERY_TRUNCATED = "truncated"
+ATTACHMENT_DELIVERY_RENDER_FAILED = "render_failed"
+"""The delivery renderer hit a bug and fell back to the count line.
+
+Any reading above zero is a defect in this deployment's own code rather than
+anything about the file, which is why it is a label of its own: it is the only
+value here that nobody should ever see, and folding it into ``no_text`` would
+hide a server fault inside a normal-looking rate."""

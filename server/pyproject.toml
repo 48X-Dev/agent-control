@@ -13,6 +13,7 @@ dependencies = [
     "starlette-exporter>=0.23.0",
     "uvicorn[standard]>=0.27.0",
     "httpx>=0.27.0",  # For auth_framework HTTP providers
+    "python-multipart>=0.0.9",  # multipart/form-data on the attachment upload route
     "pydantic>=2.5.0",
     "pydantic-settings>=2.1.0",
     "SQLAlchemy>=2.0.0",
@@ -36,6 +37,21 @@ license = {text = "Apache-2.0"}
 galileo = ["agent-control-evaluator-galileo>=7.5.0"]
 binary = ["psycopg[binary]>=3.1"]
 c = ["psycopg[c]>=3.1"]
+# Attachment conversion. Both are optional and both cost real disk, so the
+# price is written here rather than discovered from an image that doubled.
+# Neither is imported at module scope: without them the converter reports
+# `converter_unavailable` and names the missing one, and the server starts.
+#
+# text-extraction: MarkItDown 0.1.7 (MIT), ~253MB / 38 packages. Reads a
+#   document's text layer. Only the `pdf` extra is taken: the office extras add
+#   parsers for formats `attachment_accepted_mimes` refuses, which is parser
+#   surface bought for nothing.
+# ocr: Docling (MIT), ~1.0GB / 103 packages, torch on CPU. Measured at 47.5s on
+#   a one-line PDF and 0.5s on a small PNG in this workspace on 2026-08-03.
+#   Not a rare escalation: five of this workspace's six real attachments carry
+#   no text layer at all, so on this corpus it is the main path.
+text-extraction = ["markitdown[pdf]>=0.1.7"]
+ocr = ["docling>=2.0"]
 
 [dependency-groups]
 dev = [

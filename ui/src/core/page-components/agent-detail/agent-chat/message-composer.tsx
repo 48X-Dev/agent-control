@@ -1,9 +1,25 @@
 import { Box, Group, Stack, Text, Textarea } from '@mantine/core';
 import { Button } from '@rungalileo/jupiter-ds';
 import type { KeyboardEvent } from 'react';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+
+import type { Attachment } from '@/core/api/types';
+import {
+  ATTACHMENT_MAX_PER_TURN,
+  ATTACHMENT_TYPE_HELP,
+  isAttachmentSendable,
+  useSessionAttachments,
+} from '@/core/hooks/query-hooks/use-session-attachments';
+import {
+  isUploadCancelled,
+  useDeleteAttachment,
+  useUploadAttachment,
+} from '@/core/hooks/query-hooks/use-upload-attachment';
 
 import classes from './agent-chat.module.css';
+import type { ChipState } from './attachment-chip';
+import { AttachmentChip } from './attachment-chip';
+import { AttachmentPicker } from './attachment-picker';
 
 /**
  * Ceiling on one turn's text, matching `TURN_MESSAGE_MAX_LENGTH` on the
@@ -56,7 +72,9 @@ export type HaltState =
   | 'stalled';
 
 type MessageComposerProps = {
-  onSend: (message: string) => void;
+  onSend: (message: string, attachmentKeys: string[]) => void;
+  /** Session the files are uploaded against. Null disables the picker. */
+  sessionKey: string | null;
   onStopWaiting: () => void;
   /** Ask the agent to stop at its next boundary. */
   onStop: () => void;
@@ -116,6 +134,7 @@ type MessageComposerProps = {
  */
 export function MessageComposer({
   onSend,
+  sessionKey,
   onStopWaiting,
   onStop,
   canStop,
@@ -130,15 +149,142 @@ export function MessageComposer({
   agentName,
 }: MessageComposerProps) {
   const [draft, setDraft] = useState('');
+  const [chips, setChips] = useState<ChipState[]>([]);
   const elapsed = useElapsedSeconds(isTurnInFlight ? turnStartedAt : null);
 
+  const upload = useUploadAttachment(sessionKey);
+  const remove = useDeleteAttachment(sessionKey);
+  const stored = useSessionAttachments(sessionKey);
+
+  // A chip holds the row the upload answered with, which is a snapshot. The
+  // file can move on afterwards without this panel doing anything: removed from
+  // another tab, or tombstoned by the blob sweep, both of which leave the row
+  // in place with a status this list carries. Re-reading it is what keeps the
+  // "1 file will not be sent" warning true, and it is the whole reason the
+  // upload and delete mutations invalidate this query.
+  //
+  // Only rows the list still knows about are used. A key the list has not
+  // caught up with yet is left alone rather than treated as gone: the upload
+  // response is the newer fact in that window, and dropping a chip on it would
+  // remove a file the operator has just successfully attached.
+  const storedByKey = useMemo(
+    () =>
+      new Map(
+        (stored.data?.attachments ?? []).map((row) => [row.attachment_key, row])
+      ),
+    [stored.data]
+  );
+  const resolved = chips.map((chip) =>
+    chip.kind === 'ready'
+      ? {
+          ...chip,
+          attachment:
+            storedByKey.get(chip.attachment.attachment_key) ?? chip.attachment,
+        }
+      : chip
+  );
+
+  const sendable = resolved.filter(
+    (chip) => chip.kind === 'ready' && isAttachmentSendable(chip.attachment)
+  );
+  const uploading = resolved.some((chip) => chip.kind === 'uploading');
+  // A file that is stored but not sendable, or one that never got there. The
+  // send button says so above itself, before the click: the server refuses the
+  // whole turn on a key it cannot send, and finding that out from a 409 after
+  // pressing send is a worse way to learn it.
+  const unsendable = resolved.length - sendable.length;
+
   const trimmed = draft.trim();
-  const canSend = !disabled && !isTurnInFlight && trimmed.length > 0;
+  const canSend =
+    !disabled &&
+    !isTurnInFlight &&
+    !uploading &&
+    unsendable === 0 &&
+    trimmed.length > 0;
+
+  const dismiss = useCallback((id: string) => {
+    setChips((current) => current.filter((chip) => chip.id !== id));
+  }, []);
+
+  const handlePick = useCallback(
+    (file: File) => {
+      const id = `${file.name}:${Date.now()}`;
+      setChips((current) => [
+        ...current,
+        { kind: 'uploading', id, name: file.name, progress: 0 },
+      ]);
+      upload.mutate(
+        {
+          file,
+          uploadId: id,
+          onProgress: (fraction) =>
+            setChips((current) =>
+              current.map((chip) =>
+                chip.id === id && chip.kind === 'uploading'
+                  ? { ...chip, progress: fraction }
+                  : chip
+              )
+            ),
+        },
+        {
+          onSuccess: (attachment: Attachment) =>
+            setChips((current) =>
+              current.map((chip) =>
+                chip.id === id ? { kind: 'ready', id, attachment } : chip
+              )
+            ),
+          onError: (error: Error) =>
+            setChips((current) =>
+              isUploadCancelled(error)
+                ? current.filter((chip) => chip.id !== id)
+                : current.map((chip) =>
+                    chip.id === id
+                      ? {
+                          kind: 'failed',
+                          id,
+                          name: file.name,
+                          message: error.message,
+                        }
+                      : chip
+                  )
+            ),
+        }
+      );
+    },
+    [upload]
+  );
+
+  const handleRefuse = useCallback((name: string, message: string) => {
+    setChips((current) => [
+      ...current,
+      { kind: 'failed', id: `${name}:${Date.now()}`, name, message },
+    ]);
+  }, []);
+
+  const handleRemove = useCallback(
+    (attachmentKey: string) => {
+      setChips((current) =>
+        current.filter(
+          (chip) =>
+            chip.kind !== 'ready' ||
+            chip.attachment.attachment_key !== attachmentKey
+        )
+      );
+      remove.mutate(attachmentKey);
+    },
+    [remove]
+  );
 
   const send = () => {
     if (!canSend) return;
-    onSend(trimmed.slice(0, TURN_MESSAGE_MAX_LENGTH));
+    onSend(
+      trimmed.slice(0, TURN_MESSAGE_MAX_LENGTH),
+      sendable.map((chip) =>
+        chip.kind === 'ready' ? chip.attachment.attachment_key : ''
+      )
+    );
     setDraft('');
+    setChips([]);
   };
 
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -150,6 +296,22 @@ export function MessageComposer({
   return (
     <Box className={classes.composer} data-testid="chat-composer">
       <Stack gap="xs">
+        {/* Above the input rather than in the transcript: these files belong
+            to the message being written, not to anything that has happened. */}
+        {resolved.length > 0 ? (
+          <Group gap="sm" wrap="wrap" data-testid="chat-attachments">
+            {resolved.map((chip) => (
+              <AttachmentChip
+                key={chip.id}
+                state={chip}
+                onCancel={upload.cancel}
+                onRemove={handleRemove}
+                onDismiss={dismiss}
+              />
+            ))}
+          </Group>
+        ) : null}
+
         <Textarea
           value={draft}
           onChange={(event) => setDraft(event.currentTarget.value)}
@@ -210,16 +372,40 @@ export function MessageComposer({
                 </Text>
               </Stack>
             ) : (
-              <Text size="xs" c="dimmed">
-                Enter to send, Shift + Enter for a new line.
-                {draft.length >= COUNTER_VISIBLE_FROM
-                  ? ` ${draft.length} / ${TURN_MESSAGE_MAX_LENGTH} characters.`
-                  : ''}
-              </Text>
+              <Stack gap={2}>
+                <Text size="xs" c="dimmed">
+                  Enter to send, Shift + Enter for a new line.
+                  {draft.length >= COUNTER_VISIBLE_FROM
+                    ? ` ${draft.length} / ${TURN_MESSAGE_MAX_LENGTH} characters.`
+                    : ''}
+                </Text>
+                {unsendable > 0 ? (
+                  <Text size="xs" c="red" data-testid="chat-attachment-warning">
+                    {unsendable === 1
+                      ? '1 file will not be sent. Remove it, or attach it again.'
+                      : `${unsendable} files will not be sent. Remove them, or attach them again.`}
+                  </Text>
+                ) : null}
+                {chips.length === 0 ? (
+                  <Text size="xs" c="dimmed" data-testid="chat-attachment-help">
+                    {ATTACHMENT_TYPE_HELP}
+                  </Text>
+                ) : null}
+              </Stack>
             )}
           </Box>
 
           <Group gap="xs" wrap="nowrap">
+            <AttachmentPicker
+              disabled={
+                disabled ||
+                isTurnInFlight ||
+                !sessionKey ||
+                chips.length >= ATTACHMENT_MAX_PER_TURN
+              }
+              onPick={handlePick}
+              onRefuse={handleRefuse}
+            />
             {/* "Stop waiting" is the secondary control and it appears late on
                 purpose. Two buttons where one of them cannot stop the agent is
                 confusing while the real stop is landing; it earns its place
@@ -232,7 +418,9 @@ export function MessageComposer({
                 with no control on it at all. */}
             {isWaitingHere &&
             !hasStoppedWaiting &&
-            (haltState === 'stalled' || haltState === 'unlanded' || !canStop) ? (
+            (haltState === 'stalled' ||
+              haltState === 'unlanded' ||
+              !canStop) ? (
               <Button
                 variant="ghost"
                 size="sm"

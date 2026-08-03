@@ -818,3 +818,23 @@ def test_placeholder_line_of_a_forged_filename_cannot_open_a_new_field():
     assert '"' not in name_field
     assert line.endswith("source=unknown]")
     assert descriptor.display_name_normalized is True
+
+
+def test_sniffer_and_normalizer_are_the_shared_objects_not_copies():
+    """The SDK re-exports the shared implementation; it does not own one.
+
+    The server enforces its upload gate with these same three functions and
+    cannot import this package, so they live in ``agent_control_models.files``.
+    Identity rather than behaviour is asserted because a copy passes every
+    behavioural test on the day it is made and drifts afterwards, and the drift
+    is invisible: the descriptor a control reads and the gate the server
+    enforces would disagree about one file.
+    """
+
+    from agent_control_models import files as shared
+    from agent_control.integrations.google_adk import _sanitize
+
+    assert _sanitize.sniff_mime is shared.sniff_mime
+    assert _sanitize.is_mime_mismatch is shared.is_mime_mismatch
+    assert _sanitize.normalize_display_name is shared.normalize_display_name
+    assert _sanitize.MAX_DISPLAY_NAME_CHARS is shared.MAX_DISPLAY_NAME_CHARS

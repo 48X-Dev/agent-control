@@ -8,10 +8,12 @@ import type {
   ClearAgentConfigFieldResponse,
   CreateAgentSessionRequest,
   CreateAgentSessionResponse,
+  CreateAttachmentResponse,
   CreateControlRequest,
   CreateHaltResponse,
   CreateNudgeRequest,
   CreateNudgeResponse,
+  DeleteAttachmentResponse,
   GetAgentConfigResponse,
   GetAgentConfigVersionResponse,
   GetAgentControlsPathParams,
@@ -33,6 +35,7 @@ import type {
   ListAgentsResponse,
   ListAgentTasksResponse,
   ListAgentWorkflowsResponse,
+  ListAttachmentsResponse,
   ListHaltsResponse,
   ListMilestoneIssuesResponse,
   ListNudgesResponse,
@@ -205,6 +208,85 @@ async function putJson<T>(path: string, body: unknown): Promise<JsonResult<T>> {
   }
 
   return { data: responseBody as T, error: undefined, response: res };
+}
+
+/**
+ * Upload one file to a session, reporting progress and honouring an abort.
+ *
+ * Three details are load-bearing and each is easy to get wrong once.
+ *
+ * `Content-Type` is **not** set. The browser writes the multipart boundary and
+ * a hand-written header would produce a body the server cannot parse.
+ *
+ * `X-Requested-With` is required by the server. It forces a preflight, which is
+ * what keeps a cross-origin HTML form from posting a file into somebody's
+ * session on the strength of their cookie.
+ *
+ * The result shape mirrors `getJson` and friends so callers stay uniform, and a
+ * failure carries the server's problem document rather than a status code: the
+ * refusals here (413 over the cap, 415 wrong type, 429 too fast) all have a
+ * sentence worth showing a person.
+ */
+function uploadAttachment(
+  sessionKey: string,
+  file: File,
+  options?: { onProgress?: (fraction: number) => void; signal?: AbortSignal }
+): Promise<JsonResult<CreateAttachmentResponse>> {
+  return new Promise((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    const body = new FormData();
+    body.append('file', file, file.name);
+    body.append('declared_name', file.name);
+
+    request.open(
+      'POST',
+      `${API_URL}/api/v1/agent-sessions/${encodeURIComponent(sessionKey)}/attachments`
+    );
+    request.withCredentials = true;
+    request.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
+
+    request.upload.onprogress = (event) => {
+      if (!event.lengthComputable) return;
+      options?.onProgress?.(event.loaded / event.total);
+    };
+
+    const parse = (): unknown => {
+      try {
+        return JSON.parse(request.responseText);
+      } catch {
+        return undefined;
+      }
+    };
+
+    request.onload = () => {
+      const parsed = parse();
+      const response = new Response(null, { status: request.status });
+      if (request.status === 401) notifyUnauthorized();
+      if (request.status < 200 || request.status >= 300) {
+        resolve({
+          data: undefined,
+          error: parsed ?? {
+            status: request.status,
+            title: request.statusText,
+          },
+          response,
+        });
+        return;
+      }
+      resolve({
+        data: parsed as CreateAttachmentResponse,
+        error: undefined,
+        response,
+      });
+    };
+    request.onerror = () => reject(new Error('The upload could not be sent.'));
+    request.onabort = () => reject(new DOMException('Aborted', 'AbortError'));
+
+    options?.signal?.addEventListener('abort', () => request.abort(), {
+      once: true,
+    });
+    request.send(body);
+  });
 }
 
 async function deleteJson<T>(path: string): Promise<JsonResult<T>> {
@@ -544,6 +626,27 @@ export const api = {
       postJson<CreateHaltResponse>(
         `/api/v1/agent-sessions/${encodeURIComponent(sessionKey)}/halts`,
         {}
+      ),
+    listAttachments: (sessionKey: string) =>
+      getJson<ListAttachmentsResponse>(
+        `/api/v1/agent-sessions/${encodeURIComponent(sessionKey)}/attachments`
+      ),
+    // The one method in this file built on XMLHttpRequest, and it is not a
+    // stylistic choice: `fetch` reports no upload progress and cannot abort a
+    // request body mid-flight, and a twenty-megabyte upload with no progress
+    // bar and no cancel is a browser that looks hung.
+    uploadAttachment: (
+      sessionKey: string,
+      file: File,
+      options?: {
+        onProgress?: (fraction: number) => void;
+        signal?: AbortSignal;
+      }
+    ) => uploadAttachment(sessionKey, file, options),
+    deleteAttachment: (sessionKey: string, attachmentKey: string) =>
+      deleteJson<DeleteAttachmentResponse>(
+        `/api/v1/agent-sessions/${encodeURIComponent(sessionKey)}/attachments/` +
+          encodeURIComponent(attachmentKey)
       ),
     // Read-only from this client. Plans are written by the agent under a
     // session-bound runtime token, never from a browser: what a person sees is

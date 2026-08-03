@@ -64,6 +64,14 @@ disallow_untyped_defs = true
 module = "re2"
 ignore_missing_imports = true
 
+# Attachment conversion, both optional extras of agent-control-server. Neither
+# ships stubs and neither is installed in the checkout that runs this, so the
+# alternative to this override is a typecheck that only passes on a machine
+# carrying a gigabyte of torch.
+[[tool.mypy.overrides]]
+module = ["markitdown", "docling.*"]
+ignore_missing_imports = true
+
 # Semantic Release Configuration
 [tool.semantic_release]
 version_toml = [
