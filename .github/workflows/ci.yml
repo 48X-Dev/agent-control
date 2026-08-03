@@ -141,6 +141,18 @@ jobs:
             exit 1
           fi
 
+      # Same rule, same reason, one directory over. The chat panel renders
+      # filenames chosen by whoever uploaded a file - or, on the tracker path,
+      # by whoever filed the issue - plus model output and extracted document
+      # text. There is no sanitizer here and there is not meant to be one.
+      - name: No raw HTML in the chat panel
+        run: |
+          if grep -rn "dangerouslySetInnerHTML\|innerHTML" \
+              ui/src/core/page-components/agent-detail/agent-chat/; then
+            echo "::error::Raw HTML is not allowed in the chat panel."
+            exit 1
+          fi
+
       - name: Lint
         working-directory: ./ui
         run: pnpm run lint
