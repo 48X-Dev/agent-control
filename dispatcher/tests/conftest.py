@@ -16,6 +16,8 @@ from typing import Any
 import pytest
 from agent_control_dispatcher import dispatch as dispatch_module
 from agent_control_dispatcher.client import DispatchHTTPError
+from agent_control_models.dispatch import DispatchBudget, DispatchStateSnapshot
+from agent_control_models.linear import ListMilestoneIssuesResponse
 from agent_control_models.observability import ControlExecutionEvent
 from agent_control_models.sessions import TurnResponse
 
@@ -72,6 +74,38 @@ def deny_event_payload(**overrides: Any) -> dict[str, Any]:
     return payload
 
 
+def open_dispatch_state(
+    *,
+    paused: bool = False,
+    executors_halted: bool = False,
+    turns_remaining: int = 60,
+    tasks_remaining: int = 20,
+    reason: str | None = None,
+) -> DispatchStateSnapshot:
+    """A namespace nobody has stopped, unless the caller says otherwise."""
+
+    now = dt.datetime.now(dt.UTC)
+    return DispatchStateSnapshot(
+        paused=paused,
+        paused_at=now if paused else None,
+        paused_reason=reason if paused else None,
+        executors_halted=executors_halted,
+        executors_halted_at=now if executors_halted else None,
+        executors_halted_reason=reason if executors_halted else None,
+        budget=DispatchBudget(
+            max_turns_per_hour=60,
+            turns_used_this_hour=60 - turns_remaining,
+            turns_remaining_this_hour=turns_remaining,
+            max_tasks_per_hour=20,
+            tasks_created_this_hour=20 - tasks_remaining,
+            tasks_remaining_this_hour=tasks_remaining,
+            window_started_at=now,
+            window_resets_at=now + dt.timedelta(hours=1),
+        ),
+        updated_at=now,
+    )
+
+
 class StubClient:
     """Stands in for :class:`DispatchClient`. Records every call."""
 
@@ -79,12 +113,47 @@ class StubClient:
         self.turns: list[str] = []
         self.deleted: list[str] = []
         self.created: list[tuple[str, str]] = []
+        self.session_task_keys: list[str | None] = []
         self.raise_on_turn: dict[int, DispatchHTTPError] = {}
         self.raise_on_session: dict[int, DispatchHTTPError] = {}
         self.raise_on_deny_query: dict[int, DispatchHTTPError] = {}
         self.raise_on_delete: DispatchHTTPError | None = None
         self.deny_on_turn: set[int] = set()
         self.text_on_turn: dict[int, str] = {}
+        self.scope_reads: list[tuple[str, str]] = []
+        self.milestone_response: ListMilestoneIssuesResponse | None = None
+        self.raise_on_scope_read: Exception | None = None
+        self.dispatch_state: DispatchStateSnapshot = open_dispatch_state()
+        self.raise_on_dispatch_state: DispatchHTTPError | None = None
+        self.dispatch_state_reads = 0
+
+    async def read_dispatch_state(self) -> DispatchStateSnapshot:
+        """The namespace's ceilings, as the pre-run header reads them.
+
+        Defaults to a namespace with both switches off and its hour untouched,
+        so a test that is about something else does not have to script one.
+        """
+
+        self.dispatch_state_reads += 1
+        if self.raise_on_dispatch_state is not None:
+            raise self.raise_on_dispatch_state
+        return self.dispatch_state
+
+    async def fetch_milestone_issues(
+        self, *, team_slug: str, milestone_id: str
+    ) -> ListMilestoneIssuesResponse:
+        """The scope read, as the Linear source sees it.
+
+        Recorded rather than performed, so a test can assert the ordinary case
+        no session is opened in: the read refused, and nothing downstream of it
+        ever ran.
+        """
+
+        self.scope_reads.append((team_slug, milestone_id))
+        if self.raise_on_scope_read is not None:
+            raise self.raise_on_scope_read
+        assert self.milestone_response is not None, "no scope read was scripted"
+        return self.milestone_response
 
     async def __aenter__(self) -> StubClient:
         return self
@@ -92,8 +161,11 @@ class StubClient:
     async def __aexit__(self, *_: object) -> None:
         return None
 
-    async def create_session(self, *, agent_name: str, title: str) -> str:
+    async def create_session(
+        self, *, agent_name: str, title: str, task_key: str | None = None
+    ) -> str:
         index = len(self.created)
+        self.session_task_keys.append(task_key)
         self.created.append((agent_name, title))
         if index in self.raise_on_session:
             raise self.raise_on_session[index]

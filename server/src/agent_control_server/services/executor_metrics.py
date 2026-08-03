@@ -47,6 +47,15 @@ using produce identical graphs."""
 
 TURN_REJECT_IN_FLIGHT = "in_flight"
 TURN_REJECT_QUOTA = "quota"
+# The four dispatch-only refusals. Separate labels rather than one
+# "dispatch" bucket, because they are the graph an operator reads during an
+# incident: a spike of ``halted`` is the stop working, a plateau of ``budget``
+# is the fleet living inside its ceiling, and the two mean opposite things
+# about whether anybody needs to do anything.
+TURN_REJECT_PAUSED = "dispatch_paused"
+TURN_REJECT_HALTED = "executors_halted"
+TURN_REJECT_BUDGET = "dispatch_budget"
+TURN_REJECT_CONCURRENCY = "agent_concurrency"
 
 TURN_STALE_RECLAIMS = Counter(
     "agent_control_server_turn_stale_reclaims_total",
@@ -158,6 +167,15 @@ HALT_DELIVERY_LAG = Histogram(
 """Graceful halts only. A restart's row is inserted already applied and would
 observe near zero, dragging every percentile down and hiding exactly the
 graceful regressions this histogram exists to catch."""
+
+FLEET_HALTS_REQUESTED = Counter(
+    "agent_control_server_fleet_halts_requested_total",
+    "Halt rows written by a namespace-wide stop.",
+)
+"""Deliberately not folded into ``HALTS_TOTAL``, which counts halts that
+*landed* and carries a boundary label. A fleet stop writes rows; whether any of
+them reaches an executor is the other counter's question, and merging the two
+would report a stop as delivered the instant it was requested."""
 
 HALTS_EXPIRED = Counter(
     "agent_control_server_halts_expired_total",

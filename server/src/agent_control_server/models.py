@@ -384,6 +384,12 @@ class Team(Base):
     # deliberately unconstrained beyond length: teams that predate the Linear
     # integration, and teams that will never be linked to it, stay valid.
     linear_team_key: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # The agent a workflow step falls back to when it names none. Nullable and
+    # carrying no foreign key, for the same reason ``team_members.agent_name``
+    # carries none: grouping is descriptive and must not depend on registration
+    # order. Membership is checked at the request boundary instead, where the
+    # refusal can say which of the two rows is missing.
+    default_agent_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=text("CURRENT_TIMESTAMP"),
@@ -753,6 +759,7 @@ class AgentSession(Base):
             "in_flight_since",
         ),
         Index("idx_agent_sessions_team", "namespace_key", "team_id"),
+        Index("idx_agent_sessions_task", "namespace_key", "agent_task_id"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
@@ -762,6 +769,19 @@ class AgentSession(Base):
     session_key: Mapped[str] = mapped_column(String(64), nullable=False)
     agent_name: Mapped[str] = mapped_column(String(255), nullable=False)
     team_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Set when the dispatcher opens a session for one step of one task. It is
+    # what lets the turn path tell a fleet turn from a human chat turn, which
+    # is how the namespace budget, the dispatch pause and the executor kill
+    # switch get to be refusals inside ``_acquire_turn`` rather than checks in
+    # the process being budgeted. Also the third branch of
+    # ``require_content_access``: a task's session has no human owner, so
+    # oversight of it cannot be restricted to the caller who opened it.
+    #
+    # No foreign key, and for the same reason ``team_id`` has none: a composite
+    # ``ON DELETE SET NULL`` would null ``namespace_key`` with it, which is NOT
+    # NULL, so deleting a task with a live session would abort. Sessions
+    # belonging to a task are deleted by the dispatcher when the task ends.
+    agent_task_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     executor_kind: Mapped[str] = mapped_column(
         String(32), nullable=False, server_default=text("'google_adk'")
     )
@@ -1018,6 +1038,358 @@ class AgentSessionPlanStep(Base):
     updated_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+
+
+_TERMINAL_TASK_STATUS_SQL = "status NOT IN ('completed', 'failed', 'cancelled')"
+"""The predicate both task indexes are partial on.
+
+It names the three terminal statuses and nothing else, so every other status -
+``paused_quota`` and ``running_unknown`` included - holds its source ref. That
+is paired with a reclaim predicate covering the same set, so a held slot is
+always recoverable by something rather than merely held."""
+
+
+class AgentWorkflow(Base):
+    """The ordered list of agents a task is handed between.
+
+    Server-side configuration, and that placement is the whole security
+    argument for this table. An issue body, an issue label and a YAML line all
+    arrive from whoever has access to the source; none of them reaches which
+    agent runs, how many turns it gets, or what it is asked to do. Writing one
+    of these rows is ADMIN, at the tier that authors controls, because naming
+    agents and shaping prompts is the same class of authority: agents differ in
+    system prompt, in bound controls and in tools, so choosing the agent is
+    choosing the blast radius.
+
+    ``steps`` is JSONB validated by ``AgentWorkflowStep`` on the way in and on
+    the way out. A column per step would need a second table and a position
+    column to express something that is always read whole, in order, four
+    entries at most; the shape a workflow is read in is the shape it is stored
+    in.
+
+    ``team_slug`` is nullable and carries no foreign key, matching
+    ``team_members.agent_name``: a workflow that outlives a renamed or deleted
+    team stops resolving and shows up as ``blocked``, rather than cascading
+    away and leaving queued tasks pointing at nothing.
+
+    **Nothing here is a channel between agents.** There is no field naming
+    another step, no message an agent can address, and no way for a step to
+    learn a later one exists. The dispatcher walks this list, writes each
+    agent's output to ``agent_task_steps``, and starts a separate guarded turn
+    on a separate session for the next one.
+    """
+
+    __tablename__ = "agent_workflows"
+    __table_args__ = (
+        UniqueConstraint(
+            "namespace_key", "workflow_key", name="ux_agent_workflows_key"
+        ),
+        # "Which workflows belong to this team" on the console's team page, and
+        # the delete guard's count. Always filtered by namespace first.
+        Index("ix_agent_workflows_team", "namespace_key", "team_slug"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    namespace_key: Mapped[str] = mapped_column(
+        String(255), nullable=False, server_default=_NAMESPACE_SERVER_DEFAULT
+    )
+    workflow_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    team_slug: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    steps: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, nullable=False, server_default=text("'[]'::jsonb")
+    )
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        onupdate=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+
+
+class AgentTask(Base):
+    """One unit of work in the dispatch ledger, and the claim over it.
+
+    The loop that executes this row runs in another process. What this table
+    owns is the *claim*, and it owns it because Postgres is the only thing two
+    dispatchers share. Linear has no compare-and-swap, so moving an issue's
+    state and reading it back is a read-then-write across a network: the bug
+    ``turn_locks.py`` exists to prevent, with worse latency.
+
+    Four things here are load-bearing.
+
+    ``ux_agent_tasks_open_source_ref`` is partial, and both halves of that
+    matter. Partial, because a finished task must not block the same issue
+    being queued again next month - reopened issues are real. Unique over the
+    non-terminal set, because that is what makes "the same issue claimed twice"
+    impossible for two dispatchers, two replicas and a double-clicked button at
+    once, in the database rather than in a handler.
+
+    ``source_kind`` stays ``'linear'`` for both the milestone path and the
+    team-label path. Had the milestone path used its own kind, one issue queued
+    by a press and again by a cron poll would produce two open tasks and two
+    agents working it, and the index that exists to prevent exactly that would
+    not fire.
+
+    ``source_scope_name`` and ``source_team_key`` are copies taken at import,
+    not joins. A milestone deleted in Linear must still leave a legible
+    history, and an operator re-linking a team must not silently retarget the
+    write-back of four tasks that are already running.
+
+    ``chain_trace_id`` is minted by the server at claim time and is never
+    accepted from a caller. The audited party does not author its own audit
+    record: a caller-chosen trace could attach one team's hops into another
+    team's chain, or make a chain read as fewer hops than actually happened.
+    """
+
+    __tablename__ = "agent_tasks"
+    __table_args__ = (
+        UniqueConstraint("namespace_key", "task_key", name="uq_agent_tasks_key"),
+        UniqueConstraint("namespace_key", "id", name="uq_agent_tasks_namespace_id"),
+        Index(
+            "ux_agent_tasks_open_source_ref",
+            "namespace_key",
+            "source_kind",
+            "source_ref",
+            unique=True,
+            postgresql_where=text(_TERMINAL_TASK_STATUS_SQL),
+            sqlite_where=text(_TERMINAL_TASK_STATUS_SQL),
+        ),
+        Index(
+            "ix_agent_tasks_scope",
+            "namespace_key",
+            "source_scope_kind",
+            "source_scope_ref",
+            postgresql_where=text(_TERMINAL_TASK_STATUS_SQL),
+            sqlite_where=text(_TERMINAL_TASK_STATUS_SQL),
+        ),
+        # The claim poll: "queued tasks in this namespace, oldest first". Also
+        # what the reclaim sweep reads, which is the same query with a
+        # different status.
+        Index("ix_agent_tasks_queue", "namespace_key", "status", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    namespace_key: Mapped[str] = mapped_column(
+        String(255), nullable=False, server_default=_NAMESPACE_SERVER_DEFAULT
+    )
+    task_key: Mapped[str] = mapped_column(String(32), nullable=False)
+    source_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    source_ref: Mapped[str] = mapped_column(String(255), nullable=False)
+    source_url: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    source_scope_kind: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    source_scope_ref: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    source_scope_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    source_team_key: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    title: Mapped[str] = mapped_column(String(500), nullable=False)
+    # Untrusted input, stored in full. The envelope truncates it and marks the
+    # cut inline; storing the truncated version would show an operator less
+    # than the tracker holds with nothing saying so.
+    body: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("''"))
+    team_slug: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    workflow_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(32), nullable=False, server_default=text("'queued'")
+    )
+    dry_run: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+    # Who imported it, and who claimed it. Two hashes rather than one, because
+    # the accept path compares them: a credential that ran the agents may not
+    # also approve their work, and the local-credential path has three tiers
+    # and no per-key operation allowlist, so that separation cannot be a tier.
+    created_by_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    claimed_by_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    claimed_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    claimed_at: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    heartbeat_at: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    deadline_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    chain_trace_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Bookkeeping, and deliberately not the resume rule. A dispatcher that dies
+    # between a completed step and this counter leaves it behind, which is the
+    # half that is allowed to be wrong.
+    current_step: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
+    turns_used: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
+    failure_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    failure_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        onupdate=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+
+
+class AgentTaskStep(Base):
+    """What one agent produced on one hop, and the reason resume is sound.
+
+    Without this table the reclaim rule is unsound. A dispatcher dying between
+    a 200 from ``POST /turns`` and its own bookkeeping would resume at the next
+    step with no prior report, and the envelope would then either carry an
+    empty prior-report block - which is how the next agent invents the missing
+    work and reports it confidently - or fail a step that actually succeeded,
+    already spent money, and possibly already acted through a tool.
+
+    ``output_text`` is the durable record, not a pointer to one. Sessions are
+    deleted when a task ends, so a transcript link would 404 within a
+    fortnight; the text is what survives to be posted back to the tracker.
+
+    ``attempts`` exists because the unique index is on ``(task_id,
+    step_index)`` and a reclaimed task resumes at the index it abandoned. The
+    row is reused rather than duplicated, and the counter is what keeps
+    "abandoned once, then re-run" visible instead of overwritten. It is also
+    the only place a duplicated side effect would show, which is the honest
+    cost of resuming at all.
+
+    ``turn_trace_id`` is this hop's own trace. The chain is assembled from
+    these rows, never from a trace a caller supplied.
+    """
+
+    __tablename__ = "agent_task_steps"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["namespace_key", "task_id"],
+            ["agent_tasks.namespace_key", "agent_tasks.id"],
+            name="agent_task_steps_task_fkey",
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint("task_id", "step_index", name="ux_agent_task_steps_index"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    namespace_key: Mapped[str] = mapped_column(
+        String(255), nullable=False, server_default=_NAMESPACE_SERVER_DEFAULT
+    )
+    task_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    step_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    agent_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    brief: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("''"))
+    # Nullable because the session is deleted when the task ends. That is the
+    # ordinary end state, not a fault.
+    session_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    turn_trace_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default=text("'running'")
+    )
+    output_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    output_truncated: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+    attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("1")
+    )
+    failure_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    failure_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+    ended_at: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    @validates("agent_name")
+    def _normalize_agent_name(self, _key: str, value: str) -> str:
+        return normalize_agent_name(value)
+
+
+class AgentDispatchState(Base):
+    """One namespace's dispatch ceilings, and the two switches that stop it.
+
+    A single row per namespace, created on first use. Everything on it is a
+    ceiling on a loop that runs in another process, which is the only reason it
+    is in this database at all: **a budget enforced by the process being
+    budgeted is not a control.** A dispatcher in a retry loop, a second
+    dispatcher started by a different operator, or any holder of an ordinary key
+    calling ``POST /turns`` directly all spend without consulting a limit held
+    in the dispatcher's memory.
+
+    Four things here are load-bearing.
+
+    ``turns_window_start`` and ``turns_in_window`` are a *fixed* window rather
+    than a sliding one, and that is a deliberate trade. A sliding window needs a
+    row per turn to count over; a fixed window needs two integers and one
+    statement, at the cost of allowing up to twice the ceiling across a window
+    boundary. For a rate limit on human chat that would be sloppy. For a ceiling
+    whose job is to stop an autonomous loop before it spends a fortune, an
+    allowance that is occasionally 2x and never unbounded is the right shape,
+    and it is the shape that can be enforced in one statement on the turn path.
+
+    There is no ``tasks_in_window`` counter. Tasks are rows in ``agent_tasks``
+    with a ``created_at``, so the import ceiling is counted from them directly.
+    A counter column for something already recorded as rows is a second source
+    of truth waiting to disagree with the first.
+
+    ``dispatch_paused_at`` and ``executors_halted_at`` are two flags and not one
+    enum, because they are different authorities that can be held at the same
+    time: an operator pauses new work, then escalates to refusing everything,
+    and clearing the escalation must not silently clear the pause underneath it.
+
+    Neither flag is a binding change. An earlier draft stopped the fleet by
+    setting ``enabled = false`` on every ``agent_runtimes`` row; bindings
+    disabled for unrelated reasons then become indistinguishable, so recovery
+    turns on things somebody deliberately turned off. An emergency stop that
+    destroys the state you need to recover from it makes operators reluctant to
+    press it, which is the worst property an emergency stop can have.
+    """
+
+    __tablename__ = "agent_dispatch_state"
+
+    namespace_key: Mapped[str] = mapped_column(String(255), primary_key=True)
+    max_tasks_per_hour: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("20")
+    )
+    max_turns_per_hour: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("60")
+    )
+    turns_window_start: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=text("CURRENT_TIMESTAMP"),
+    )
+    turns_in_window: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
+    dispatch_paused_at: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # A credential tag, never a person: browser callers all hash identically
+    # because the session token carries no subject. Named ``_by`` to match the
+    # plan's column list, and documented here so nobody reads it as an author.
+    dispatch_paused_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    dispatch_paused_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    executors_halted_at: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    executors_halted_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    executors_halted_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        onupdate=text("CURRENT_TIMESTAMP"),
         nullable=False,
     )
 

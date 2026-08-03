@@ -277,6 +277,21 @@ class CreateAgentSessionRequest(BaseModel):
             "the session survives that team being deleted."
         ),
     )
+    task_key: str | None = Field(
+        default=None,
+        min_length=32,
+        max_length=32,
+        pattern=r"^[0-9a-f]{32}$",
+        description=(
+            "Bind this session to one step of one dispatch task. It is what "
+            "lets the turn path tell a fleet turn from a human chat turn, "
+            "which is how a namespace budget, a dispatch pause and an executor "
+            "kill switch can be refusals on the turn itself rather than checks "
+            "inside the process being budgeted. It also opens the session to "
+            "oversight: a task's session has no human owner, so anyone holding "
+            "agent_tasks.read in the namespace may read, halt and nudge it."
+        ),
+    )
 
 
 class CreateAgentSessionResponse(BaseModel):

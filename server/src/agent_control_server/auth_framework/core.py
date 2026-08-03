@@ -92,6 +92,38 @@ class Operation(StrEnum):
     AGENT_CONFIGS_READ = "agent_configs.read"
     AGENT_CONFIGS_WRITE = "agent_configs.write"
 
+    # The dispatch ledger. Four operations rather than two, because the three
+    # things a caller can do to a task are different authorities that happen to
+    # share a table: importing work, taking responsibility for a row and
+    # writing what an agent produced, and accepting an agent's claim to have
+    # finished so it changes a tracker a human team plans against.
+    #
+    # ``agent_tasks.approve`` has no route in the ledger phase. It is declared
+    # here anyway because it is the one operation whose *separation* is the
+    # design: the accept path compares the approver's caller hash against the
+    # claiming dispatcher's, and naming the operation now is what stops it
+    # being folded into ``write`` by whoever writes that route.
+    AGENT_TASKS_READ = "agent_tasks.read"
+    AGENT_TASKS_WRITE = "agent_tasks.write"
+    AGENT_TASKS_CLAIM = "agent_tasks.claim"
+    AGENT_TASKS_APPROVE = "agent_tasks.approve"
+    # The ordered list of agents a task is handed between. Split from the
+    # ledger's four because a workflow is *configuration*, not work: it names
+    # agents and it shapes the prompt each one receives, which is the authority
+    # that decides what an autonomous chain can reach. Reading one is
+    # configuration-shaped; writing one is not, and the tiers below say so.
+    AGENT_WORKFLOWS_READ = "agent_workflows.read"
+    AGENT_WORKFLOWS_WRITE = "agent_workflows.write"
+    # Stopping the fleet. Separate from ``agent_tasks.write`` because a stop
+    # has to be usable by somebody who is not allowed to start anything, and
+    # because the thing being paused is the namespace rather than a task.
+    AGENT_DISPATCH_PAUSE = "agent_dispatch.pause"
+    # Binding a stop to every turn running in a namespace at once. Separate
+    # from ``agent_halts.write``, which stops one session a caller can already
+    # see, because this one reaches every session in the namespace including
+    # chats belonging to other people. One operation per blast radius.
+    AGENT_HALTS_WRITE_ALL = "agent_halts.write_all"
+
     # Machine-side operations. These are performed by the executor, not by a
     # human, and are authorized by a runtime token bound to one session rather
     # than by an API key that would be valid for every session in the

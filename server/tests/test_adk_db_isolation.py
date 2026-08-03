@@ -39,6 +39,23 @@ CONTROL_DATABASES: Final = ("agent_control", "agent_control_test")
 GUARDRAIL_TABLES: Final = ("controls", "policies", "control_bindings")
 CONNECT_TIMEOUT: Final = 5
 
+# One instance-wide critical section, shared by every process that runs this
+# module against the same Postgres.
+#
+# The tests below create real login roles, and ``adk_db_init.sql`` deliberately
+# reaches every non-superuser login role on the instance: before it revokes
+# CONNECT from PUBLIC it hands each one an explicit CONNECT, which is how it
+# avoids locking real roles out. Two copies of this module therefore grant each
+# other privileges on throwaway databases the other is about to drop, and the
+# loser's ``DROP ROLE`` fails at teardown - one error in an otherwise green
+# suite, in a module that is clean every time you run it on its own.
+#
+# Serialising the role-owning window is the fix. It is not a retry: contention
+# is resolved by waiting for the other run to finish its two seconds of work,
+# and a lock that never arrives is reported rather than slept through.
+MODULE_LOCK_KEY: Final = 0x41444B49  # "ADKI"
+MODULE_LOCK_TIMEOUT: Final = 300
+
 # Sentinel: "the probe's own password", as distinct from "no password at all".
 _PROBE_DEFAULT: Final = "\x00use-probe-password"
 
@@ -67,6 +84,39 @@ def _scalar(conn: psycopg.Connection[Any], sql: str, *params: Any) -> Any:
         cur.execute(sql, params or None)  # type: ignore[arg-type]
         row = cur.fetchone()
     return None if row is None else row[0]
+
+
+def _drop_roles(conn: psycopg.Connection[Any], *roles: str) -> None:
+    """Drop throwaway roles, including privileges somebody else granted them.
+
+    ``DROP ROLE`` refuses while a privilege on a *shared* object still points at
+    the role, and database CONNECT is exactly such a privilege::
+
+        role "adk_probe_a" cannot be dropped because some objects depend on it
+        DETAIL:  privileges for database adk_probe_control_b
+
+    Note the two different suffixes. Nothing in this module grants a probe role
+    anything on another probe's database - ``adk_db_init.sql`` does. Before it
+    revokes CONNECT from PUBLIC it hands an explicit CONNECT to every
+    non-superuser login role on the instance, which is how it avoids locking
+    real roles out. A second process running this same module owns some of
+    those roles, so its probes pick up a grant on a control database this
+    process never created and will never drop, and the teardown below fails for
+    whichever process gets there first. Twenty tests pass and the module
+    reports one error, which is what made this look like a random flake.
+
+    ``DROP OWNED BY`` clears precisely that: privileges on shared objects, plus
+    anything the role owns in the current database. It has no ``IF EXISTS``
+    form and errors on an absent role, hence the existence check rather than a
+    swallowed exception.
+    """
+    for role in roles:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (role,))
+            if cur.fetchone() is None:
+                continue
+            cur.execute(f'DROP OWNED BY "{role}"')
+            cur.execute(f'DROP ROLE "{role}"')
 
 
 def _assert_refused(database: str, user: str, password: str) -> str:
@@ -113,13 +163,43 @@ def maintenance_conn() -> Iterator[psycopg.Connection[Any]]:
 
 
 @pytest.fixture(scope="module")
-def superuser_conn(maintenance_conn: psycopg.Connection[Any]) -> psycopg.Connection[Any]:
+def superuser_conn(
+    maintenance_conn: psycopg.Connection[Any],
+) -> Iterator[psycopg.Connection[Any]]:
+    """The maintenance connection, held under this module's instance-wide lock.
+
+    Every test that creates a login role goes through this fixture, so taking
+    the lock here covers the whole window in which a concurrent run could grant
+    our throwaway roles something. See ``MODULE_LOCK_KEY``. The lock is
+    session-scoped in Postgres, so a crashed run releases it on disconnect
+    rather than wedging the next one.
+    """
     if not _scalar(maintenance_conn, "SELECT rolsuper FROM pg_roles WHERE rolname = current_user"):
         pytest.skip(
             f"role {db_config.user!r} is not a superuser, so this test cannot create the "
             "throwaway roles and databases it needs to prove isolation empirically"
         )
-    return maintenance_conn
+
+    _scalar(
+        maintenance_conn,
+        "SELECT set_config('lock_timeout', %s, false)",
+        f"{MODULE_LOCK_TIMEOUT}s",
+    )
+    try:
+        _scalar(maintenance_conn, "SELECT pg_advisory_lock(%s)", MODULE_LOCK_KEY)
+    except psycopg.errors.LockNotAvailable:
+        pytest.fail(
+            "another run of this module has held the instance-wide lock on "
+            f"{db_config.host}:{db_config.port} for more than {MODULE_LOCK_TIMEOUT}s. "
+            "Only one copy may own login roles at a time, because adk_db_init.sql "
+            "grants CONNECT to every login role it finds."
+        )
+
+    try:
+        yield maintenance_conn
+    finally:
+        _scalar(maintenance_conn, "SELECT pg_advisory_unlock(%s)", MODULE_LOCK_KEY)
+        _scalar(maintenance_conn, "SELECT set_config('lock_timeout', '0', false)")
 
 
 @pytest.fixture(scope="module")
@@ -157,7 +237,10 @@ class Probe:
     """One throwaway executor role, runtime database and control database.
 
     Every name is uuid-suffixed, so tests never touch the live databases and
-    never collide with each other under xdist.
+    never collide with each other by name. Names are not the whole story:
+    ``adk_db_init.sql`` reaches every login role on the instance, so teardown
+    has to cope with a probe from a concurrent run holding a grant on this
+    one's database. See ``_drop_roles``.
     """
 
     role: str
@@ -194,11 +277,37 @@ def probe(superuser_conn: psycopg.Connection[Any], psql_bin: str) -> Iterator[Pr
     try:
         yield p
     finally:
-        with superuser_conn.cursor() as cur:
-            for database in (p.runtime_db, p.control_db):
+        _drop_probe(superuser_conn, p)
+
+
+def _drop_probe(conn: psycopg.Connection[Any], p: Probe) -> None:
+    """Remove the probe's universe, then re-raise whatever went wrong.
+
+    Every step is attempted before anything is raised. A cleanup that stops at
+    the first error leaves the rest of the universe on the instance, and a
+    leaked database or role outlives the process and changes what the next run
+    sees - which turns one honest failure into an intermittent one. The first
+    error still propagates, so nothing is swallowed.
+
+    Databases go first: a role cannot be dropped while it owns one.
+    """
+    failures: list[BaseException] = []
+
+    for database in (p.runtime_db, p.control_db):
+        try:
+            with conn.cursor() as cur:
                 cur.execute(f'DROP DATABASE IF EXISTS "{database}" WITH (FORCE)')
-            for role in (p.role, p.bystander):
-                cur.execute(f'DROP ROLE IF EXISTS "{role}"')
+        except psycopg.Error as exc:
+            failures.append(exc)
+
+    for role in (p.role, p.bystander):
+        try:
+            _drop_roles(conn, role)
+        except psycopg.Error as exc:
+            failures.append(exc)
+
+    if failures:
+        raise failures[0]
 
 
 def _apply(
@@ -342,8 +451,7 @@ def test_public_connect_leaves_no_bypass_on_the_control_plane(
     try:
         _assert_refused(control_db, role, password)
     finally:
-        with superuser_conn.cursor() as cur:
-            cur.execute(f'DROP ROLE IF EXISTS "{role}"')
+        _drop_roles(superuser_conn, role)
 
 
 def test_control_plane_role_is_unaffected(maintenance_conn: psycopg.Connection[Any]) -> None:
@@ -451,6 +559,44 @@ def test_init_script_skips_a_missing_control_database(psql_bin: str, probe: Prob
     result = _apply(psql_bin, probe, control_db=f"absent_{uuid.uuid4().hex[:10]}")
     assert result.returncode == 0, result.stderr
     assert "skipped the REVOKE step" in (result.stdout + result.stderr)
+
+
+# --- This module's own cleanup ----------------------------------------------
+
+
+def test_a_probe_role_is_droppable_after_a_concurrent_run_grants_it_connect(
+    superuser_conn: psycopg.Connection[Any],
+) -> None:
+    """Teardown must not assume this process is the only one on the instance.
+
+    Reproduces the grant that ``adk_db_init.sql`` makes on every non-superuser
+    login role it finds, standing in for a second process running this module
+    at the same time. Revert ``_drop_roles`` to a bare ``DROP ROLE`` and this
+    fails with ``DependentObjectsStillExist``, which is the error that used to
+    surface as one teardown error somewhere in a full suite run and never once
+    when the module was run on its own.
+    """
+    suffix = uuid.uuid4().hex[:10]
+    role = f"adk_probe_concurrent_{suffix}"
+    foreign_db = f"adk_probe_foreign_{suffix}"
+
+    with superuser_conn.cursor() as cur:
+        cur.execute(f"CREATE ROLE \"{role}\" LOGIN PASSWORD 'pw_{suffix}'")
+
+    # Inside the try, so a failure here still reaches the cleanup below. A test
+    # about not leaking roles has no business leaking one of its own.
+    try:
+        with superuser_conn.cursor() as cur:
+            cur.execute(f'CREATE DATABASE "{foreign_db}"')
+            cur.execute(f'GRANT CONNECT ON DATABASE "{foreign_db}" TO "{role}"')
+
+        _drop_roles(superuser_conn, role)
+
+        assert _scalar(superuser_conn, "SELECT 1 FROM pg_roles WHERE rolname = %s", role) is None
+    finally:
+        with superuser_conn.cursor() as cur:
+            cur.execute(f'DROP DATABASE IF EXISTS "{foreign_db}" WITH (FORCE)')
+        _drop_roles(superuser_conn, role)
 
 
 # --- Deployment path and credential separation ------------------------------

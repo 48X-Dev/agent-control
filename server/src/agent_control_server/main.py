@@ -29,11 +29,14 @@ from .config import (
 from .db import AsyncSessionLocal, async_engine
 from .endpoints.agent_configs import model_router as agent_model_router
 from .endpoints.agent_configs import router as agent_config_router
+from .endpoints.agent_dispatch import router as agent_dispatch_router
 from .endpoints.agent_halts import router as agent_halt_router
 from .endpoints.agent_nudges import router as agent_nudge_router
 from .endpoints.agent_plans import router as agent_plan_router
 from .endpoints.agent_runtimes import router as agent_runtime_router
 from .endpoints.agent_sessions import router as agent_session_router
+from .endpoints.agent_tasks import router as agent_task_router
+from .endpoints.agent_workflows import router as agent_workflow_router
 from .endpoints.agents import router as agent_router
 from .endpoints.auth import router as auth_router
 from .endpoints.control_bindings import router as control_binding_router
@@ -459,6 +462,32 @@ app.include_router(
 # the nudge and halt claims use.
 app.include_router(
     agent_plan_router,
+    prefix=api_v1_prefix,
+    dependencies=[Depends(get_api_key_from_header)],
+)
+
+# The dispatch ledger. Rows only: no route here starts a turn, opens a session
+# or contacts an executor, and the process that does those things is separate.
+app.include_router(
+    agent_task_router,
+    prefix=api_v1_prefix,
+    dependencies=[Depends(get_api_key_from_header)],
+)
+
+# The ordered list of agents a task is handed between. Separate from the ledger
+# router because the authority is different again: reading a plan is what every
+# dispatcher does, and writing one names the agents an autonomous chain runs.
+app.include_router(
+    agent_workflow_router,
+    prefix=api_v1_prefix,
+    dependencies=[Depends(get_api_key_from_header)],
+)
+
+# The ceilings on that ledger and the levels that stop it. Separate from the
+# ledger router because the authority is different: a stop has to be usable by
+# somebody who is not allowed to start anything.
+app.include_router(
+    agent_dispatch_router,
     prefix=api_v1_prefix,
     dependencies=[Depends(get_api_key_from_header)],
 )

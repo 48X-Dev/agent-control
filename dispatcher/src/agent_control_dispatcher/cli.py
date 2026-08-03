@@ -1,14 +1,41 @@
 """``agent-control-dispatch``.
 
-The invocation section 14 specifies, and it does not change when the SQLite
-ledger is deleted and the server's ``agent_tasks`` claim replaces it::
+The invocation section 14 specifies. It did not change when the server's
+``agent_tasks`` claim replaced the SQLite ledger, which was the promise::
 
     agent-control-dispatch once --source file://tasks.yaml \\
         --agent researcher --max-tasks 3 --dry-run
 
+    agent-control-dispatch once --source linear-milestone:<id> --team operations \\
+        --agent ops_runbook_agent --max-tasks 3 --dry-run
+
 ``--dry-run`` is the default, so passing it is a statement of intent rather
 than a switch. Turning it off takes ``--no-dry-run`` and prints a warning that
 says what is and is not being enforced.
+
+A chain of agents is ``--workflow`` instead of ``--agent``::
+
+    agent-control-dispatch once --source linear-milestone:<id> --team marketing \\
+        --workflow research-then-write --max-tasks 3 --dry-run
+
+``--agent`` names the agent for a task with **no** configured workflow, which is
+the implicit one-step plan every team has by default. It is not an override: a
+workflow that pins its own agents ignores it entirely, and it cannot fill more
+than one unresolved step. Agent selection is server-side configuration - the
+workflow step, then the team's ``default_agent_name`` - and picking one here
+would put the decision in the wrong process (plan section 8).
+
+``--workflow`` and ``--ledger`` are mutually exclusive. A chain needs
+``agent_task_steps`` to carry one agent's report to the next, and the local
+SQLite file records one output per item.
+
+Neither invocation writes anything to Linear. There is no comment, no state
+change, no label, and no route on the server that would accept one.
+
+The claim now lives in ``agent_tasks``: atomic, leased, and reclaimable from a
+dispatcher that died. ``--ledger`` still exists and now means the opposite of
+what it used to - it opts *out* of that, back to a local SQLite file that
+coordinates nothing.
 """
 
 from __future__ import annotations
@@ -19,6 +46,7 @@ import os
 import sys
 from pathlib import Path
 
+from .client import DispatchHTTPError
 from .dispatch import (
     DEFAULT_BRIEF,
     MAX_TASKS_CEILING,
@@ -26,9 +54,9 @@ from .dispatch import (
     dispatch_once,
 )
 from .sources.file import SourceParseError
+from .sources.linear import LinearScopeError
 
 DEFAULT_BASE_URL = "http://localhost:8000"
-DEFAULT_LEDGER_PATH = Path(".agent-control-dispatch/claims.sqlite3")
 API_KEY_ENV = "AGENT_CONTROL_API_KEY"
 BASE_URL_ENV = "AGENT_CONTROL_BASE_URL"
 
@@ -48,22 +76,49 @@ def build_parser() -> argparse.ArgumentParser:
         help="Make one pass over the source and stop.",
         description=(
             "One pass, at most --max-tasks items, one session and one turn per item. "
-            "The claim ledger is a local SQLite file: it does not coordinate two "
-            "dispatchers, and running two of these against one source runs everything "
-            "twice."
+            "The claim is a row in agent_tasks: two dispatchers contend for it and one "
+            "wins, and a dispatcher that dies has its tasks reclaimed once its lease "
+            "expires. Nothing is written back to the source, in either direction, by "
+            "any code path in this tool."
         ),
     )
     once.add_argument(
         "--source",
         required=True,
         metavar="URI",
-        help="Where tasks come from. file://tasks.yaml is the only scheme in this slice.",
+        help=(
+            "Where tasks come from: file://tasks.yaml, or linear-milestone:<id> "
+            "with --team. The Linear source only reads; it never writes to Linear."
+        ),
     )
     once.add_argument(
         "--agent",
-        required=True,
+        default=None,
         metavar="NAME",
-        help="Agent to run every task against. One agent, one step.",
+        help=(
+            "Agent for a task with no configured workflow. Fills the implicit "
+            "one-step plan and nothing else: a workflow that names its own agents "
+            "ignores this. Required unless --workflow is given."
+        ),
+    )
+    once.add_argument(
+        "--workflow",
+        default=None,
+        metavar="KEY",
+        help=(
+            "Configured workflow these tasks run under, from "
+            "PUT /agent-workflows/{key}. The agents come from the workflow and "
+            "the team, never from here and never from the issue."
+        ),
+    )
+    once.add_argument(
+        "--team",
+        default=None,
+        metavar="SLUG",
+        help=(
+            "Agent Control team whose Linear team key scopes the read. Required "
+            "by linear-milestone:, refused for a file. An unlinked team is a 409."
+        ),
     )
     once.add_argument(
         "--max-tasks",
@@ -89,7 +144,11 @@ def build_parser() -> argparse.ArgumentParser:
     once.add_argument(
         "--brief",
         default=DEFAULT_BRIEF,
-        help="What this step's agent is asked to do. Operator text; not treated as data.",
+        help=(
+            "What the agent is asked to do, on the implicit one-step plan only. A "
+            "configured workflow carries a brief per step, written by whoever holds "
+            "agent_workflows.write, and this flag does not override it."
+        ),
     )
     once.add_argument(
         "--server",
@@ -100,9 +159,13 @@ def build_parser() -> argparse.ArgumentParser:
     once.add_argument(
         "--ledger",
         type=Path,
-        default=DEFAULT_LEDGER_PATH,
+        default=None,
         metavar="PATH",
-        help="Local claim ledger. Deleted the day agent_tasks lands.",
+        help=(
+            "Opt out of the server ledger and use a local SQLite file, which "
+            "does not coordinate two dispatchers: two of these with two files "
+            "both claim every item and both spend money on it."
+        ),
     )
     once.add_argument(
         "--delete-sessions",
@@ -145,7 +208,9 @@ def main(argv: list[str] | None = None) -> int:
             agent_name=args.agent,
             base_url=args.server,
             api_key=api_key,
+            workflow_key=args.workflow,
             ledger_path=args.ledger,
+            team_slug=args.team,
             max_tasks=args.max_tasks,
             dry_run=args.dry_run,
             brief=args.brief,
@@ -161,6 +226,17 @@ def main(argv: list[str] | None = None) -> int:
         report = asyncio.run(dispatch_once(options))
     except SourceParseError as exc:
         print(str(exc), file=sys.stderr)
+        return 2
+    except LinearScopeError as exc:
+        # The scope was not read, so nothing was dispatched from it. Exiting
+        # non-zero matters here: an unreadable milestone and an empty one must
+        # not look the same to whoever ran this.
+        print(str(exc), file=sys.stderr)
+        return 2
+    except DispatchHTTPError as exc:
+        # Only a failure of the scope read reaches here; a per-task refusal is
+        # recorded against its own item and the run continues.
+        print(f"Could not read the source scope: {exc}", file=sys.stderr)
         return 2
     except KeyboardInterrupt:
         print(

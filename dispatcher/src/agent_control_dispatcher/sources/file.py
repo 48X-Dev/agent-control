@@ -27,11 +27,13 @@ class SourceParseError(ValueError):
 
 
 def resolve_source(spec: str) -> FileTaskSource:
-    """Build a source from a ``--source`` argument.
+    """Build a file source from a ``--source`` argument.
 
-    Only ``file://`` is understood. ``linear://`` is named in the refusal
-    because a reader of the error should learn that it is a later phase rather
-    than a typo.
+    Only ``file://`` is understood here. The Linear milestone source is spelled
+    ``linear-milestone:<id>`` and is resolved by
+    :mod:`agent_control_dispatcher.sources.resolve`, which is the only module
+    that knows both schemes; the refusal below names the right spelling because
+    somebody reaching it has almost certainly guessed at the wrong one.
     """
 
     if spec.startswith(_FILE_SCHEME):
@@ -39,8 +41,10 @@ def resolve_source(spec: str) -> FileTaskSource:
     if "://" in spec:
         scheme = spec.split("://", 1)[0]
         raise SourceParseError(
-            f"Unsupported source scheme '{scheme}://'. This slice ships file:// only; "
-            "the Linear source is a later phase and does not exist yet."
+            f"Unsupported source scheme '{scheme}://'. Files are file://; one Linear "
+            "milestone is '--source linear-milestone:<id> --team <slug>'. Any wider "
+            "Linear source, and any write back to Linear, is a later phase and does "
+            "not exist yet."
         )
     return FileTaskSource(Path(spec).expanduser())
 
@@ -59,6 +63,9 @@ class FileTaskSource:
     @property
     def path(self) -> Path:
         return self._path
+
+    def describe(self) -> str:
+        return f"file://{self._path}"
 
     async def poll(self, *, cursor: str | None) -> list[SourceItem]:
         """Items eligible for claiming, oldest first.

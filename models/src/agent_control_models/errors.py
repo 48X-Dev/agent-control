@@ -69,6 +69,15 @@ class ErrorCode(StrEnum):
     NUDGE_NOT_FOUND = "NUDGE_NOT_FOUND"
     HALT_NOT_FOUND = "HALT_NOT_FOUND"
     AGENT_CONFIG_NOT_FOUND = "AGENT_CONFIG_NOT_FOUND"
+    AGENT_TASK_NOT_FOUND = "AGENT_TASK_NOT_FOUND"
+    # A step index with no row on that task. Distinct from an out-of-range
+    # index, which is a validation failure the request model catches first.
+    AGENT_TASK_STEP_NOT_FOUND = "AGENT_TASK_STEP_NOT_FOUND"
+    # A workflow key with no row in this namespace. The implicit one-step
+    # workflow every team gets by default is not a row and never reaches this:
+    # it is the fallback for a task whose workflow_key was never set to
+    # anything else.
+    AGENT_WORKFLOW_NOT_FOUND = "AGENT_WORKFLOW_NOT_FOUND"
     # An agent that never declared a plan is the ordinary case on a read, which
     # answers with an empty plan rather than this. This is for a step update
     # against a session that has no plan at all to update.
@@ -86,6 +95,10 @@ class ErrorCode(StrEnum):
     SCHEMA_INCOMPATIBLE = "SCHEMA_INCOMPATIBLE"
     TEAM_HAS_MEMBERS = "TEAM_HAS_MEMBERS"
     AGENT_RUNTIME_NOT_BOUND = "AGENT_RUNTIME_NOT_BOUND"
+    # The team carries no linear_team_key, so there is no scope to read issues
+    # against. A conflict rather than a 404: the team exists and the request was
+    # well formed, and what is missing is a link somebody has to make on purpose.
+    TEAM_NOT_LINKED = "TEAM_NOT_LINKED"
     # Optimistic concurrency on the agent config row. One row carries the
     # system prompt and the model, so a prompt edit and a model edit conflict
     # with each other - which is correct, they are one version.
@@ -104,6 +117,53 @@ class ErrorCode(StrEnum):
     # plan" marks a step of the new plan done because a step of the old one
     # finished.
     PLAN_REVISION_STALE = "PLAN_REVISION_STALE"
+    # The claim went to somebody else. Zero rows came back from the atomic
+    # claim statement, which is the only honest thing it can say: the caller
+    # did not lose a check, it lost a race, and the answer is to move on to the
+    # next task rather than to retry this one.
+    TASK_ALREADY_CLAIMED = "TASK_ALREADY_CLAIMED"
+    # A write from something that is not the current claim holder. Either the
+    # lease expired and another dispatcher took the task, or the caller never
+    # held it. Both mean the same thing to the caller: stop writing.
+    TASK_NOT_CLAIMED = "TASK_NOT_CLAIMED"
+    # A transition the status machine does not have. Retrying a blocked task,
+    # finishing a task that was never claimed, starting a step on a completed
+    # task. State, not a malformed request, so a conflict rather than a 422.
+    TASK_STATUS_CONFLICT = "TASK_STATUS_CONFLICT"
+    # ``deadline_at`` passed. Set by the server at claim time and checked
+    # before each step starts, so a hung dispatcher cannot outlive it.
+    TASK_DEADLINE_EXCEEDED = "TASK_DEADLINE_EXCEEDED"
+    # The eligible set moved between the preview the operator read and the
+    # commit they pressed. A digest over the sorted refs, so four items swapped
+    # for four others fails too, where a count would not.
+    SCOPE_CHANGED = "SCOPE_CHANGED"
+    # Level 1 of the fleet stop. New work is refused: import, claim, and every
+    # dispatch-origin turn. A conflict rather than a 403, because the caller's
+    # credentials are fine and the namespace's state is not - and because the
+    # same request succeeds unchanged once somebody clears the flag.
+    DISPATCH_PAUSED = "DISPATCH_PAUSED"
+    # Level 3, the authoritative stop. Refuses every new session and every new
+    # turn in the namespace, human chat included. Distinct from the pause so a
+    # console can tell an operator which switch is thrown, and so clearing one
+    # cannot be mistaken for clearing the other.
+    EXECUTORS_HALTED = "EXECUTORS_HALTED"
+    # One agent is running as many dispatch turns at once as this deployment
+    # allows, which is one: the plugin's concurrent-invocation safety has never
+    # been demonstrated. A conflict rather than a capacity error, because the
+    # thing in the way is a specific turn rather than a rate.
+    AGENT_CONCURRENCY_EXCEEDED = "AGENT_CONCURRENCY_EXCEEDED"
+    # A step of a workflow that names no agent, on a team that has no
+    # default_agent_name. Refused rather than guessed at: agents differ in
+    # system prompt, in bound controls and in tools, so picking one is picking
+    # the blast radius. Raised at import, before any row is created, so the
+    # failure is four words on a confirm screen rather than four blocked tasks
+    # and four identical comments on somebody's issues.
+    NO_AGENT_SELECTED = "NO_AGENT_SELECTED"
+    # The named agent is not a member of the team it is being made the default
+    # for. A conflict rather than a validation failure: both rows exist and the
+    # request was well formed; what is missing is a membership somebody has to
+    # add on purpose.
+    AGENT_NOT_IN_TEAM = "AGENT_NOT_IN_TEAM"
 
     # Validation Errors (4xx pattern)
     VALIDATION_ERROR = "VALIDATION_ERROR"
@@ -125,6 +185,12 @@ class ErrorCode(StrEnum):
 
     # Capacity (429)
     QUOTA_EXCEEDED = "QUOTA_EXCEEDED"
+    # The namespace has spent its hourly allowance of dispatch-origin turns, or
+    # its hourly allowance of imported tasks. Separate from QUOTA_EXCEEDED,
+    # which is a per-credential rate on a sliding minute held in one process:
+    # this one is a namespace ceiling counted in Postgres, and it is the number
+    # that bounds an autonomous loop rather than a chatty client.
+    DISPATCH_BUDGET_EXCEEDED = "DISPATCH_BUDGET_EXCEEDED"
 
     # Server Errors (5xx pattern)
     DATABASE_ERROR = "DATABASE_ERROR"
@@ -440,6 +506,17 @@ ERROR_TITLES: dict[ErrorCode, str] = {
     ErrorCode.TURN_IN_FLIGHT: "A Turn Is Already Running",
     ErrorCode.TURN_NOT_IN_FLIGHT: "No Turn Is Running",
     ErrorCode.PLAN_REVISION_STALE: "The Plan Was Revised",
+    ErrorCode.SCOPE_CHANGED: "The Scope Changed",
+    ErrorCode.TASK_ALREADY_CLAIMED: "Task Already Claimed",
+    ErrorCode.TASK_NOT_CLAIMED: "Task Not Claimed By This Caller",
+    ErrorCode.TASK_STATUS_CONFLICT: "Task Status Conflict",
+    ErrorCode.TASK_DEADLINE_EXCEEDED: "Task Deadline Exceeded",
+    ErrorCode.DISPATCH_PAUSED: "Dispatch Is Paused",
+    ErrorCode.EXECUTORS_HALTED: "Executors Are Halted",
+    ErrorCode.AGENT_CONCURRENCY_EXCEEDED: "Agent Is Already Running A Task",
+    ErrorCode.AGENT_WORKFLOW_NOT_FOUND: "Workflow Not Found",
+    ErrorCode.NO_AGENT_SELECTED: "No Agent Is Configured For This Step",
+    ErrorCode.AGENT_NOT_IN_TEAM: "Agent Is Not In This Team",
     # Validation errors
     ErrorCode.VALIDATION_ERROR: "Validation Error",
     ErrorCode.INVALID_CONFIG: "Invalid Configuration",
@@ -453,6 +530,7 @@ ERROR_TITLES: dict[ErrorCode, str] = {
     ErrorCode.PLAN_STEP_OUT_OF_RANGE: "No Such Step In This Plan",
     # Capacity
     ErrorCode.QUOTA_EXCEEDED: "Quota Exceeded",
+    ErrorCode.DISPATCH_BUDGET_EXCEEDED: "Dispatch Budget Exhausted",
     # Server errors
     ErrorCode.DATABASE_ERROR: "Database Error",
     ErrorCode.INTERNAL_ERROR: "Internal Server Error",

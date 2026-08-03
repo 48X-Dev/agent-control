@@ -13,6 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import cast
 
+from agent_control_models.agent import normalize_agent_name
 from agent_control_models.errors import ErrorCode
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
@@ -61,12 +62,13 @@ class TeamsService:
         display_name: str,
         description: str | None = None,
         linear_team_key: str | None = None,
+        default_agent_name: str | None = None,
     ) -> tuple[Team, bool]:
         """Idempotent create-or-replace keyed by ``(namespace_key, slug)``.
 
         Returns ``(team, created)``. An existing team keeps its slug and has
-        ``display_name``, ``description``, and ``linear_team_key`` replaced
-        with the supplied values.
+        ``display_name``, ``description``, ``linear_team_key`` and
+        ``default_agent_name`` replaced with the supplied values.
 
         Concurrent callers for the same slug are handled the same way control
         bindings handle their natural key: the loser of the unique-constraint
@@ -75,11 +77,34 @@ class TeamsService:
         """
         existing = await self._find_team(namespace_key=namespace_key, slug=slug)
         if existing is not None:
+            await self._require_member_or_none(
+                namespace_key=namespace_key,
+                team_id=existing.id,
+                slug=slug,
+                agent_name=default_agent_name,
+            )
             existing.display_name = display_name
             existing.description = description
             existing.linear_team_key = linear_team_key
+            existing.default_agent_name = default_agent_name
             await self._db.flush()
             return existing, False
+
+        # A team being created has no members yet, so a default agent on the
+        # same call would always fail the membership check. Refused with the
+        # reason rather than silently accepted: an unmembered default is a
+        # workflow that resolves to an agent nobody put on this team.
+        if default_agent_name is not None:
+            raise ConflictError(
+                error_code=ErrorCode.AGENT_NOT_IN_TEAM,
+                detail=(
+                    f"Team '{slug}' does not exist yet, so '{default_agent_name}' cannot "
+                    "be its default agent: a new team has no members."
+                ),
+                resource="Team",
+                resource_id=slug,
+                hint="Create the team, add the agent to it, then set the default.",
+            )
 
         team = Team(
             namespace_key=namespace_key,
@@ -87,6 +112,7 @@ class TeamsService:
             display_name=display_name,
             description=description,
             linear_team_key=linear_team_key,
+            default_agent_name=None,
         )
         # ``begin_nested`` opens a SAVEPOINT so a unique-constraint collision
         # rolls back only the conflicting insert, leaving any unrelated
@@ -116,22 +142,64 @@ class TeamsService:
         update_description: bool = False,
         linear_team_key: str | None = None,
         update_linear_team_key: bool = False,
+        default_agent_name: str | None = None,
+        update_default_agent_name: bool = False,
     ) -> Team:
         """Partially update a team. The slug is never changed.
 
         ``display_name`` is left alone when ``None`` because it can never be
-        cleared. ``description`` and ``linear_team_key`` are both nullable, so
-        each takes a separate flag distinguishing "clear it" from "leave it".
+        cleared. ``description``, ``linear_team_key`` and ``default_agent_name``
+        are all nullable, so each takes a separate flag distinguishing "clear
+        it" from "leave it".
+
+        Setting a default agent that is not a member of the team is refused.
+        The field's whole job is to answer "who runs a workflow step that names
+        nobody", and answering it with an agent nobody put on this team is a
+        way to run an agent under a team's controls without joining the team.
         """
         team = await self.get_team_or_404(namespace_key=namespace_key, slug=slug)
+        if update_default_agent_name:
+            await self._require_member_or_none(
+                namespace_key=namespace_key,
+                team_id=team.id,
+                slug=slug,
+                agent_name=default_agent_name,
+            )
         if display_name is not None:
             team.display_name = display_name
         if update_description:
             team.description = description
         if update_linear_team_key:
             team.linear_team_key = linear_team_key
+        if update_default_agent_name:
+            team.default_agent_name = default_agent_name
         await self._db.flush()
         return team
+
+    async def _require_member_or_none(
+        self, *, namespace_key: str, team_id: int, slug: str, agent_name: str | None
+    ) -> None:
+        """Refuse a default agent that is not on the team. ``None`` clears it."""
+        if agent_name is None:
+            return
+        member = await self._db.scalar(
+            select(TeamMember.agent_name).where(
+                TeamMember.namespace_key == namespace_key,
+                TeamMember.team_id == team_id,
+                TeamMember.agent_name == normalize_agent_name(agent_name),
+            )
+        )
+        if member is None:
+            raise ConflictError(
+                error_code=ErrorCode.AGENT_NOT_IN_TEAM,
+                detail=(
+                    f"Agent '{agent_name}' is not a member of team '{slug}', so it "
+                    "cannot be its default agent."
+                ),
+                resource="Team",
+                resource_id=slug,
+                hint="Add the agent to the team first, then set the default.",
+            )
 
     async def delete_team(
         self, *, namespace_key: str, slug: str, force: bool = False
@@ -315,6 +383,13 @@ class TeamsService:
 
         Idempotent: removing a non-member returns ``False``. The team itself
         must exist; an unknown slug is a 404.
+
+        Removing the agent that was the team's ``default_agent_name`` clears
+        the default in the same transaction. Leaving it would let the removal
+        look like it took effect while workflow steps that name no agent kept
+        resolving to the agent somebody had just taken off the team - which is
+        the field's whole membership invariant, held on the way in and then
+        quietly broken on the way out.
         """
         team = await self.get_team_or_404(namespace_key=namespace_key, slug=slug)
         existing = await self._find_member(
@@ -323,6 +398,8 @@ class TeamsService:
         if existing is None:
             return False
         await self._db.delete(existing)
+        if team.default_agent_name == normalize_agent_name(agent_name):
+            team.default_agent_name = None
         await self._db.flush()
         return True
 

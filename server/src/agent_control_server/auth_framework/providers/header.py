@@ -108,6 +108,57 @@ DEFAULT_OPERATION_ACCESS: dict[Operation, AccessLevel] = {
     # binding available.
     Operation.AGENT_NUDGES_CONSUME: AccessLevel.ADMIN,
     Operation.AGENT_PLANS_WRITE: AccessLevel.ADMIN,
+    # The dispatch ledger sits at AUTHENTICATED, all four of it, and the
+    # reasoning is the same one AGENTS_CREATE already settled: a play button
+    # only an admin can press is a play button an admin presses on somebody
+    # else's behalf, which is worse oversight than the person who wants the
+    # work doing pressing it themselves. What bounds the money is the confirmed
+    # set plus the namespace budget, not the credential tier.
+    #
+    # Read is AUTHENTICATED for a second, independent reason: it is the
+    # oversight path. A session belonging to a task has no human owner, so the
+    # content-access predicate lets any caller holding this operation read,
+    # halt and nudge it. Putting that at ADMIN would mean overseeing the fleet
+    # required a key that also carries ``controls.create`` and
+    # ``agent_runtimes.write``.
+    #
+    # And note what this tier cannot express, because it is why the accept path
+    # is written the way it is: one ordinary key holds write, claim and approve
+    # at once. "May run agents, may not accept their work" is not a tier here.
+    # It is a server-side comparison of caller hashes on the accept route.
+    Operation.AGENT_TASKS_READ: AccessLevel.AUTHENTICATED,
+    Operation.AGENT_TASKS_WRITE: AccessLevel.AUTHENTICATED,
+    Operation.AGENT_TASKS_CLAIM: AccessLevel.AUTHENTICATED,
+    Operation.AGENT_TASKS_APPROVE: AccessLevel.AUTHENTICATED,
+    # Read is AUTHENTICATED because the dispatcher reads the plan for every
+    # task it claims, and because an operator watching a chain needs to see
+    # which agent is supposed to run next.
+    Operation.AGENT_WORKFLOWS_READ: AccessLevel.AUTHENTICATED,
+    # Write is ADMIN, the same tier as CONTROLS_CREATE and
+    # AGENT_RUNTIMES_WRITE, on two grounds. It names the agents an autonomous
+    # chain runs, and agents differ in system prompt, in bound controls and in
+    # tools - so whoever writes this row chooses the blast radius. And the
+    # step's ``brief`` is the one part of the turn message that is *not* framed
+    # as untrusted data, which makes it the only operator-authored instruction
+    # channel into a dispatch turn. A lower tier here would be a way to steer
+    # somebody else's fleet without touching a control.
+    Operation.AGENT_WORKFLOWS_WRITE: AccessLevel.ADMIN,
+    # The pause is ADMIN, which is the plan's level for it and is the opposite
+    # tier from the ledger above. The asymmetry is deliberate. Pausing is not
+    # only a stop: the same flag is what un-pausing clears, so a tier that can
+    # set it is a tier that can hold every namespace's dispatch down, and under
+    # the local-credential provider "authenticated" is every valid key in the
+    # deployment. A stop anybody can press is a stop anybody can press twice.
+    # Reaching an operator with an admin key is the level-4 runbook's problem
+    # and it is a solved one; an unprivileged caller freezing the fleet is not.
+    Operation.AGENT_DISPATCH_PAUSE: AccessLevel.ADMIN,
+    # A namespace-wide stop is ADMIN for a different reason than the pause:
+    # ``agent_halts.write`` is AUTHENTICATED because whoever can start a turn
+    # must be able to stop it, and the scoping that keeps that from being a
+    # denial-of-service primitive is creator scoping in the service. This
+    # operation has no such scoping by construction - reaching every session in
+    # the namespace is the whole point - so the tier is what bounds it.
+    Operation.AGENT_HALTS_WRITE_ALL: AccessLevel.ADMIN,
 }
 
 
