@@ -83,5 +83,35 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  # Task dispatcher. Never starts on `docker compose up`: it sits behind a
+  # profile, so it only runs when named explicitly.
+  #
+  #   docker build -t agent-control-dispatcher:local -f dispatcher/Dockerfile .
+  #   docker compose run --rm agent-dispatcher once \
+  #       --source linear-milestone:<id> --team operations --agent <agent-name>
+  #
+  # task-dispatcher.md section 4 puts this in docker-compose.dev.yml instead,
+  # "following the precedent that file already sets for agent-executor". That
+  # precedent does not exist - the dev file defines only postgres and
+  # adk-db-init - and it has no server for a dispatcher to talk to, so following
+  # the letter would ship something that cannot work. A profile meets the same
+  # intent: nothing dispatches unless somebody asks for it by name.
+  agent-dispatcher:
+    profiles: ["dispatcher"]
+    platform: ${AGENT_CONTROL_SERVER_PLATFORM:-linux/amd64}
+    image: ${AGENT_CONTROL_DISPATCHER_IMAGE:-agent-control-dispatcher:local}
+    build:
+      context: .
+      dockerfile: dispatcher/Dockerfile
+    environment:
+      AGENT_CONTROL_BASE_URL: http://server:8000
+      # An ORDINARY key, not an admin one. `dispatch preflight` refuses to start
+      # when this validates as admin, because the credential that runs agents
+      # must not be the credential that approves their output.
+      AGENT_CONTROL_API_KEY: ${AGENT_CONTROL_DISPATCHER_API_KEY:-${AGENT_CONTROL_API_KEYS:-}}
+    depends_on:
+      - server
+    restart: "no"
+
 volumes:
   pgdata:
