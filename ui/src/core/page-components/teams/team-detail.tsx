@@ -168,11 +168,17 @@ const TeamDetailPage = ({ slug }: { slug: string }) => {
           </Group>
         </Box>
 
-        <Grid gutter="lg" align="stretch">
-          <Grid.Col span={{ base: 12, lg: 7 }}>
+        {/* Stacked, not side by side. Milestones carry the scope preview, the
+            per-issue result cards and two progress bars, and at lg:5 that all
+            wrapped into a column narrow enough that issue titles truncated and
+            the agent output needed scrolling to read one line at a time. The
+            agent list is a short list of names and loses nothing by going full
+            width above it. */}
+        <Grid gutter="lg">
+          <Grid.Col span={12}>
             <TeamAgents slug={team.slug} />
           </Grid.Col>
-          <Grid.Col span={{ base: 12, lg: 5 }}>
+          <Grid.Col span={12}>
             {/* Linear is a third party. A failure in this panel must not take
                 the agent list down with it. Keyed on the slug so moving
                 between teams resets both a caught error and any half-finished
