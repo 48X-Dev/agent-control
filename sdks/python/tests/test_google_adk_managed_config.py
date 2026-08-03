@@ -776,7 +776,7 @@ def test_closing_the_plugin_forgets_every_baseline(
     applier._model_cache[
         ("openai_compatible", "gpt-5.4-mini", "http://127.0.0.1:10531/v1")
     ] = FakeConstructedModel("openai/gpt-5.4-mini")
-    request, agent = FakeLlmRequest(BASELINE), FakeAgent()
+    request = FakeLlmRequest(BASELINE)
     applier.apply_prompt(request, MANAGED_BODY)
 
     applier.clear()

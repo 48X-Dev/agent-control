@@ -15,6 +15,7 @@ import {
   IconAlertCircle,
   IconChartBar,
   IconMessage,
+  IconSettings,
   IconShield,
 } from '@tabler/icons-react';
 import { useRouter } from 'next/router';
@@ -36,6 +37,7 @@ import { useQueryParam } from '@/core/hooks/use-query-param';
 import { useTimeRangePreference } from '@/core/hooks/use-time-range-preference';
 
 import { AgentChat } from './agent-chat/agent-chat';
+import { ConfigTab, type ConfigTabGuard } from './config/config-tab';
 import { ControlsTab } from './controls/controls-tab';
 import { useControlsTableColumns } from './controls/table-columns';
 import { useDeleteControlFlow } from './controls/use-delete-control-flow';
@@ -78,6 +80,10 @@ const AgentDetailPage = ({ agentId, defaultTab }: AgentDetailPageProps) => {
   const updateControl = useUpdateControl();
   const updateControlMetadata = useUpdateControlMetadata();
   const editCloseRef = useRef<(() => void) | null>(null);
+  // The Configuration tab registers itself here so this tab list can ask
+  // before it navigates away from an editor with unsaved edits. Same shape as
+  // `editCloseRef` above, and null whenever that tab is not mounted.
+  const configGuardRef = useRef<ConfigTabGuard | null>(null);
 
   const handleCloseEditModal = () => {
     // If EditControlContent has registered a close handler (with dirty check),
@@ -279,20 +285,33 @@ const AgentDetailPage = ({ agentId, defaultTab }: AgentDetailPageProps) => {
         <Tabs
           value={activeTab}
           onChange={(value) => {
-            setActiveTab(value);
-            if (
-              value === 'monitor' ||
-              value === 'controls' ||
-              value === 'chat'
-            ) {
-              router.push(
-                getAgentRoute(agentId, { tab: value, query: router.query }),
-                undefined,
-                {
-                  shallow: true,
-                }
-              );
+            const switchTo = () => {
+              setActiveTab(value);
+              if (
+                value === 'monitor' ||
+                value === 'controls' ||
+                value === 'chat' ||
+                value === 'config'
+              ) {
+                router.push(
+                  getAgentRoute(agentId, { tab: value, query: router.query }),
+                  undefined,
+                  {
+                    shallow: true,
+                  }
+                );
+              }
+            };
+
+            // Leaving the Configuration tab with unsaved edits asks first.
+            // There is no autosave on that tab on purpose, so a tab click is a
+            // real way to lose a paragraph somebody typed.
+            const guard = configGuardRef.current;
+            if (activeTab === 'config' && value !== 'config' && guard) {
+              guard.requestExit(switchTo);
+              return;
             }
+            switchTo();
           }}
         >
           <Box mb="md">
@@ -316,6 +335,13 @@ const AgentDetailPage = ({ agentId, defaultTab }: AgentDetailPageProps) => {
                   data-testid="agent-chat-tab"
                 >
                   Chat
+                </Tabs.Tab>
+                <Tabs.Tab
+                  value="config"
+                  leftSection={<IconSettings size={16} />}
+                  data-testid="agent-config-tab-trigger"
+                >
+                  Configuration
                 </Tabs.Tab>
               </Tabs.List>
 
@@ -368,6 +394,20 @@ const AgentDetailPage = ({ agentId, defaultTab }: AgentDetailPageProps) => {
             <ErrorBoundary variant="content">
               {agent?.agent.agent_name && activeTab === 'chat' ? (
                 <AgentChat agentName={agent.agent.agent_name} />
+              ) : null}
+            </ErrorBoundary>
+          </Tabs.Panel>
+
+          {/* Mounted only while selected, like the chat panel: the guard it
+              registers is meaningless for a tab nobody is looking at, and an
+              unmounted editor cannot hold edits to warn about. */}
+          <Tabs.Panel value="config" pt="lg">
+            <ErrorBoundary variant="content">
+              {agent?.agent.agent_name && activeTab === 'config' ? (
+                <ConfigTab
+                  agentName={agent.agent.agent_name}
+                  guardRef={configGuardRef}
+                />
               ) : null}
             </ErrorBoundary>
           </Tabs.Panel>

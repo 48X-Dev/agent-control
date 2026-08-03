@@ -143,41 +143,34 @@ class TestResolvingTheGate:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """The shipped default. ``api_key_enabled`` is false out of the box."""
-        assert self._resolve(
-            monkeypatch, api_key_enabled=False, override=None
-        ) == (False, None)
+        assert self._resolve(monkeypatch, api_key_enabled=False, override=None) == (False, None)
 
     def test_credentials_on_opens_delivery_with_no_tier_limit(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        assert self._resolve(
-            monkeypatch, api_key_enabled=True, override=None
-        ) == (True, None)
+        assert self._resolve(monkeypatch, api_key_enabled=True, override=None) == (True, None)
 
     @pytest.mark.parametrize("truthy", ["true", "1", "yes", "on", "TRUE"])
     def test_the_local_dev_override_opens_delivery_capped_at_economy(
         self, monkeypatch: pytest.MonkeyPatch, truthy: str
     ) -> None:
-        assert self._resolve(
-            monkeypatch, api_key_enabled=False, override=truthy
-        ) == (True, "economy")
+        assert self._resolve(monkeypatch, api_key_enabled=False, override=truthy) == (
+            True,
+            "economy",
+        )
 
     @pytest.mark.parametrize("falsey", ["", "false", "0", "no", "maybe"])
     def test_anything_that_is_not_an_affirmative_leaves_the_gate_closed(
         self, monkeypatch: pytest.MonkeyPatch, falsey: str
     ) -> None:
         """A typo in the env var must not open it."""
-        assert self._resolve(
-            monkeypatch, api_key_enabled=False, override=falsey
-        ) == (False, None)
+        assert self._resolve(monkeypatch, api_key_enabled=False, override=falsey) == (False, None)
 
     def test_the_override_does_not_apply_a_tier_limit_on_a_credentialed_server(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Setting it on a properly configured server must not degrade it."""
-        assert self._resolve(
-            monkeypatch, api_key_enabled=True, override="true"
-        ) == (True, None)
+        assert self._resolve(monkeypatch, api_key_enabled=True, override="true") == (True, None)
 
     def test_an_explicit_auth_mode_wins_over_the_api_key_flag(
         self, monkeypatch: pytest.MonkeyPatch
@@ -256,25 +249,19 @@ class TestGateClosed:
         """The editor stays fully usable on a laptop with no credentials."""
         _close_the_gate(monkeypatch)
 
-        first = client.put(
-            _url(agent), json={"body": "One.", "expected_version": 0}
-        )
+        first = client.put(_url(agent), json={"body": "One.", "expected_version": 0})
         assert first.status_code == 200, first.text
         assert first.json()["prompt_source"] == "code"
         assert first.json()["delivery_state"] == "blocked_insecure_auth"
 
-        second = client.put(
-            _url(agent), json={"body": "Two.", "expected_version": 1}
-        )
+        second = client.put(_url(agent), json={"body": "Two.", "expected_version": 1})
         assert second.status_code == 200, second.text
         assert second.json()["version_num"] == 2
 
         versions = client.get(_url(agent, "/versions")).json()["versions"]
         assert [v["version_num"] for v in versions] == [2, 1]
 
-        restored = client.post(
-            _url(agent, "/versions/1:restore"), json={"expected_version": 2}
-        )
+        restored = client.post(_url(agent, "/versions/1:restore"), json={"expected_version": 2})
         assert restored.status_code == 200, restored.text
         assert _get(client, agent)["body"] == "One."
 
@@ -319,9 +306,7 @@ class TestLocalDevOverride:
         allowlist: None,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        client.put(
-            _url(agent), json={"model_id": _ECONOMY.id, "expected_version": 0}
-        )
+        client.put(_url(agent), json={"model_id": _ECONOMY.id, "expected_version": 0})
         _open_the_gate_for_local_dev(monkeypatch)
 
         config = _get(client, agent)
@@ -388,10 +373,114 @@ class TestLocalDevOverride:
         worth encouraging, so it has to actually be the thing that unlocks the
         premium tier.
         """
-        client.put(
-            _url(agent), json={"model_id": _PREMIUM.id, "expected_version": 0}
-        )
+        client.put(_url(agent), json={"model_id": _PREMIUM.id, "expected_version": 0})
         monkeypatch.setattr(server_config, "AGENT_CONFIG_DELIVERY_ALLOWED", True)
         monkeypatch.setattr(server_config, "AGENT_CONFIG_MODEL_TIER_LIMIT", None)
 
         assert _get(client, agent)["model_source"] == "managed"
+
+
+# ---------------------------------------------------------------------------
+# The gate is only worth having if startup runs it
+# ---------------------------------------------------------------------------
+
+
+async def test_running_startup_closes_the_gate_on_an_uncredentialed_server(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A gate nobody calls is a module-level ``True`` that never moves.
+
+    Every other test in this file monkeypatches the resolved flags, so all of
+    them would still pass with the call deleted from startup - and the shipped
+    default would then deliver managed prompts and models on a server where
+    every operation succeeds unauthenticated.
+
+    So this one runs the real ``lifespan`` rather than reading it. The flags are
+    poisoned to the permissive value first, credentials are turned off, and the
+    assertion is that startup itself moved them. Nothing here is stubbed: if the
+    call site is removed, the poisoned values survive and this fails.
+    """
+    from agent_control_server.main import app, lifespan
+
+    monkeypatch.setattr(server_config.auth_settings, "api_key_enabled", False)
+    monkeypatch.delenv("AGENT_CONTROL_AUTH_MODE", raising=False)
+    monkeypatch.delenv(_OVERRIDE_VAR, raising=False)
+    # The permissive default, restored by monkeypatch when the test ends so the
+    # rest of the session is unaffected.
+    monkeypatch.setattr(server_config, "AGENT_CONFIG_DELIVERY_ALLOWED", True)
+    monkeypatch.setattr(server_config, "AGENT_CONFIG_MODEL_TIER_LIMIT", None)
+
+    async with lifespan(app):
+        assert server_config.AGENT_CONFIG_DELIVERY_ALLOWED is False
+        assert server_config.AGENT_CONFIG_MODEL_TIER_LIMIT is None
+
+
+async def test_running_startup_leaves_the_gate_open_on_a_credentialed_server(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The other direction, so the test above cannot pass by always closing.
+
+    Without this pair, a gate hard-wired to ``False`` would look correct and
+    would quietly stop every real deployment from ever delivering a prompt.
+    """
+    from agent_control_server.main import app, lifespan
+
+    monkeypatch.setattr(server_config.auth_settings, "api_key_enabled", True)
+    monkeypatch.delenv("AGENT_CONTROL_AUTH_MODE", raising=False)
+    monkeypatch.setattr(server_config, "AGENT_CONFIG_DELIVERY_ALLOWED", False)
+    monkeypatch.setattr(server_config, "AGENT_CONFIG_MODEL_TIER_LIMIT", "economy")
+
+    async with lifespan(app):
+        assert server_config.AGENT_CONFIG_DELIVERY_ALLOWED is True
+        assert server_config.AGENT_CONFIG_MODEL_TIER_LIMIT is None
+
+
+def test_the_gate_is_resolved_before_the_authorizer_is_installed() -> None:
+    """Ordering, which the two lifespan runs above cannot observe.
+
+    Both of them look at the flags after startup has finished, so a gate
+    resolved at the very end of ``lifespan`` would satisfy them while leaving a
+    window in which the authorizer is live and the gate is not. Startup is not
+    concurrent with request serving under ``TestClient``, so the window is
+    theoretical today; it stops being theoretical the moment anything in between
+    starts serving or spawns a worker that does.
+
+    Reading the source is the only way to assert an ordering that leaves no
+    runtime trace. It is the one implementation-coupled check here and it is
+    narrow: two names and their relative position.
+    """
+    import inspect
+
+    from agent_control_server import main
+
+    source = inspect.getsource(main.lifespan)
+
+    assert "check_agent_config_startup_requirements" in source, (
+        "the agent config delivery gate is no longer resolved during startup"
+    )
+    assert source.index("check_agent_config_startup_requirements") < source.index(
+        "configure_auth_from_env"
+    )
+
+
+def test_the_module_flags_start_permissive_so_the_gate_must_close_them() -> None:
+    """Fail-open by default is deliberate and worth stating.
+
+    A deployment with credentials on is the common case, and it must not need
+    the gate to have run in order to work. That is precisely why the lifespan
+    tests above exist: the default is the unsafe direction, so "the gate ran" is
+    the thing that has to be proved rather than assumed.
+    """
+    import ast
+    import inspect
+
+    tree = ast.parse(inspect.getsource(server_config))
+    defaults = {
+        node.targets[0].id: node.value
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        and isinstance(node.targets[0], ast.Name)
+        and node.targets[0].id in {"AGENT_CONFIG_DELIVERY_ALLOWED"}
+    }
+    assert isinstance(defaults["AGENT_CONFIG_DELIVERY_ALLOWED"], ast.Constant)
+    assert defaults["AGENT_CONFIG_DELIVERY_ALLOWED"].value is True

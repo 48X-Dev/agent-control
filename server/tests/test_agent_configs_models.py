@@ -105,7 +105,19 @@ class TestModelSettingsRefusesToLoad:
     Same posture as ``check_executor_startup_requirements``: a configuration
     mistake on this field is not something to log and continue past, because the
     consequence is customer data arriving at a vendor nobody chose.
+
+    ``hermetic`` is doing real work here. ``server/conftest.py`` pins the
+    settings *singletons* against the repository ``.env`` and against an
+    exported shell variable, but a settings object constructed **inside** a test
+    still reads the ambient environment: the scrub is only in force while the
+    singletons are being rebuilt at import. So a developer with
+    ``AGENT_CONTROL_MODELS_ALLOWLIST`` exported would otherwise move the
+    assertion in ``test_the_allowlist_is_empty_by_default``.
     """
+
+    @pytest.fixture(autouse=True)
+    def hermetic(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("AGENT_CONTROL_MODELS_ALLOWLIST", raising=False)
 
     @staticmethod
     def _settings(entries: list[dict[str, Any]]) -> ModelSettings:

@@ -1,0 +1,158 @@
+/* Layout and text rules for the Configuration tab.
+   Every body rendered under this directory is operator-authored text that
+   arrives from the API. It is rendered as text nodes, never as markup, so the
+   rules here are only about preserving the line breaks somebody typed and
+   breaking words that would otherwise push a panel sideways. */
+
+.columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--mantine-spacing-lg);
+  align-items: start;
+}
+
+/* The history panel moves beside the editor once there is room for both. Below
+   that width it sits underneath, which is better than a 260px column of
+   truncated notes. */
+@media (min-width: 1100px) {
+  .columns {
+    grid-template-columns: minmax(0, 1fr) 380px;
+  }
+}
+
+.panel {
+  border: 1px solid var(--jds-color-border);
+  border-radius: var(--mantine-radius-md);
+  background-color: var(--mantine-color-white);
+}
+
+[data-mantine-color-scheme='dark'] .panel {
+  background-color: var(--mantine-color-dark-7);
+  border-color: var(--mantine-color-dark-4);
+}
+
+.panelHeader {
+  padding: var(--mantine-spacing-sm) var(--mantine-spacing-md);
+  border-bottom: 1px solid var(--jds-color-border);
+}
+
+[data-mantine-color-scheme='dark'] .panelHeader {
+  border-color: var(--mantine-color-dark-4);
+}
+
+.panelBody {
+  padding: var(--mantine-spacing-md);
+}
+
+.historyList {
+  max-height: 640px;
+}
+
+.historyRow {
+  padding: var(--mantine-spacing-sm) var(--mantine-spacing-md);
+  border-bottom: 1px solid var(--jds-color-border);
+}
+
+[data-mantine-color-scheme='dark'] .historyRow {
+  border-color: var(--mantine-color-dark-4);
+}
+
+.historyRow:last-child {
+  border-bottom: none;
+}
+
+.historyRowCurrent {
+  background-color: var(--mantine-color-gray-0);
+}
+
+[data-mantine-color-scheme='dark'] .historyRowCurrent {
+  background-color: var(--mantine-color-dark-6);
+}
+
+/* Text a person typed, shown back to them. Preserves their line breaks and
+   never becomes markup. */
+.bodyText {
+  margin: 0;
+  font-family: var(--mantine-font-family-monospace);
+  font-size: var(--mantine-font-size-xs);
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.preview {
+  max-height: 420px;
+  overflow: auto;
+  padding: var(--mantine-spacing-sm);
+  border: 1px solid var(--jds-color-border);
+  border-radius: var(--mantine-radius-sm);
+  background-color: var(--mantine-color-gray-0);
+}
+
+[data-mantine-color-scheme='dark'] .preview {
+  border-color: var(--mantine-color-dark-4);
+  background-color: var(--mantine-color-dark-6);
+}
+
+.previewLabel {
+  font-family: var(--mantine-font-family-monospace);
+  font-size: var(--mantine-font-size-xs);
+}
+
+.diffPane {
+  max-height: 460px;
+  overflow: auto;
+  border: 1px solid var(--jds-color-border);
+  border-radius: var(--mantine-radius-sm);
+}
+
+[data-mantine-color-scheme='dark'] .diffPane {
+  border-color: var(--mantine-color-dark-4);
+}
+
+/* One diff line. A React text node with a background, assembled from arrays of
+   strings: there is no HTML string anywhere in this feature, because a stored
+   prompt renders in a console whose session cookie is a credential on this
+   API, and most off-the-shelf diff renderers emit highlighted markup. */
+.diffLine {
+  display: flex;
+  gap: var(--mantine-spacing-xs);
+  padding: 1px var(--mantine-spacing-xs);
+  font-family: var(--mantine-font-family-monospace);
+  font-size: var(--mantine-font-size-xs);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.diffMarker {
+  flex-shrink: 0;
+  width: 1ch;
+  color: var(--mantine-color-dimmed);
+  user-select: none;
+}
+
+.diffAdded {
+  background-color: var(--mantine-color-teal-0);
+}
+
+[data-mantine-color-scheme='dark'] .diffAdded {
+  background-color: rgba(64, 192, 87, 0.14);
+}
+
+.diffRemoved {
+  background-color: var(--mantine-color-red-0);
+}
+
+[data-mantine-color-scheme='dark'] .diffRemoved {
+  background-color: rgba(250, 82, 82, 0.14);
+}
+
+.diffContext {
+  color: var(--mantine-color-dimmed);
+}
+
+.envVar {
+  font-family: var(--mantine-font-family-monospace);
+  overflow-wrap: anywhere;
+}

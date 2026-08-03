@@ -1,13 +1,17 @@
 import { type Page, test as base } from '@playwright/test';
 
 import type {
+  AgentConfigVersionSummary,
   AgentControlsResponse,
+  AgentModelOption,
   AgentSessionDetail,
   AgentSessionSummary,
   AgentSummary,
+  ClearAgentConfigFieldRequest,
   Control,
   ControlSummary,
   EvaluatorsResponse,
+  GetAgentConfigResponse,
   GetAgentResponse,
   GetControlSchemaResponse,
   GetTeamResponse,
@@ -19,8 +23,12 @@ import type {
   Milestone,
   Nudge,
   Plan,
+  RestoreAgentConfigVersionRequest,
+  ScanFinding,
   SessionMessage,
   SessionMessagePart,
+  SetAgentConfigRequest,
+  SetPromptEnabledRequest,
   TeamSummary,
 } from '@/core/api/types';
 import type { StatsResponse } from '@/core/hooks/query-hooks/use-agent-monitor';
@@ -1478,6 +1486,460 @@ async function mockAgentSessions(
   return state;
 }
 
+// =============================================================================
+// Agent configuration: one row carrying the system prompt and the model
+//
+// Writes are applied to the mock's own row rather than answered with a canned
+// body, because most of what this tab promises is about what comes back after
+// a write: the version number the toast names, the history row the save
+// created, and the `expected_version` the next save is built from. A mock that
+// always returned version 4 would let a broken invalidation pass.
+// =============================================================================
+
+/** The allowlist a server offers, spanning all three cost tiers. */
+const agentModelOptions: AgentModelOption[] = [
+  {
+    id: 'gpt-5.4-mini',
+    label: 'GPT-5.4 mini',
+    provider: 'openai_compatible',
+    cost_tier: 'economy',
+    recommended: false,
+  },
+  {
+    id: 'gpt-5.6-sol',
+    label: 'GPT-5.6 Sol',
+    provider: 'openai_compatible',
+    cost_tier: 'premium',
+    recommended: true,
+  },
+  {
+    id: 'gemini-2.5-flash',
+    label: 'Gemini 2.5 Flash',
+    provider: 'gemini',
+    cost_tier: 'standard',
+    recommended: false,
+  },
+];
+
+const storedPromptBody =
+  'You are the support agent for Acme.\n' +
+  'Cite the policy you used in every answer.';
+
+function agentConfig(
+  overrides: Partial<GetAgentConfigResponse> = {}
+): GetAgentConfigResponse {
+  return {
+    agent_name: chatAgentName,
+    body: storedPromptBody,
+    body_format: 'text',
+    prompt_enabled: true,
+    prompt_source: 'managed',
+    model_id: 'gpt-5.4-mini',
+    model_provider: 'openai_compatible',
+    model_allowed: true,
+    model_cost_tier: 'economy',
+    model_source: 'managed',
+    delivery_state: 'active',
+    etag: 'v3-1a2b3c4d5e6f',
+    current_version: 3,
+    source_instruction: null,
+    source_reported_at: null,
+    updated_by_hash: 'c0ffee1234abcd',
+    created_at: '2026-07-01T09:00:00Z',
+    updated_at: '2026-07-30T11:15:00Z',
+    ...overrides,
+  };
+}
+
+/** Newest first, the order the versions endpoint returns. */
+const agentConfigVersionsList: AgentConfigVersionSummary[] = [
+  {
+    version_num: 3,
+    event_type: 'updated',
+    origin: 'authored',
+    model_id: 'gpt-5.4-mini',
+    note: 'Tighter policy citation wording.',
+    has_body: true,
+    scan_findings: [],
+    changed_by_hash: 'c0ffee1234abcd',
+    created_at: '2026-07-30T11:15:00Z',
+  },
+  {
+    version_num: 2,
+    event_type: 'updated',
+    origin: 'authored',
+    model_id: 'gpt-5.6-sol',
+    note: null,
+    has_body: true,
+    scan_findings: [
+      {
+        scanner: 'secret_patterns',
+        severity: 'warning',
+        code: 'SECRET_LIKE_STRING',
+        message: 'A string shaped like an API key was found in this body.',
+        match_count: 1,
+      },
+    ],
+    changed_by_hash: 'c0ffee1234abcd',
+    created_at: '2026-07-12T08:00:00Z',
+  },
+  {
+    version_num: 1,
+    event_type: 'created',
+    origin: 'authored',
+    model_id: null,
+    note: 'First prompt for this agent.',
+    has_body: true,
+    scan_findings: [],
+    changed_by_hash: 'c0ffee1234abcd',
+    created_at: '2026-07-01T09:00:00Z',
+  },
+];
+
+const agentConfigVersionBodies: Record<number, string | null> = {
+  3: storedPromptBody,
+  2: 'You are the support agent for Acme.\nAlways answer in one paragraph.',
+  1: 'You are a support agent.',
+};
+
+export type AgentConfigMockOptions = {
+  /** The row the tab loads. */
+  config?: Partial<GetAgentConfigResponse>;
+  /** The server allowlist. An empty array is a server with none configured. */
+  models?: AgentModelOption[];
+  /**
+   * Refusal for `GET /agent-models`. A 403 is the read-only path; anything
+   * else is a failed request, which must not be read as a claim about the
+   * deployment.
+   */
+  modelsError?: ProblemMock;
+  versions?: AgentConfigVersionSummary[];
+  /** Full bodies by version number, fetched when a row is opened. */
+  versionBodies?: Record<number, string | null>;
+  configError?: ProblemMock;
+  versionsError?: ProblemMock;
+  saveError?: ProblemMock;
+  clearError?: ProblemMock;
+  restoreError?: ProblemMock;
+  enableError?: ProblemMock;
+  /** Advisory findings the next save answers with. Never blocks the write. */
+  saveFindings?: ScanFinding[];
+};
+
+export type AgentConfigMock = {
+  /** Every body that left the browser on `PUT .../config`, in order. */
+  saves: SetAgentConfigRequest[];
+  clears: Array<{
+    field: 'prompt' | 'model';
+    body: ClearAgentConfigFieldRequest;
+  }>;
+  restores: Array<{
+    versionNum: number;
+    body: RestoreAgentConfigVersionRequest;
+  }>;
+  enablePatches: SetPromptEnabledRequest[];
+  /**
+   * Whether `saveError` is still in force.
+   *
+   * Mutable so a test can refuse one save and accept the next, which is the
+   * only way to exercise recovery from a conflict: refuse, let the editor
+   * reload the row somebody else wrote, then accept the re-applied edit.
+   */
+  failSaves: boolean;
+  /** The live row, mutated by every write the mock accepts. */
+  config: GetAgentConfigResponse;
+  /** The live history, newest first. */
+  versions: AgentConfigVersionSummary[];
+  versionBodies: Record<number, string | null>;
+  /** How many times the tab re-read the row. */
+  configReads: number;
+};
+
+/**
+ * Mock the eight agent-config routes plus the deployment's model allowlist.
+ *
+ * One handler over `**\/api\/v1\/agents\/**` rather than a route per path: the
+ * clear routes carry a verb suffix on the same path the row lives at, so
+ * separate patterns overlap in ways that are easier to get wrong than a switch
+ * on the tail is to read. Anything that is not a config path falls through to
+ * whichever handler was registered before this one.
+ */
+async function mockAgentConfig(
+  page: Page,
+  options: AgentConfigMockOptions = {}
+): Promise<AgentConfigMock> {
+  const state: AgentConfigMock = {
+    saves: [],
+    clears: [],
+    restores: [],
+    enablePatches: [],
+    failSaves: Boolean(options.saveError),
+    config: agentConfig(options.config),
+    versions: [...(options.versions ?? agentConfigVersionsList)],
+    versionBodies: { ...(options.versionBodies ?? agentConfigVersionBodies) },
+    configReads: 0,
+  };
+
+  const models = options.models ?? agentModelOptions;
+
+  const appendVersion = (
+    eventType: AgentConfigVersionSummary['event_type'],
+    extra: Partial<AgentConfigVersionSummary> = {}
+  ): number => {
+    state.config.current_version += 1;
+    const versionNum = state.config.current_version;
+    state.config.etag = `v${versionNum}-1a2b3c4d5e6f`;
+    state.versions.unshift({
+      version_num: versionNum,
+      event_type: eventType,
+      origin: 'authored',
+      model_id: state.config.model_id ?? null,
+      note: null,
+      has_body: Boolean(state.config.body),
+      scan_findings: [],
+      changed_by_hash: 'c0ffee1234abcd',
+      created_at: new Date().toISOString(),
+      ...extra,
+    });
+    state.versionBodies[versionNum] = state.config.body ?? null;
+    return versionNum;
+  };
+
+  await page.route('**/api/v1/agent-models', async (route) => {
+    if (options.modelsError) {
+      await route.fulfill({
+        status: options.modelsError.status,
+        contentType: 'application/json',
+        body: problemBody(options.modelsError),
+      });
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ models }),
+    });
+  });
+
+  await page.route('**/api/v1/agents/**', async (route, request) => {
+    const url = new URL(request.url());
+    const segments = url.pathname.split('/').filter(Boolean);
+    // ['api','v1','agents', <name>, ...]
+    const tail = segments.slice(4).join('/');
+    const method = request.method();
+
+    if (!tail.startsWith('config')) {
+      await route.fallback();
+      return;
+    }
+
+    const json = async (body: unknown, status = 200) => {
+      await route.fulfill({
+        status,
+        contentType: 'application/json',
+        body: JSON.stringify(body),
+      });
+    };
+    const problem = async (p: ProblemMock) => {
+      await route.fulfill({
+        status: p.status,
+        contentType: 'application/json',
+        body: problemBody(p),
+      });
+    };
+    const writeEcho = (versionNum: number, findings: ScanFinding[] = []) => ({
+      success: true,
+      version_num: versionNum,
+      current_version: state.config.current_version,
+      etag: state.config.etag,
+      prompt_source: state.config.prompt_source,
+      model_source: state.config.model_source,
+      delivery_state: state.config.delivery_state,
+      scan_findings: findings,
+    });
+
+    if (tail === 'config' && method === 'GET') {
+      state.configReads += 1;
+      if (options.configError) {
+        await problem(options.configError);
+        return;
+      }
+      await json(state.config);
+      return;
+    }
+
+    if (tail === 'config' && method === 'PUT') {
+      const body = (request.postDataJSON() ?? {}) as SetAgentConfigRequest;
+      state.saves.push(body);
+      if (options.saveError && state.failSaves) {
+        await problem(options.saveError);
+        return;
+      }
+      if (body.body !== undefined && body.body !== null) {
+        state.config.body = body.body;
+        state.config.prompt_source = state.config.prompt_enabled
+          ? 'managed'
+          : 'code';
+      }
+      if (body.model_id !== undefined && body.model_id !== null) {
+        state.config.model_id = body.model_id;
+        const picked = models.find((model) => model.id === body.model_id);
+        state.config.model_provider = picked?.provider ?? null;
+        state.config.model_cost_tier = picked?.cost_tier ?? null;
+        state.config.model_allowed = Boolean(picked);
+        state.config.model_source = picked ? 'managed' : 'code';
+      }
+      if (body.prompt_enabled !== undefined) {
+        state.config.prompt_enabled = body.prompt_enabled;
+      }
+      const findings = options.saveFindings ?? [];
+      const versionNum = appendVersion('updated', {
+        note: body.note ?? null,
+        origin: body.origin ?? 'authored',
+        scan_findings: findings,
+      });
+      await json(writeEcho(versionNum, findings));
+      return;
+    }
+
+    if (tail === 'config' && method === 'PATCH') {
+      const body = (request.postDataJSON() ?? {}) as SetPromptEnabledRequest;
+      state.enablePatches.push(body);
+      if (options.enableError) {
+        await problem(options.enableError);
+        return;
+      }
+      state.config.prompt_enabled = body.prompt_enabled;
+      state.config.prompt_source = body.prompt_enabled ? 'managed' : 'code';
+      state.config.delivery_state = body.prompt_enabled ? 'active' : 'disabled';
+      const versionNum = appendVersion(
+        body.prompt_enabled ? 'enabled' : 'disabled'
+      );
+      await json(writeEcho(versionNum));
+      return;
+    }
+
+    if (tail === 'config:clear-prompt' || tail === 'config:clear-model') {
+      const field = tail.endsWith('prompt') ? 'prompt' : 'model';
+      const body = (request.postDataJSON() ??
+        {}) as ClearAgentConfigFieldRequest;
+      state.clears.push({ field, body });
+      if (options.clearError) {
+        await problem(options.clearError);
+        return;
+      }
+      const had =
+        field === 'prompt'
+          ? Boolean(state.config.body)
+          : Boolean(state.config.model_id);
+      if (!had) {
+        // Idempotent, and it writes no version row.
+        await json({
+          cleared: false,
+          version_num: null,
+          current_version: state.config.current_version,
+          etag: state.config.etag,
+          prompt_source: state.config.prompt_source,
+          model_source: state.config.model_source,
+          delivery_state: state.config.delivery_state,
+        });
+        return;
+      }
+      if (field === 'prompt') {
+        state.config.body = null;
+        state.config.prompt_enabled = false;
+        state.config.prompt_source = 'none';
+      } else {
+        state.config.model_id = null;
+        state.config.model_provider = null;
+        state.config.model_cost_tier = null;
+        state.config.model_allowed = true;
+        state.config.model_source = 'code';
+      }
+      const versionNum = appendVersion(
+        field === 'prompt' ? 'prompt_cleared' : 'model_cleared',
+        { note: body.note ?? null }
+      );
+      await json({
+        cleared: true,
+        version_num: versionNum,
+        current_version: state.config.current_version,
+        etag: state.config.etag,
+        prompt_source: state.config.prompt_source,
+        model_source: state.config.model_source,
+        delivery_state: state.config.delivery_state,
+      });
+      return;
+    }
+
+    if (tail === 'config/versions' && method === 'GET') {
+      if (options.versionsError) {
+        await problem(options.versionsError);
+        return;
+      }
+      await json({
+        versions: state.versions,
+        pagination: {
+          total: state.versions.length,
+          limit: 50,
+          has_more: false,
+          next_cursor: null,
+        },
+      });
+      return;
+    }
+
+    const versionMatch = tail.match(/^config\/versions\/(\d+)(:restore)?$/);
+    if (versionMatch) {
+      const versionNum = Number(versionMatch[1]);
+      const summary = state.versions.find((v) => v.version_num === versionNum);
+
+      if (!summary) {
+        await problem({
+          status: 404,
+          errorCode: 'AGENT_CONFIG_NOT_FOUND',
+          title: 'Not Found',
+          detail: 'That version does not exist for this agent.',
+        });
+        return;
+      }
+
+      if (versionMatch[2]) {
+        const body = (request.postDataJSON() ??
+          {}) as RestoreAgentConfigVersionRequest;
+        state.restores.push({ versionNum, body });
+        if (options.restoreError) {
+          await problem(options.restoreError);
+          return;
+        }
+        state.config.body = state.versionBodies[versionNum] ?? null;
+        state.config.model_id = summary.model_id ?? null;
+        const restored = appendVersion('restored', {
+          origin: 'restored',
+          note: body.note ?? null,
+          model_id: summary.model_id ?? null,
+        });
+        await json(writeEcho(restored));
+        return;
+      }
+
+      await json({
+        version: {
+          ...summary,
+          body: state.versionBodies[versionNum] ?? null,
+          body_format: 'text',
+          etag: `v${versionNum}-1a2b3c4d5e6f`,
+        },
+      });
+      return;
+    }
+
+    await route.fallback();
+  });
+
+  return state;
+}
+
 /**
  * Typed mock data for tests
  */
@@ -1508,6 +1970,11 @@ export const mockData = {
   controlSchema: controlSchemaResponse,
   stats: statsResponse,
   emptyStats: emptyStatsResponse,
+  agentConfig: agentConfig(),
+  agentConfigVersions: agentConfigVersionsList,
+  agentConfigVersionBodies,
+  agentModels: agentModelOptions,
+  storedPromptBody,
 } as const;
 
 /**
@@ -2076,6 +2543,21 @@ export const mockRoutes = {
 
   /** Mock the agent-session endpoints behind the chat panel. */
   agentSessions: mockAgentSessions,
+
+  /**
+   * Mock the agent-config routes and the deployment model allowlist.
+   *
+   * Deliberately not part of {@link mockApiRoutes}. Its handler spans
+   * `**\/api\/v1\/agents\/**` and falls through for everything that is not a
+   * config path, so putting it in the default set adds an interception hop to
+   * the agent and controls reads on every page in the suite. That is enough to
+   * move request timing measurably: with it registered by default, two
+   * assertions in `agent-chat-nudge.spec.ts` that read mock state
+   * synchronously after a click failed in three full-suite runs out of four,
+   * and passed in every run without it. The underlying race is theirs, but
+   * there is no reason to arm it here when only this spec opens the tab.
+   */
+  agentConfig: mockAgentConfig,
 
   /** Mock GET /api/v1/observability/stats */
   stats: async (
