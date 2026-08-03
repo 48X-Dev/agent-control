@@ -83,12 +83,18 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
-  # Task dispatcher. Never starts on `docker compose up`: it sits behind a
-  # profile, so it only runs when named explicitly.
+  # Task dispatcher. Comes up with `docker compose up`, and deliberately does
+  # NOTHING until asked:
   #
-  #   docker build -t agent-control-dispatcher:local -f dispatcher/Dockerfile .
   #   docker compose run --rm agent-dispatcher once \
   #       --source linear-milestone:<id> --team operations --agent <agent-name>
+  #
+  # The default command is `--help`, so the service starts, prints usage and
+  # exits 0. That is not timidity. The only subcommand that exists is `once`,
+  # which claims tasks and spends real model budget on the operator's account,
+  # and there is no `serve` yet that could idle and wait for work. A service that
+  # dispatched on every `up` would bill somebody for restarting their stack.
+  # When `serve` lands, this is the line that changes.
   #
   # task-dispatcher.md section 4 puts this in docker-compose.dev.yml instead,
   # "following the precedent that file already sets for agent-executor". That
@@ -97,7 +103,6 @@ services:
   # the letter would ship something that cannot work. A profile meets the same
   # intent: nothing dispatches unless somebody asks for it by name.
   agent-dispatcher:
-    profiles: ["dispatcher"]
     platform: ${AGENT_CONTROL_SERVER_PLATFORM:-linux/amd64}
     image: ${AGENT_CONTROL_DISPATCHER_IMAGE:-agent-control-dispatcher:local}
     build:
