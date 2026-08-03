@@ -1,0 +1,200 @@
+"""The file source: a YAML list of items, section 14 slice 1.
+
+This is the source the whole of Phase 2 tests against, months before Linear
+read access exists anywhere, so it is written to be permanent rather than
+scaffolding. It is also the honest answer to "can it just read a todo list?".
+"""
+
+from __future__ import annotations
+
+import datetime as dt
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+from .base import SourceItem, WriteBackOutcome
+
+_FILE_SCHEME = "file://"
+
+
+class SourceParseError(ValueError):
+    """The source file is not something this can dispatch from.
+
+    Raised loudly and early. A malformed item silently skipped is an item a
+    person wrote, expected to be worked, and never heard about again.
+    """
+
+
+def resolve_source(spec: str) -> FileTaskSource:
+    """Build a source from a ``--source`` argument.
+
+    Only ``file://`` is understood. ``linear://`` is named in the refusal
+    because a reader of the error should learn that it is a later phase rather
+    than a typo.
+    """
+
+    if spec.startswith(_FILE_SCHEME):
+        return FileTaskSource(Path(spec[len(_FILE_SCHEME) :]).expanduser())
+    if "://" in spec:
+        scheme = spec.split("://", 1)[0]
+        raise SourceParseError(
+            f"Unsupported source scheme '{scheme}://'. This slice ships file:// only; "
+            "the Linear source is a later phase and does not exist yet."
+        )
+    return FileTaskSource(Path(spec).expanduser())
+
+
+class FileTaskSource:
+    """A YAML file of items, read whole on every poll.
+
+    Implements :class:`~agent_control_dispatcher.sources.base.TaskSource`.
+    """
+
+    kind = "file"
+
+    def __init__(self, path: Path) -> None:
+        self._path = path
+
+    @property
+    def path(self) -> Path:
+        return self._path
+
+    async def poll(self, *, cursor: str | None) -> list[SourceItem]:
+        """Items eligible for claiming, oldest first.
+
+        The cursor is the ``ref`` of the last item handed out. Items are
+        returned in file order unless every item carries ``updated_at``, in
+        which case that ordering wins - a file whose author bothered to date
+        every row means the dates, and a file that half-dates them means
+        nothing consistent, so guessing would be worse than reading top to
+        bottom.
+        """
+
+        items = _load(self._path)
+        if cursor is None:
+            return items
+        refs = [item.ref for item in items]
+        if cursor not in refs:
+            return items
+        return items[refs.index(cursor) + 1 :]
+
+    async def write_back(
+        self, *, item_ref: str, body: str, idempotency_marker: str
+    ) -> WriteBackOutcome:
+        """Not in this slice, and not faked.
+
+        Section 14 lists write-back among the things slice 1 does not have.
+        Returning a success-shaped outcome that wrote nothing would make the
+        ledger claim a report exists on the source when none does, so this
+        refuses instead. Nothing in the dispatcher calls it.
+        """
+
+        raise NotImplementedError(
+            "The file source has no write-back. Slice 1 does not write to the source; "
+            "the operator reads the transcript."
+        )
+
+
+def _load(path: Path) -> list[SourceItem]:
+    try:
+        raw_text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise SourceParseError(f"Cannot read source file {path}: {exc}") from exc
+
+    try:
+        parsed = yaml.safe_load(raw_text)
+    except yaml.YAMLError as exc:
+        raise SourceParseError(f"{path} is not valid YAML: {exc}") from exc
+
+    if parsed is None:
+        return []
+    if not isinstance(parsed, list):
+        raise SourceParseError(
+            f"{path} must be a YAML list of items; found {type(parsed).__name__}."
+        )
+
+    items = [_item(entry, index=index, path=path) for index, entry in enumerate(parsed)]
+    _reject_duplicate_refs(items, path=path)
+
+    if items and all(item.updated_at is not None for item in items):
+        items.sort(key=_ordering_key)
+    return items
+
+
+def _ordering_key(item: SourceItem) -> dt.datetime:
+    """Naive and aware timestamps in one file must not crash the sort.
+
+    YAML gives a bare timestamp back naive and an offset one aware, and Python
+    refuses to compare the two. A file that mixes them is a file whose author
+    meant one clock, so read the naive ones as UTC and order them together.
+    """
+
+    moment = item.updated_at or dt.datetime.min
+    return moment if moment.tzinfo is not None else moment.replace(tzinfo=dt.UTC)
+
+
+def _item(entry: Any, *, index: int, path: Path) -> SourceItem:
+    where = f"{path} item {index}"
+    if not isinstance(entry, dict):
+        raise SourceParseError(f"{where}: expected a mapping, found {type(entry).__name__}.")
+
+    unknown = set(entry) - {"ref", "title", "body", "url", "updated_at"}
+    if unknown:
+        raise SourceParseError(
+            f"{where}: unknown keys {sorted(unknown)}. An item carries ref, title, body "
+            "and optionally url and updated_at. Nothing else reaches a decision "
+            "(plan section 5.1)."
+        )
+
+    ref = entry.get("ref")
+    if not isinstance(ref, str) or not ref.strip():
+        raise SourceParseError(f"{where}: 'ref' is required and must be a non-empty string.")
+
+    title = _text(entry.get("title"), field="title", where=where)
+    body = _text(entry.get("body"), field="body", where=where)
+    if not title.strip() and not body.strip():
+        raise SourceParseError(
+            f"{where}: has neither a title nor a body. There is nothing to ask an agent to do."
+        )
+
+    url = entry.get("url")
+    if url is not None and not isinstance(url, str):
+        raise SourceParseError(f"{where}: 'url' must be a string when present.")
+
+    return SourceItem(
+        ref=ref.strip(),
+        title=title,
+        body=body,
+        url=url,
+        updated_at=_updated_at(entry.get("updated_at"), where=where),
+    )
+
+
+def _text(value: Any, *, field: str, where: str) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    raise SourceParseError(f"{where}: '{field}' must be a string when present.")
+
+
+def _updated_at(value: Any, *, where: str) -> dt.datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, dt.datetime):
+        return value
+    if isinstance(value, dt.date):
+        return dt.datetime.combine(value, dt.time.min)
+    raise SourceParseError(f"{where}: 'updated_at' must be a date or timestamp when present.")
+
+
+def _reject_duplicate_refs(items: list[SourceItem], *, path: Path) -> None:
+    seen: set[str] = set()
+    for item in items:
+        if item.ref in seen:
+            raise SourceParseError(
+                f"{path}: duplicate ref '{item.ref}'. Refs key the claim ledger, so a "
+                "duplicate means one of the two items is silently never run."
+            )
+        seen.add(item.ref)
