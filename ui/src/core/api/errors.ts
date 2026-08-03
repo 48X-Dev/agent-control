@@ -76,7 +76,47 @@ export function getErrorStatus(error: unknown): number | undefined {
   return typeof status === 'number' ? status : undefined;
 }
 
+/**
+ * The `error_code` the server sent, when it sent one.
+ *
+ * Worth having beside {@link getErrorStatus} because a status is sometimes
+ * ambiguous where the code is not: a restore can answer 409 because the
+ * editor's version is stale, because the stored body format is one the server
+ * no longer understands, or because the version names a model that has left
+ * the allowlist. Only the last of those is fixable without reloading, so the
+ * three cannot be told apart by their status.
+ */
+export function getErrorCode(error: unknown): string | undefined {
+  if (isApiError(error)) return error.problemDetail.error_code;
+
+  const code = (error as Partial<ProblemDetail> | null | undefined)?.error_code;
+  return typeof code === 'string' ? code : undefined;
+}
+
 /** True when the server answered 404. */
 export function isNotFoundError(error: unknown): boolean {
   return getErrorStatus(error) === 404;
+}
+
+/**
+ * True when the server answered 403.
+ *
+ * Worth its own helper because a 403 is a routine, expected answer on the
+ * admin-gated surfaces: a read-only key can see an agent's configuration and
+ * its history but cannot list the model allowlist or save. Surfacing it as a
+ * sentence beats retrying a refusal that will not change.
+ */
+export function isForbiddenError(error: unknown): boolean {
+  return getErrorStatus(error) === 403;
+}
+
+/**
+ * True when the server answered 409.
+ *
+ * On the agent-config surface this means somebody else wrote the row since
+ * this editor loaded it. The response carries the real `current_version`, so
+ * the caller can offer reload-and-reapply rather than a dead end.
+ */
+export function isConflictError(error: unknown): boolean {
+  return getErrorStatus(error) === 409;
 }

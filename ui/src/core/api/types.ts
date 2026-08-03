@@ -477,6 +477,194 @@ export type ListTeamMilestonesResponse = {
 };
 
 // =============================================================================
+// Agent configuration (manual until API types are regenerated)
+//
+// One row per agent carrying two fields: the system prompt and the model. They
+// share a version counter and an optimistic-concurrency token, which is why a
+// prompt edit and a model edit conflict with each other and why one Save
+// covers both.
+//
+// Every body on this surface is operator-authored text that renders in an
+// admin console whose session cookie is a valid credential on this API. It is
+// rendered as text nodes, never as markup, everywhere it appears.
+// =============================================================================
+
+export type BodyFormat = 'text';
+
+export type ConfigEventType =
+  | 'created'
+  | 'updated'
+  | 'prompt_cleared'
+  | 'model_cleared'
+  | 'restored'
+  | 'enabled'
+  | 'disabled';
+
+export type ConfigOrigin = 'authored' | 'copied_from_reported' | 'restored';
+
+export type ModelProvider = 'gemini' | 'openai_compatible';
+
+export type ModelCostTier = 'economy' | 'standard' | 'premium';
+
+/** Which layer supplies the prompt the agent actually runs. */
+export type PromptSource = 'managed' | 'code' | 'none';
+
+/** Which layer supplies the model the agent actually calls. */
+export type ModelSource = 'managed' | 'code';
+
+/**
+ * Whether this agent's configuration reaches a running process at all.
+ *
+ * `blocked_insecure_auth` is the server's startup gate: with credential
+ * enforcement off, every operation succeeds unauthenticated including ADMIN,
+ * so nothing here is applied to a running agent. Storage, versioning and the
+ * audit trail keep working regardless.
+ */
+export type DeliveryState = 'active' | 'disabled' | 'blocked_insecure_auth';
+
+/**
+ * One advisory observation recorded when a body was saved.
+ *
+ * Never blocks a write. It carries no matched text on purpose: a finding on a
+ * secret-shaped string would otherwise copy the secret into the version row
+ * and into this response.
+ */
+export type ScanFinding = {
+  scanner: string;
+  severity: 'info' | 'warning';
+  code: string;
+  message: string;
+  match_count: number;
+};
+
+/** One entry in the server's model allowlist. */
+export type AgentModelOption = {
+  id: string;
+  label: string;
+  provider: ModelProvider;
+  cost_tier: ModelCostTier;
+  /** Flagged as the operator's suggestion. Never applied as a default. */
+  recommended: boolean;
+};
+
+export type ListAgentModelsResponse = { models?: AgentModelOption[] };
+
+export type GetAgentConfigResponse = {
+  agent_name: string;
+  /** Null when unmanaged or cleared. */
+  body?: string | null;
+  body_format: BodyFormat;
+  prompt_enabled: boolean;
+  prompt_source: PromptSource;
+  model_id?: string | null;
+  /**
+   * Resolved from the allowlist on every read; null once the stored id stops
+   * being offered. The SDK refuses to construct anything without it rather
+   * than inferring a provider from the id string.
+   */
+  model_provider?: ModelProvider | null;
+  /** False when the stored id has left the server allowlist. */
+  model_allowed: boolean;
+  model_cost_tier?: ModelCostTier | null;
+  model_source: ModelSource;
+  delivery_state: DeliveryState;
+  /** Opaque, server-issued, covering both fields. */
+  etag?: string | null;
+  current_version: number;
+  /** Reported by the agent process. Unverified. Never sent to a model. */
+  source_instruction?: string | null;
+  source_reported_at?: string | null;
+  updated_by_hash?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+};
+
+export type SetAgentConfigRequest = {
+  body?: string | null;
+  model_id?: string | null;
+  /** The `current_version` the editor loaded. A mismatch is a 409. */
+  expected_version: number;
+  origin?: 'authored' | 'copied_from_reported';
+  note?: string | null;
+  prompt_enabled?: boolean;
+};
+
+export type SetAgentConfigResponse = {
+  success: boolean;
+  version_num: number;
+  current_version: number;
+  etag?: string | null;
+  prompt_source: PromptSource;
+  model_source: ModelSource;
+  delivery_state: DeliveryState;
+  scan_findings?: ScanFinding[];
+};
+
+export type ClearAgentConfigFieldRequest = {
+  expected_version: number;
+  note?: string | null;
+};
+
+export type ClearAgentConfigFieldResponse = {
+  /** False when the field was already null. Nothing was written. */
+  cleared: boolean;
+  version_num?: number | null;
+  current_version: number;
+  etag?: string | null;
+  prompt_source: PromptSource;
+  model_source: ModelSource;
+  delivery_state: DeliveryState;
+};
+
+export type SetPromptEnabledRequest = {
+  prompt_enabled: boolean;
+  expected_version: number;
+  note?: string | null;
+};
+
+export type RestoreAgentConfigVersionRequest = {
+  expected_version: number;
+  note?: string | null;
+};
+
+export type AgentConfigVersionSummary = {
+  version_num: number;
+  event_type: ConfigEventType;
+  origin: ConfigOrigin;
+  model_id?: string | null;
+  note?: string | null;
+  has_body: boolean;
+  scan_findings?: ScanFinding[];
+  /**
+   * Identifies a credential, not a person. Under the shipped default provider
+   * every dashboard caller hashes to the same value, so the history column is
+   * labelled "credential".
+   */
+  changed_by_hash?: string | null;
+  created_at: string;
+};
+
+export type AgentConfigVersionDetail = AgentConfigVersionSummary & {
+  body?: string | null;
+  body_format: BodyFormat;
+  etag?: string | null;
+};
+
+export type ListAgentConfigVersionsResponse = {
+  versions?: AgentConfigVersionSummary[];
+  pagination: PaginationInfo;
+};
+
+export type GetAgentConfigVersionResponse = {
+  version: AgentConfigVersionDetail;
+};
+
+export type ListAgentConfigVersionsQueryParams = {
+  cursor?: number;
+  limit?: number;
+};
+
+// =============================================================================
 // Template Types (manual until API types are regenerated)
 // =============================================================================
 

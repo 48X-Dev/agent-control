@@ -128,6 +128,19 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-nextjs-
 
+      # The agent Configuration tab renders operator-authored prompts inside an
+      # admin console whose session cookie is a valid credential on this API,
+      # so a stored XSS there escalates straight to ADMIN. That directory
+      # renders text nodes only. This grep is what survives the first person
+      # who reaches for a diff library, since most of them emit HTML strings.
+      - name: No raw HTML in the agent configuration tab
+        run: |
+          if grep -rn "dangerouslySetInnerHTML\|innerHTML" \
+              ui/src/core/page-components/agent-detail/config/; then
+            echo "::error::Raw HTML is not allowed in the agent configuration tab."
+            exit 1
+          fi
+
       - name: Lint
         working-directory: ./ui
         run: pnpm run lint

@@ -3,18 +3,25 @@ import createClient from 'openapi-fetch';
 import type { paths } from './generated/api-types';
 import type {
   CancelNudgeResponse,
+  ClearAgentConfigFieldRequest,
+  ClearAgentConfigFieldResponse,
   CreateAgentSessionRequest,
   CreateAgentSessionResponse,
   CreateControlRequest,
   CreateHaltResponse,
   CreateNudgeRequest,
   CreateNudgeResponse,
+  GetAgentConfigResponse,
+  GetAgentConfigVersionResponse,
   GetAgentControlsPathParams,
   GetAgentPathParams,
   GetAgentSessionResponse,
   GetControlSchemaResponse,
   GetTeamResponse,
   InitAgentRequestBody,
+  ListAgentConfigVersionsQueryParams,
+  ListAgentConfigVersionsResponse,
+  ListAgentModelsResponse,
   ListAgentSessionsQueryParams,
   ListAgentSessionsResponse,
   ListAgentsQueryParams,
@@ -33,7 +40,11 @@ import type {
   PlanResponse,
   RenderControlTemplateRequest,
   RenderControlTemplateResponse,
+  RestoreAgentConfigVersionRequest,
+  SetAgentConfigRequest,
+  SetAgentConfigResponse,
   SetControlDataRequest,
+  SetPromptEnabledRequest,
   StartTurnRequest,
   TurnResponse,
   ValidateControlDataRequest,
@@ -144,6 +155,31 @@ async function postJson<T>(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
     signal: options?.signal,
+  });
+
+  if (res.status === 401) {
+    notifyUnauthorized();
+  }
+
+  const responseBody = await res.json().catch(() => undefined);
+
+  if (!res.ok) {
+    return {
+      data: undefined,
+      error: responseBody ?? { status: res.status, title: res.statusText },
+      response: res,
+    };
+  }
+
+  return { data: responseBody as T, error: undefined, response: res };
+}
+
+async function putJson<T>(path: string, body: unknown): Promise<JsonResult<T>> {
+  const res = await fetch(`${API_URL}${path}`, {
+    method: 'PUT',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
   });
 
   if (res.status === 401) {
@@ -499,6 +535,63 @@ export const api = {
       getJson<PlanResponse>(
         `/api/v1/agent-sessions/${encodeURIComponent(sessionKey)}/plan`
       ),
+  },
+  // One agent's system prompt and model. Reads are AUTHENTICATED; every write
+  // here is ADMIN on the server, so a non-admin key gets a 403 rather than a
+  // silent no-op, and the callers surface it.
+  agentConfigs: {
+    get: (agentName: string) =>
+      getJson<GetAgentConfigResponse>(
+        `/api/v1/agents/${encodeURIComponent(agentName)}/config`
+      ),
+    set: (agentName: string, body: SetAgentConfigRequest) =>
+      putJson<SetAgentConfigResponse>(
+        `/api/v1/agents/${encodeURIComponent(agentName)}/config`,
+        body
+      ),
+    // POST with a verb suffix rather than DELETE: the call carries
+    // `expected_version`, and bodies on DELETE get dropped by some proxies.
+    clearPrompt: (agentName: string, body: ClearAgentConfigFieldRequest) =>
+      postJson<ClearAgentConfigFieldResponse>(
+        `/api/v1/agents/${encodeURIComponent(agentName)}/config:clear-prompt`,
+        body
+      ),
+    clearModel: (agentName: string, body: ClearAgentConfigFieldRequest) =>
+      postJson<ClearAgentConfigFieldResponse>(
+        `/api/v1/agents/${encodeURIComponent(agentName)}/config:clear-model`,
+        body
+      ),
+    setPromptEnabled: (agentName: string, body: SetPromptEnabledRequest) =>
+      patchJson<SetAgentConfigResponse>(
+        `/api/v1/agents/${encodeURIComponent(agentName)}/config`,
+        body
+      ),
+    listVersions: (
+      agentName: string,
+      params?: ListAgentConfigVersionsQueryParams
+    ) =>
+      getJson<ListAgentConfigVersionsResponse>(
+        `/api/v1/agents/${encodeURIComponent(agentName)}/config/versions${toQueryString(params)}`
+      ),
+    getVersion: (agentName: string, versionNum: number) =>
+      getJson<GetAgentConfigVersionResponse>(
+        `/api/v1/agents/${encodeURIComponent(agentName)}/config/versions/${versionNum}`
+      ),
+    restoreVersion: (
+      agentName: string,
+      versionNum: number,
+      body: RestoreAgentConfigVersionRequest
+    ) =>
+      postJson<SetAgentConfigResponse>(
+        `/api/v1/agents/${encodeURIComponent(agentName)}/config/versions/${versionNum}:restore`,
+        body
+      ),
+  },
+  // The deployment's model allowlist. Deployment-wide, namespace-independent,
+  // and gated on the *write* operation, so a 403 here is also the honest
+  // answer to "may this caller save?".
+  agentModels: {
+    list: () => getJson<ListAgentModelsResponse>('/api/v1/agent-models'),
   },
   observability: {
     getStats: (params: {

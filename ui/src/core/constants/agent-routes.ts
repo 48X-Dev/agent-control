@@ -1,4 +1,4 @@
-export type AgentDetailTab = 'controls' | 'monitor' | 'chat';
+export type AgentDetailTab = 'controls' | 'monitor' | 'chat' | 'config';
 
 type RouteQueryValue =
   | string

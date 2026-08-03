@@ -25,8 +25,9 @@ import datetime as dt
 from collections.abc import Generator
 from unittest.mock import AsyncMock, patch
 
-import agent_control
 import pytest
+
+import agent_control
 from agent_control._state import state
 from agent_control.agent_config import AgentConfigSnapshot
 
