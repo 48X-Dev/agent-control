@@ -11,7 +11,14 @@ passes it through to the service, which filters every statement on it.
 from __future__ import annotations
 
 from agent_control_models.errors import ErrorCode, ValidationErrorItem
-from agent_control_models.linear import ListTeamMilestonesResponse, Milestone
+from agent_control_models.linear import (
+    ListMilestoneIssuesResponse,
+    ListTeamMilestonesResponse,
+    Milestone,
+    MilestoneIssue,
+    MilestoneIssueCounts,
+    MilestoneIssueSkipCounts,
+)
 from agent_control_models.server import PaginationInfo
 from agent_control_models.teams import (
     TEAM_SLUG_ADAPTER,
@@ -34,9 +41,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth_framework import Operation, Principal, require_operation
 from ..db import get_async_db
-from ..errors import APIValidationError, BadRequestError
+from ..errors import APIValidationError, BadRequestError, ConflictError
 from ..models import Team as TeamRow
 from ..services.agent_names import normalize_agent_name_or_422
+from ..services.linear_issues import (
+    LinearMilestoneIssuesService,
+    get_milestone_issues_service,
+)
 from ..services.linear_milestones import (
     LinearMilestoneService,
     get_milestone_service,
@@ -57,6 +68,7 @@ def _to_summary(team: TeamRow, member_count: int) -> TeamSummary:
         display_name=team.display_name,
         description=team.description,
         linear_team_key=team.linear_team_key,
+        default_agent_name=team.default_agent_name,
         member_count=member_count,
         created_at=team.created_at,
         updated_at=team.updated_at,
@@ -112,8 +124,12 @@ async def upsert_team(
     The slug is derived from ``display_name`` when the request omits it:
     ``"Sales & Outreach"`` becomes ``"sales-outreach"``. Slugs are immutable,
     so a request naming an existing team updates the mutable fields only.
-    Replace semantics apply: an omitted description or ``linear_team_key``
-    clears the stored one.
+    Replace semantics apply: an omitted description, ``linear_team_key`` or
+    ``default_agent_name`` clears the stored one.
+
+    A ``default_agent_name`` on a team that does not exist yet is refused with
+    409 ``AGENT_NOT_IN_TEAM``, because a new team has no members and the field
+    only ever names one of them.
     """
     slug = _resolve_slug(request)
     service = TeamsService(db)
@@ -123,6 +139,7 @@ async def upsert_team(
         display_name=request.display_name,
         description=request.description,
         linear_team_key=request.linear_team_key,
+        default_agent_name=request.default_agent_name,
     )
     await db.commit()
     await db.refresh(team)
@@ -286,6 +303,113 @@ async def list_team_milestones(
     )
 
 
+@router.get(
+    "/{slug}/milestones/{milestone_id}/issues",
+    response_model=ListMilestoneIssuesResponse,
+    summary="Read a milestone's eligible issues for this team",
+    response_description="Eligible issues and the counts of what was skipped",
+)
+async def list_milestone_issues(
+    slug: str,
+    milestone_id: str,
+    db: AsyncSession = Depends(get_async_db),
+    principal: Principal = Depends(require_operation(Operation.TEAMS_READ)),
+    issues: LinearMilestoneIssuesService = Depends(get_milestone_issues_service),
+) -> ListMilestoneIssuesResponse:
+    """Read the issues in one Linear milestone that this team could be pointed at.
+
+    **This is a read.** Nothing here writes to Linear, claims an issue, or
+    starts anything. It answers one question: if somebody did start work on this
+    milestone, what would be picked up, and what would be left alone.
+
+    Scope is two things and both are enforced upstream in the GraphQL filter:
+    the milestone, and the team's own ``linear_team_key``. A team with no
+    ``linear_team_key`` is refused with **409 ``TEAM_NOT_LINKED``** rather than
+    answered with an empty list, because there is nothing to scope to and an
+    empty list reads as "nothing to do".
+
+    Eligibility is two more things, applied in Python so they can be counted
+    rather than filtered away, and neither is settable by any request field:
+
+    * the issue's state type is ``backlog`` or ``unstarted``, so work a human
+      has started is never offered; and
+    * the issue has no assignee, so an assigned issue stays that person's.
+      Assigning an issue to yourself is the cheapest possible override.
+
+    ``counts.skipped`` names what was left out and why, including
+    ``other_team`` for issues that sit in this milestone but belong to another
+    Linear team. A project shared across teams is ordinary; those issues are
+    counted and never listed, and cross-team work needs that team's own run.
+
+    ``counts.beyond_page_cap`` is set when a read came back at its hard cap of
+    100, which means this milestone may hold issues nobody here has seen.
+
+    Every other failure is a 200 carrying a ``status``: ``not_configured`` when
+    the server has no Linear key, ``error`` when Linear was unreachable,
+    rate-limited or refused, ``empty`` when the read succeeded and nothing was
+    eligible. Unlike the milestone panel, a stale cached set is never served in
+    place of an error: an hour-old board beats an error panel, and an hour-old
+    list of work to start does not.
+    """
+
+    teams_service = TeamsService(db)
+    team = await teams_service.get_team_or_404(
+        namespace_key=principal.namespace_key, slug=slug
+    )
+    if not team.linear_team_key:
+        raise ConflictError(
+            error_code=ErrorCode.TEAM_NOT_LINKED,
+            detail=f"Team '{team.slug}' is not linked to a Linear team.",
+            resource="Team",
+            resource_id=team.slug,
+            hint=(
+                "Set linear_team_key on the team with PATCH /teams/"
+                f"{team.slug}. Until then there is no scope to read issues in."
+            ),
+        )
+
+    result = await issues.get_milestone_issues(
+        namespace_key=principal.namespace_key,
+        linear_team_key=team.linear_team_key,
+        milestone_id=milestone_id,
+    )
+    buckets = result.buckets
+    return ListMilestoneIssuesResponse(
+        status=result.status,
+        slug=team.slug,
+        linear_team_key=team.linear_team_key,
+        milestone_id=milestone_id,
+        issues=[
+            MilestoneIssue(
+                ref=issue.ref,
+                identifier=issue.identifier,
+                title=issue.title,
+                description=issue.description,
+                url=issue.url,
+                created_at=issue.created_at,
+                updated_at=issue.updated_at,
+                creator_id=issue.creator_id,
+                creator_display_name=issue.creator_display_name,
+            )
+            for issue in buckets.eligible
+        ],
+        counts=MilestoneIssueCounts(
+            fetched=buckets.fetched,
+            eligible=len(buckets.eligible),
+            skipped=MilestoneIssueSkipCounts(
+                started=buckets.skipped_started,
+                assigned=buckets.skipped_assigned,
+                other_team=buckets.skipped_other_team,
+            ),
+            beyond_page_cap=buckets.beyond_page_cap,
+        ),
+        error=result.error,
+        retry_after_seconds=result.retry_after_seconds,
+        cached=result.cached,
+        fetched_at=result.fetched_at,
+    )
+
+
 @router.patch(
     "/{slug}",
     response_model=PatchTeamResponse,
@@ -302,9 +426,16 @@ async def patch_team(
 
     Omitted fields are left as they are, so an explicit ``"description": null``
     is the only way to clear a description, and the same holds for
-    ``linear_team_key``. ``display_name`` is required on a team and cannot be
-    cleared, so an explicit null there is a no-op. The slug cannot be changed;
-    a body carrying one is rejected as an unknown field.
+    ``linear_team_key`` and ``default_agent_name``. ``display_name`` is
+    required on a team and cannot be cleared, so an explicit null there is a
+    no-op. The slug cannot be changed; a body carrying one is rejected as an
+    unknown field.
+
+    ``default_agent_name`` must name an agent that is already a member of this
+    team, or the request is refused with 409 ``AGENT_NOT_IN_TEAM``. The field
+    answers "who runs a workflow step that names nobody", and answering it with
+    a non-member would be a way to run an agent under a team's configuration
+    without joining the team.
     """
     service = TeamsService(db)
     team = await service.update_team(
@@ -315,6 +446,8 @@ async def patch_team(
         update_description="description" in request.model_fields_set,
         linear_team_key=request.linear_team_key,
         update_linear_team_key="linear_team_key" in request.model_fields_set,
+        default_agent_name=request.default_agent_name,
+        update_default_agent_name="default_agent_name" in request.model_fields_set,
     )
     await db.commit()
     return PatchTeamResponse(
@@ -323,6 +456,7 @@ async def patch_team(
         display_name=team.display_name,
         description=team.description,
         linear_team_key=team.linear_team_key,
+        default_agent_name=team.default_agent_name,
     )
 
 

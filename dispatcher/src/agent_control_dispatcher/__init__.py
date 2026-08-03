@@ -1,17 +1,25 @@
 """Task dispatcher for Agent Control.
 
-This package is section 14's slice 1 of ``docs/plans/task-dispatcher.md`` and
-nothing else. A YAML file of items becomes one agent session per item, one turn
-each, and the transcripts are what an operator reads.
+A YAML file of items, or the eligible issues of one Linear milestone, become
+one agent session per item, one turn each, and the transcripts are what an
+operator reads.
 
-What it deliberately is not, restated here because the omissions are the point
-and a reader who assumes otherwise will get hurt:
+The claim now lives in the server's ``agent_tasks`` table (:mod:`.server_ledger`):
+atomic, leased, and reclaimable from a dispatcher that died mid-task. The local
+SQLite ledger (:mod:`.ledger`) is still here and is still honest about
+coordinating nothing; ``--ledger`` is how you ask for it.
 
-* There is **no claim that survives two processes**. The ledger is a local
-  SQLite file (:mod:`.ledger`). Two dispatchers pointed at one file will both
-  claim the same item.
-* There is **no budget the server enforces**, no fleet stop, no write-back and
-  no Linear.
+What this package deliberately is not, restated here because the omissions are
+the point and a reader who assumes otherwise will get hurt:
+
+* There is **no budget the loop enforces**, and there must never be one. The
+  namespace turn budget, the dispatch pause and the executor kill switch are
+  refusals on the turn path inside the server. A ceiling checked by the process
+  being budgeted is not a ceiling.
+* There is **no fleet stop here**, and no play button.
+* There is **no write of any kind**. Linear is read, never written: no comment,
+  no state change, no label. Both sources raise from ``write_back`` rather than
+  returning something a caller could record as a delivered report.
 * ``--dry-run`` is the default and it is an *assertion about the deployment*,
   not a proof. Section 12.3's canary is not in this slice, so nothing here
   verifies that the agent's tools are read-only.

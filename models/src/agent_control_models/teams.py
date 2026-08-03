@@ -10,6 +10,7 @@ from typing import Annotated
 from pydantic import ConfigDict, Field, StringConstraints, TypeAdapter, field_validator
 
 from .agent import normalize_agent_name
+from .agent_runtimes import AgentName
 from .base import BaseModel
 from .linear import LinearTeamKey
 from .server import PaginationInfo
@@ -85,6 +86,15 @@ class Team(BaseModel):
             "milestones. Null when the team is not linked to Linear."
         ),
     )
+    default_agent_name: AgentName | None = Field(
+        None,
+        description=(
+            "Agent that runs a workflow step which names none. Server-side "
+            "configuration and the only fallback there is: when neither the "
+            "step nor this field names an agent, the task is blocked rather "
+            "than assigned to whichever agent happens to be handy."
+        ),
+    )
     created_at: dt.datetime = Field(..., description="When the team was created.")
     updated_at: dt.datetime = Field(..., description="When the team was last modified.")
 
@@ -157,6 +167,14 @@ class UpsertTeamRequest(BaseModel):
             "existing team from Linear, in line with replace semantics."
         ),
     )
+    default_agent_name: AgentName | None = Field(
+        None,
+        description=(
+            "Agent for workflow steps that name none. Must already be a member "
+            "of this team. Omitting it clears the default, in line with replace "
+            "semantics."
+        ),
+    )
 
 
 class UpsertTeamResponse(BaseModel):
@@ -196,6 +214,13 @@ class PatchTeamRequest(BaseModel):
             "unlink the team from Linear."
         ),
     )
+    default_agent_name: AgentName | None = Field(
+        None,
+        description=(
+            "Agent for workflow steps that name none, or null to clear it. "
+            "Must be a member of this team."
+        ),
+    )
 
 
 class PatchTeamResponse(BaseModel):
@@ -207,6 +232,9 @@ class PatchTeamResponse(BaseModel):
     description: str | None = Field(None, description="Current description.")
     linear_team_key: str | None = Field(
         None, description="Current Linear team key, or null when unlinked."
+    )
+    default_agent_name: str | None = Field(
+        None, description="Current default agent for workflow steps, or null."
     )
 
 
@@ -229,6 +257,9 @@ class TeamSummary(BaseModel):
     description: str | None = None
     linear_team_key: str | None = Field(
         None, description="Linear team this team maps to, or null when unlinked."
+    )
+    default_agent_name: str | None = Field(
+        None, description="Agent that runs workflow steps naming none, or null."
     )
     member_count: int = Field(..., description="Number of agents in the team.")
     created_at: dt.datetime

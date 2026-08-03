@@ -52,7 +52,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..auth_framework.config import runtime_auth_config
 from ..auth_framework.core import Operation
 from ..auth_framework.runtime_token import RuntimeTokenError, mint_runtime_token
-from ..config import ExecutorSettings
+from ..config import ExecutorSettings, dispatch_settings
 from ..db import AsyncSessionLocal
 from ..errors import (
     APIError,
@@ -62,7 +62,12 @@ from ..errors import (
     executor_api_error,
 )
 from ..models import AgentSession, Team
+from .agent_dispatch_state import (
+    require_dispatch_not_paused,
+    require_executors_not_halted,
+)
 from .agent_runtimes import AgentRuntimesService
+from .agent_tasks import AgentTasksService
 from .executor_client import (
     EXECUTOR_DISABLED_MESSAGE,
     ExecutorClient,
@@ -110,6 +115,15 @@ _HEALTH_PROBE_LIMIT = 25
 """Ceiling on executors probed by one health call. A namespace with more agents
 than this gets a partial answer rather than a request that fans out without
 bound."""
+
+SESSION_CEILING_RETRY_SECONDS = 60
+"""How long the session-ceiling 429 asks a caller to wait.
+
+A hint rather than a promise, and the difference matters: nothing expires a
+session, so this ceiling clears only when somebody deletes one. Sent anyway,
+because the alternative is a caller inventing its own interval - and a fleet
+whose whole retry behaviour is decided in the process being limited is the
+failure this phase exists to remove."""
 
 
 def _status_value(status: AgentSessionStatus | str) -> str:
@@ -300,6 +314,7 @@ class AgentSessionsService:
         executor_session_id: str,
         title: str | None,
         created_by_hash: str | None,
+        agent_task_id: int | None = None,
     ) -> AgentSession:
         """Insert the mapping row for an already-created executor session."""
         row = AgentSession(
@@ -314,6 +329,7 @@ class AgentSessionsService:
             title=title,
             status=AgentSessionStatus.ACTIVE.value,
             created_by_hash=created_by_hash,
+            agent_task_id=agent_task_id,
         )
         self._db.add(row)
         await self._db.flush()
@@ -582,13 +598,23 @@ async def open_session(
     team_slug: str | None,
     factory: ExecutorClientFactory,
     settings: ExecutorSettings,
+    task_key: str | None = None,
 ) -> AgentSessionDetail:
     """Create an executor conversation and the row that maps to it.
 
     Order of refusals, cheapest and most specific first: the feature must be
-    on, the agent must exist, it must be bound to an enabled executor, the team
-    must be real, and the namespace must be under its session ceiling. Only
-    then is anything created anywhere.
+    on, the executors must not be halted, the agent must exist, it must be
+    bound to an enabled executor, the team must be real, dispatch must not be
+    paused if this session belongs to a task, and the namespace must be under
+    its session ceiling. Only then is anything created anywhere.
+
+    The halt is consulted before the agent lookup and it refuses **every**
+    session, human chat included. That is level 3 doing what its copy says it
+    does, and it is the reason the kill switch is a flag rather than a sweep
+    over ``agent_runtimes``: bindings disabled for unrelated reasons would be
+    indistinguishable afterwards. The pause is narrower - it stops new dispatch
+    work - so a human opening a chat while the fleet is paused still gets one,
+    which is usually somebody going to look at what happened.
 
     Every identifier is minted here. ``executor_user_id`` carries the namespace
     as a prefix so that even a collision in the random half cannot produce a
@@ -598,6 +624,9 @@ async def open_session(
     require_executor_enabled(settings)
 
     async with AsyncSessionLocal() as db:
+        await require_executors_not_halted(
+            db, namespace_key=namespace_key, action="Opening a session"
+        )
         runtimes = AgentRuntimesService(db)
         binding = await runtimes.require_enabled_binding(
             namespace_key=namespace_key, agent_name=agent_name
@@ -608,6 +637,24 @@ async def open_session(
             if team_slug is not None
             else None
         )
+        # Resolved before the executor is contacted, so an unknown or already
+        # finished task costs nothing and leaves no conversation behind.
+        agent_task_id = (
+            await AgentTasksService(db, settings=dispatch_settings).resolve_task_id(
+                namespace_key=namespace_key, task_key=task_key
+            )
+            if task_key is not None
+            else None
+        )
+        if agent_task_id is not None:
+            # Only for a task's session. A pause stops new dispatch work; it
+            # does not lock operators out of the console while they look at
+            # what the fleet just did.
+            await require_dispatch_not_paused(
+                db,
+                namespace_key=namespace_key,
+                action="Opening a session for a dispatch task",
+            )
         open_count = await sessions.count_open_sessions(namespace_key=namespace_key)
         if open_count >= settings.max_concurrent_sessions:
             raise APIError(
@@ -622,6 +669,12 @@ async def open_session(
                     "Delete sessions that are finished with, or raise "
                     "AGENT_CONTROL_EXECUTOR_MAX_CONCURRENT_SESSIONS."
                 ),
+                # There is no window here to count down: this ceiling clears
+                # when somebody deletes a session, not when a clock rolls. The
+                # number is a poll interval rather than a promise, and the
+                # dispatcher's own default would otherwise be the only thing
+                # deciding how hard it hammers a full namespace.
+                extra_details={"retry_after_seconds": SESSION_CEILING_RETRY_SECONDS},
             )
         coordinates = _ExecutorCoordinates(
             executor_kind=binding.executor_kind,
@@ -672,6 +725,7 @@ async def open_session(
                 executor_session_id=coordinates.session_id,
                 title=title,
                 created_by_hash=created_by_hash,
+                agent_task_id=agent_task_id,
             )
             detail = await sessions.to_detail(row)
             await db.commit()
@@ -1002,7 +1056,7 @@ async def _refresh_stuck_in_flight_gauge(
 
 
 def require_content_access(
-    row: AgentSession, *, caller_hash: str | None, is_admin: bool
+    row: AgentSession, *, caller_hash: str | None, is_admin: bool, for_turn: bool = False
 ) -> None:
     """Refuse access to a session's content by anyone but the caller who opened it.
 
@@ -1012,11 +1066,48 @@ def require_content_access(
     and the plan puts halt creation behind the same check for the same reason.
     One predicate, so the answer to "who may see this chat" cannot drift between
     the routes that read it and the routes that write it.
+
+    **Three branches, and the third one is a requirement rather than a
+    convenience.** A session opened for a dispatch task has no human owner: the
+    dispatcher opened it with its own credential, so creator scoping would 403
+    every non-admin operator out of the per-task step rail and out of halting
+    one runaway task. Both workarounds are unacceptable - sharing the
+    dispatcher's key lets every reviewer start turns as the dispatcher, and
+    handing out admin keys hands out ``controls.create`` and
+    ``agent_runtimes.write``. Oversight without admin is a requirement of the
+    dispatch design, and it matters more here than in a chat panel, where the
+    operator is the session owner by construction and here nobody is.
+
+    What that branch grants, stated exactly: any caller who got far enough to
+    reach this predicate may read, halt and nudge a session belonging to a
+    task. Under the default local-credential provider that is every
+    authenticated caller in the namespace, because ``agent_tasks.read`` sits at
+    AUTHENTICATED and the header path has no per-key operation allowlist. A
+    provider that can express a narrower grant should narrow it here.
+
+    **What it does not grant is a turn**, which is why ``for_turn`` exists. This
+    one predicate also gates ``run_turn``, so an unqualified task branch would
+    let any authenticated caller in the namespace append to a fleet
+    conversation, spend against it, and interleave with the dispatcher
+    mid-chain - the plan rejects sharing the dispatcher's key precisely because
+    it "lets every reviewer start turns as the dispatcher", and granting it to
+    everybody would be worse than sharing it. Oversight of a task's session is
+    read, halt and nudge; driving it is the holder's or an admin's.
     """
     if is_admin or row.created_by_hash is None:
         return
     if row.created_by_hash == caller_hash:
         return
+    if row.agent_task_id is not None:
+        if not for_turn:
+            return
+        raise ForbiddenError(
+            error_code=ErrorCode.AUTH_INSUFFICIENT_PRIVILEGES,
+            detail="This session belongs to a dispatch task and is driven by its dispatcher.",
+            resource="AgentSession",
+            resource_id=row.session_key,
+            hint="Read, halt or nudge it instead. A turn on it is the dispatcher's to start.",
+        )
     raise ForbiddenError(
         error_code=ErrorCode.AUTH_INSUFFICIENT_PRIVILEGES,
         detail="This session's messages belong to a different caller.",

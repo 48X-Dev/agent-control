@@ -31,6 +31,7 @@ Usage:
 """
 
 import logging
+import math
 import uuid
 from typing import Any
 
@@ -202,6 +203,25 @@ def _sanitize_problem_detail(problem: ProblemDetail) -> ProblemDetail:
     return problem
 
 
+def _retry_after_seconds(extra_details: dict[str, Any] | None) -> int | None:
+    """Pull a machine-readable retry delay out of ``extra_details``, if present.
+
+    One convention, one key. A caller that has to guess between a header, a
+    prose hint and three field names will parse the prose, and the prose is the
+    one thing here that gets reworded.
+
+    Rounded up and floored at one second. Zero would tell a dispatcher to retry
+    immediately against a ceiling that has not moved, and a fractional second on
+    a ``Retry-After`` header is not a value the header's grammar has.
+    """
+    if not extra_details:
+        return None
+    value = extra_details.get("retry_after_seconds")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return max(1, math.ceil(value))
+
+
 class APIError(HTTPException):
     """
     Base exception for all API errors.
@@ -256,14 +276,20 @@ class APIError(HTTPException):
 
     def to_problem_detail(self, instance: str | None = None) -> ProblemDetail:
         """Convert this exception to a ProblemDetail response model."""
-        # Build error details if we have resource info
+        # Build error details if we have resource info, or a machine-readable
+        # retry delay to carry. The delay is why this block grew a second
+        # trigger: a 429 usually names no resource, so keying the details object
+        # on ``resource`` alone dropped the one field a caller can act on
+        # without parsing English.
+        retry_after = _retry_after_seconds(self.extra_details)
         details: ErrorDetails | None = None
-        if self.resource or self.errors:
+        if self.resource or self.errors or retry_after is not None:
             causes = self.errors if self.errors else None
             details = ErrorDetails(
                 name=self.resource_id,
                 kind=self.resource,
                 causes=causes,
+                retry_after_seconds=retry_after,
             )
 
         return ProblemDetail(
@@ -274,7 +300,7 @@ class APIError(HTTPException):
             instance=instance,
             error_code=self.error_code,
             reason=self.reason,
-            metadata=ErrorMetadata(request_id=self.request_id),
+            metadata=ErrorMetadata(request_id=self.request_id, retry_after=retry_after),
             errors=self.errors,
             details=details,
             hint=self.hint,
@@ -574,6 +600,14 @@ async def api_error_handler(request: Request, exc: APIError) -> JSONResponse:
     headers: dict[str, str] | None = None
     if exc.status_code == 401:
         headers = {"WWW-Authenticate": "ApiKey"}
+
+    # The same delay on the standard header as well as in the body. Belt and
+    # braces on purpose: a proxy, a generated client or a browser may act on the
+    # header without ever looking at the payload, and the two must not be able
+    # to disagree, so both come from one value.
+    retry_after = _retry_after_seconds(exc.extra_details)
+    if retry_after is not None:
+        headers = {**(headers or {}), "Retry-After": str(retry_after)}
 
     return JSONResponse(
         status_code=exc.status_code,

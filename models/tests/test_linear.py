@@ -13,8 +13,11 @@ import pytest
 from agent_control_models import (
     LINEAR_TEAM_KEY_MAX_LENGTH,
     LinearTeamKey,
+    ListMilestoneIssuesResponse,
     ListTeamMilestonesResponse,
     Milestone,
+    MilestoneIssue,
+    MilestoneIssueCounts,
     MilestonesStatus,
     PatchTeamRequest,
     Team,
@@ -202,3 +205,106 @@ class TestListTeamMilestonesResponse:
             ListTeamMilestonesResponse(
                 status=MilestonesStatus.ERROR, slug="engineering", retry_after_seconds=-1
             )
+
+
+class TestMilestoneIssueModels:
+    """The scope-read response, which a browser and a dispatcher both see."""
+
+    def test_the_new_models_are_exported_from_the_package(self) -> None:
+        import agent_control_models as models
+
+        for name in (
+            "MilestoneIssue",
+            "MilestoneIssueSkipCounts",
+            "MilestoneIssueCounts",
+            "ListMilestoneIssuesResponse",
+        ):
+            assert name in models.__all__
+            assert getattr(models, name) is not None
+
+    def test_defaults_are_the_empty_non_error_shape(self) -> None:
+        response = ListMilestoneIssuesResponse(
+            status=MilestonesStatus.EMPTY,
+            slug="operations",
+            linear_team_key="OPS",
+            milestone_id="m-1",
+        )
+
+        assert response.issues == []
+        assert response.counts.fetched == 0
+        assert response.counts.eligible == 0
+        assert response.counts.beyond_page_cap is False
+        assert response.counts.skipped.started == 0
+        assert response.counts.skipped.assigned == 0
+        assert response.counts.skipped.other_team == 0
+        assert response.error is None
+        assert response.cached is False
+
+    def test_an_issue_carries_no_state_assignee_or_label(self) -> None:
+        """Those three are the eligibility inputs and the later-phase filter.
+
+        None of them is rendered: state and assignee are counts, and a label is
+        never a selector because anyone who can file an issue can attach one.
+        """
+
+        assert set(MilestoneIssue.model_fields) == {
+            "ref",
+            "identifier",
+            "title",
+            "description",
+            "url",
+            "created_at",
+            "updated_at",
+            "creator_id",
+            "creator_display_name",
+        }
+
+    def test_has_no_field_that_could_carry_a_credential(self) -> None:
+        suspicious = {"api_key", "key", "token", "secret", "authorization", "password"}
+
+        assert suspicious.isdisjoint(ListMilestoneIssuesResponse.model_fields)
+        assert suspicious.isdisjoint(MilestoneIssue.model_fields)
+        assert suspicious.isdisjoint(MilestoneIssueCounts.model_fields)
+
+    @pytest.mark.parametrize(
+        "counts",
+        [
+            {"fetched": -1},
+            {"eligible": -1},
+            {"skipped": {"started": -1}},
+            {"skipped": {"assigned": -1}},
+            {"skipped": {"other_team": -1}},
+        ],
+    )
+    def test_a_negative_count_is_refused(self, counts: dict) -> None:
+        with pytest.raises(ValidationError):
+            ListMilestoneIssuesResponse(
+                status=MilestonesStatus.OK,
+                slug="operations",
+                linear_team_key="OPS",
+                milestone_id="m-1",
+                counts=counts,
+            )
+
+    def test_a_negative_retry_after_is_refused(self) -> None:
+        with pytest.raises(ValidationError):
+            ListMilestoneIssuesResponse(
+                status=MilestonesStatus.ERROR,
+                slug="operations",
+                linear_team_key="OPS",
+                milestone_id="m-1",
+                retry_after_seconds=-1,
+            )
+
+    def test_the_scope_of_the_read_is_required_on_every_response(self) -> None:
+        """A response that could not say which team and milestone it read is a
+        response nobody can act on."""
+
+        with pytest.raises(ValidationError):
+            ListMilestoneIssuesResponse(status=MilestonesStatus.OK, slug="operations")
+
+    def test_the_error_code_for_an_unlinked_team_exists_and_is_its_own(self) -> None:
+        from agent_control_models.errors import ErrorCode
+
+        assert ErrorCode.TEAM_NOT_LINKED == "TEAM_NOT_LINKED"
+        assert ErrorCode.TEAM_NOT_LINKED is not ErrorCode.TEAM_HAS_MEMBERS

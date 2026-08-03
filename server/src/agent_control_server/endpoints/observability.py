@@ -299,11 +299,26 @@ async def get_trace(
     store: EventStore = Depends(get_event_store),
     principal: Principal = Depends(require_operation(Operation.OBSERVABILITY_READ)),
 ) -> TraceResponse:
-    """Read one multi-agent task as a chain of hops.
+    """Read one multi-agent chain as a sequence of control executions.
+
+    The word here is deliberately *chain* and not *task*. A ``task`` in this
+    product is a row in ``agent_tasks``: one unit of work in the dispatch
+    ledger, with a key, a claim and a set of steps. This route is a different
+    thing that used to share the word, and two meanings for one noun is how a
+    reader ends up asking a trace rollup for a ledger row.
 
     Each hop is one control execution: which agent ran it, the team that agent
     belongs to now, the span and timestamp it reported, the control, and what
     the control decided.
+
+    **This is not how a dispatch task's chain is read.** Hops here come
+    exclusively from ``ControlExecutionEvent`` rows, which only the SDK writes,
+    so an agent with no bound control that fired contributes zero hops and
+    vanishes from the answer entirely - a three-agent chain where two have no
+    controls renders as one agent, with nothing indicating the rest is missing.
+    A task's chain is ``GET /agent-tasks/{task_key}/chain``, built from
+    ``agent_task_steps``, which records every hop whether or not a control
+    fired. This route is the forensic view of one of those hops.
 
     Hops are sorted by ``(timestamp, span_id)``, so a tie in timestamps still
     yields the same order on every read. The timestamps come from the clients

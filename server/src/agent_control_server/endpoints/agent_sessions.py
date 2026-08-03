@@ -122,6 +122,7 @@ async def create_agent_session(
         team_slug=request.team_slug,
         factory=factory,
         settings=executor_settings,
+        task_key=request.task_key,
     )
     return CreateAgentSessionResponse(session=session)
 

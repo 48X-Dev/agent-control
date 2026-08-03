@@ -13,6 +13,15 @@ from agent_control_models.agent_configs import (
     ModelCostTier,
     ModelProvider,
 )
+from agent_control_models.dispatch import (
+    DEFAULT_MAX_TASKS_PER_HOUR,
+    DEFAULT_MAX_TURNS_PER_HOUR,
+)
+from agent_control_models.tasks import (
+    IMPORT_MAX_ITEMS,
+    MAX_STEPS_PER_TASK,
+    MAX_TURNS_PER_STEP,
+)
 from agent_control_telemetry import DEFAULT_CONTROL_EVENT_SINK_NAME
 from pydantic import AliasChoices, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -466,6 +475,144 @@ class ExecutorSettings(BaseSettings):
         return secret or None
 
 
+class DispatchSettings(BaseSettings):
+    """Ceilings on the dispatch ledger, kept where they cannot be bypassed.
+
+    The loop runs outside this server. Every bound on it lives inside, because
+    a budget enforced by the process being budgeted is not a control: a
+    dispatcher in a retry loop, a second dispatcher started by a different
+    operator, or a bad release all spend without consulting a limit that lives
+    in their own memory.
+
+    Nothing here starts anything. There is no interval, no poll, no worker and
+    no timer, and if one appears in this class the architectural line has been
+    crossed. These are numbers the request path reads.
+    """
+
+    model_config = SettingsConfigDict(
+        **_COMMON_SETTINGS_CONFIG,
+        env_prefix="AGENT_CONTROL_DISPATCH_",
+    )
+
+    # How long a claim survives without a heartbeat. Read by the claim
+    # statement's reclaim predicate and returned to the holder, so the
+    # dispatcher does not get to pick its own lease.
+    task_lease_seconds: int = Field(default=1800, ge=60)
+
+    # Set on the row at claim time and checked before each step starts, so a
+    # dispatcher that hangs cannot outlive its own budget.
+    task_deadline_seconds: int = Field(default=3600, ge=60)
+
+    # A workflow cannot loop. A ceiling on chain length, not a guess about
+    # usefulness.
+    max_steps_per_task: int = Field(default=MAX_STEPS_PER_TASK, ge=1, le=MAX_STEPS_PER_TASK)
+
+    # One import call, one page. The Linear read is capped at the same number.
+    max_import_items: int = Field(default=IMPORT_MAX_ITEMS, ge=1, le=IMPORT_MAX_ITEMS)
+
+    # How many tasks one dispatcher may hold at once. Not enforced by this
+    # server - it has no loop to enforce it on - but it is the number the
+    # session-ceiling relationship below is computed from, so it lives here
+    # rather than in the process it bounds, where it could be edited by whoever
+    # wanted more throughput.
+    max_concurrent_tasks: int = Field(default=4, ge=1)
+
+    # Concurrent dispatch turns against one agent. One, because the ADK
+    # plugin's concurrent-invocation safety has never been demonstrated: two
+    # invocations sharing one plugin instance is not a risk this design takes
+    # on an unverified assumption. Enforced on the turn path, counted over
+    # sessions belonging to a task that are running a turn right now, which is
+    # the observable that actually bounds concurrent plugin invocations.
+    #
+    # The ceiling is capped at one rather than merely defaulted to it. Raising
+    # it is what spike E5a exists to license, and licensing it should be a code
+    # change somebody reviews, not an environment variable somebody exports at
+    # 3am to clear a backlog.
+    max_concurrent_tasks_per_agent: int = Field(default=1, ge=1, le=1)
+
+    # Seeded onto ``agent_dispatch_state`` when a namespace's row is first
+    # created. The row is authoritative afterwards, so changing these does not
+    # retroactively move a namespace that has already dispatched anything.
+    default_max_tasks_per_hour: int = Field(default=DEFAULT_MAX_TASKS_PER_HOUR, ge=0)
+    default_max_turns_per_hour: int = Field(default=DEFAULT_MAX_TURNS_PER_HOUR, ge=0)
+
+    @model_validator(mode="after")
+    def _fleet_must_not_squeeze_human_chat_out_of_the_session_ceiling(
+        self,
+    ) -> "DispatchSettings":
+        """Refuse a fleet that could consume the namespace's session ceiling.
+
+        ``max_concurrent_sessions`` (default 100) is a standing ceiling on
+        sessions that *exist*, not a rate per day:
+        ``count_open_sessions`` counts ``ACTIVE`` and ``ARCHIVED``, archiving is
+        a UI gesture, and there is no ``closed`` status. One session per step
+        plus twenty tasks a day exhausts a namespace permanently within the
+        week, and because the check sits in ``open_session`` before any binding
+        work, the resulting 429 also blocks every human opening a chat in the
+        console. An autonomous loop would have silently disabled the product for
+        its own operators.
+
+        Half rather than all, because human chat shares the ceiling and must
+        never be squeezed out by the fleet. With the shipped defaults the
+        fleet's standing draw is at most sixteen against a hundred.
+
+        Cheaper to refuse at import than to debug at 3am, which is the argument
+        ``ExecutorSettings._stale_window_must_outlast_a_turn`` already makes.
+        """
+        fleet_draw = self.max_concurrent_tasks * self.max_steps_per_task
+        fleet_share = executor_settings.max_concurrent_sessions / 2
+        if fleet_draw > fleet_share:
+            raise ValueError(
+                f"AGENT_CONTROL_DISPATCH_MAX_CONCURRENT_TASKS "
+                f"({self.max_concurrent_tasks}) times "
+                f"AGENT_CONTROL_DISPATCH_MAX_STEPS_PER_TASK "
+                f"({self.max_steps_per_task}) is {fleet_draw} sessions, which is "
+                f"more than half of AGENT_CONTROL_EXECUTOR_MAX_CONCURRENT_SESSIONS "
+                f"({executor_settings.max_concurrent_sessions}). The other half is "
+                "for humans: the session ceiling is a standing limit on sessions "
+                "that exist, so a fleet that can fill it locks every operator out "
+                "of the console."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _lease_must_outlast_a_step_and_fit_inside_the_deadline(self) -> "DispatchSettings":
+        """Refuse a lease that reclaims live work, or one that outlives the task.
+
+        Two failures, opposite in shape and both silent.
+
+        A lease shorter than a step lets a second dispatcher claim a task whose
+        first dispatcher is mid-turn. Both then open sessions against the same
+        agent, and per-agent concurrency of one - which exists because the
+        plugin's concurrent-invocation safety is unverified - has been
+        configured away. A step is bounded by the turn timeout times the
+        per-step turn ceiling, so the lease has to clear that with margin.
+
+        A lease longer than the deadline is the mirror image: the task is past
+        the point where a step may start, and the row is still held by a
+        process nobody can outwait. Cheaper to refuse at import than to debug
+        at 3am, which is the same argument
+        ``ExecutorSettings._stale_window_must_outlast_a_turn`` already makes.
+        """
+        longest_step = executor_settings.turn_timeout_seconds * MAX_TURNS_PER_STEP
+        if self.task_lease_seconds <= longest_step:
+            raise ValueError(
+                "AGENT_CONTROL_DISPATCH_TASK_LEASE_SECONDS must exceed "
+                f"{longest_step:.0f}s, which is "
+                "AGENT_CONTROL_EXECUTOR_TURN_TIMEOUT_SECONDS times the "
+                f"per-step turn ceiling of {MAX_TURNS_PER_STEP}. A shorter lease "
+                "lets a second dispatcher claim a task whose step is still running."
+            )
+        if self.task_lease_seconds > self.task_deadline_seconds:
+            raise ValueError(
+                "AGENT_CONTROL_DISPATCH_TASK_LEASE_SECONDS must not exceed "
+                "AGENT_CONTROL_DISPATCH_TASK_DEADLINE_SECONDS. A lease that "
+                "outlives the deadline holds a task nobody may run and nobody "
+                "may reclaim."
+            )
+        return self
+
+
 def check_executor_startup_requirements(
     *,
     executor: "ExecutorSettings",
@@ -701,3 +848,5 @@ ui_settings = UISettings()
 linear_settings = LinearSettings()
 executor_settings = ExecutorSettings()
 model_settings = ModelSettings()
+# After ``executor_settings``: the lease refusal reads the turn timeout off it.
+dispatch_settings = DispatchSettings()

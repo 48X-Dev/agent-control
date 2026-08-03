@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import logging
+import math
 from dataclasses import dataclass
 
 from agent_control_models.errors import ErrorCode, ErrorReason
@@ -38,9 +39,10 @@ from agent_control_models.sessions import (
     TurnResponse,
 )
 
-from ..config import ExecutorSettings
+from ..config import ExecutorSettings, dispatch_settings
 from ..db import AsyncSessionLocal
 from ..errors import APIError, executor_api_error
+from .agent_dispatch_state import charge_dispatch_turn, require_executors_not_halted
 from .agent_runtimes import AgentRuntimesService
 from .agent_sessions import (
     AgentSessionsService,
@@ -268,7 +270,16 @@ def _turn_state(
 def _enforce_quota(
     *, namespace_key: str, caller_hash: str | None, settings: ExecutorSettings
 ) -> None:
-    """Refuse a caller who is starting turns faster than the configured rate."""
+    """Refuse a caller who is starting turns faster than the configured rate.
+
+    The delay goes out as a number as well as in the sentence. Prose is for the
+    person reading the response; ``retry_after_seconds`` is for the process that
+    has to decide when to come back, and regexing an English hint breaks the
+    first time somebody rewords it - which hints in this repo do get. Without
+    the number, the likely implementation is a hardcoded sleep that ignores the
+    server, and under a shared bucket the fleet then oscillates between
+    hammering and idling.
+    """
     quota = get_turn_quota(max_per_minute=settings.max_turns_per_minute)
     retry_after = quota.try_acquire(
         namespace_key=namespace_key, caller_hash=caller_hash
@@ -288,6 +299,7 @@ def _enforce_quota(
             f"Retry in about {retry_after:.0f} seconds, or raise "
             f"AGENT_CONTROL_EXECUTOR_MAX_TURNS_PER_MINUTE."
         ),
+        extra_details={"retry_after_seconds": math.ceil(retry_after)},
     )
 
 
@@ -309,17 +321,62 @@ async def _acquire_turn(
     something different: an unknown session is a 404, somebody else's session is
     a 403, a session the executor has lost is a 409 naming that, an agent with
     no enabled binding is a different 409, and only then does the lock decide.
+
+    **Between the binding and the lock sit the fleet ceilings.** This is where
+    the executor kill switch, the namespace budget and the dispatch pause are
+    enforced, because it is the one place every turn passes through regardless
+    of which process started it. The dispatcher checks the same things before
+    it claims, and that is an optimisation so it does not open sessions it
+    cannot use; it is not the enforcement point and must not be mistaken for
+    one.
+
+    The kill switch applies to **every** turn, human chat included, because
+    that is what its copy promises and because a chat session opened before it
+    was pressed would otherwise keep running. It is a primary-key read of a row
+    most namespaces have never created.
+
+    The budget, the pause and the per-agent concurrency ceiling apply only to a
+    session that belongs to a dispatch task. Human chat keeps the per-process
+    ``TurnQuota`` above and never charges the dispatch row, which is what stops
+    the *write* on this path from reaching every turn in the deployment.
+
+    Every refusal below unwinds this transaction without committing, so a turn
+    that does not start is not charged.
     """
     async with AsyncSessionLocal() as db:
         sessions = AgentSessionsService(db)
         row = await sessions.get_row_or_404(
             namespace_key=namespace_key, session_key=session_key
         )
-        require_content_access(row, caller_hash=caller_hash, is_admin=is_admin)
+        require_content_access(row, caller_hash=caller_hash, is_admin=is_admin, for_turn=True)
         _require_runnable_status(row.status, session_key=session_key)
         binding = await AgentRuntimesService(db).require_enabled_binding(
             namespace_key=namespace_key, agent_name=row.agent_name
         )
+
+        # Level 3 is consulted for **every** turn, not only a task's. The copy
+        # beside that button, the error hint it raises and the field
+        # description on ``DispatchStateSnapshot`` all say it refuses every new
+        # turn in the namespace, human chat included; checking it only on the
+        # dispatch branch would leave every chat session that was already open
+        # when somebody pressed it running turns, which is the one case an
+        # operator reaching for the authoritative stop is trying to end. It is
+        # a primary-key read of a row most namespaces do not have, and it takes
+        # no lock - the charge below is what is expensive, and that stays
+        # conditional.
+        await require_executors_not_halted(
+            db, namespace_key=namespace_key, action="Starting a turn"
+        )
+
+        if row.agent_task_id is not None:
+            await charge_dispatch_turn(
+                db,
+                namespace_key=namespace_key,
+                agent_name=row.agent_name,
+                session_key=session_key,
+                dispatch=dispatch_settings,
+                executor=settings,
+            )
 
         session_id = await acquire_turn_lock(
             db,

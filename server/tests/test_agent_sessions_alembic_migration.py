@@ -316,8 +316,18 @@ def test_the_migration_builds_what_the_orm_describes(
     compares the two, so a column that exists only in the ORM would leave the
     whole suite green and fail on the first request after a real upgrade. This
     is the assertion that would have to fail first.
+
+    Upgraded to ``head`` rather than to this file's own revision, and that is a
+    correction rather than a widening. The ORM side of the comparison is always
+    today's ``Base.metadata``, so pinning the migration side to one revision
+    only agreed while no later revision touched these tables. The first one that
+    did - ``d7e4a91c60b2``, which adds ``agent_sessions.agent_task_id`` - made
+    the two disagree by construction and turned a real invariant into a
+    tripwire for anybody extending the table. Every other assertion in this
+    module still pins ``MIGRATION_REVISION``, because those are about what this
+    revision itself does.
     """
-    upgrade_to(MIGRATION_REVISION)
+    upgrade_to("head")
     migrated = _shape_of(temp_engine, table)
 
     with _temp_database() as orm_db_url:

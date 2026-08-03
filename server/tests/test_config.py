@@ -1,10 +1,15 @@
 """Tests for server configuration helpers."""
 
+import pytest
+from agent_control_models.tasks import MAX_TURNS_PER_STEP
+
 from agent_control_server.config import (
     AgentControlServerDatabaseConfig,
+    DispatchSettings,
     LoggingSettings,
     ObservabilitySettings,
     Settings,
+    executor_settings,
 )
 
 
@@ -301,3 +306,61 @@ def test_logging_settings_access_log_can_be_disabled(monkeypatch) -> None:
     config = LoggingSettings()
 
     assert config.access_log is False
+
+
+# ---------------------------------------------------------------------------
+# Dispatch ceilings
+#
+# The dispatch loop runs outside this server; every bound on it lives inside,
+# because a budget enforced by the process being budgeted is not a control.
+# The two refusals below are the ones that would otherwise be discovered by a
+# duplicated turn at 3am.
+# ---------------------------------------------------------------------------
+
+
+def test_dispatch_settings_defaults_are_the_ones_the_plan_states() -> None:
+    config = DispatchSettings(_env_file=None)
+
+    assert config.task_lease_seconds == 1800
+    assert config.task_deadline_seconds == 3600
+    assert config.max_steps_per_task == 4
+    assert config.max_import_items == 100
+
+
+def test_a_lease_shorter_than_a_step_is_refused_at_import(monkeypatch) -> None:
+    """A lease that expires mid-turn hands a live task to a second dispatcher.
+
+    Both then open sessions against the same agent, and per-agent concurrency
+    of one - which exists because the plugin's concurrent-invocation safety is
+    unverified - has been configured away. The longest a step can legitimately
+    run is the turn timeout times the per-step turn ceiling.
+    """
+    floor = executor_settings.turn_timeout_seconds * MAX_TURNS_PER_STEP
+    monkeypatch.setenv("AGENT_CONTROL_DISPATCH_TASK_LEASE_SECONDS", str(int(floor)))
+
+    with pytest.raises(ValueError, match="must exceed"):
+        DispatchSettings(_env_file=None)
+
+
+def test_a_lease_that_outlives_the_deadline_is_refused_too(monkeypatch) -> None:
+    """The mirror image: a task past the point where a step may start, still
+    held by a process nobody can outwait."""
+    monkeypatch.setenv("AGENT_CONTROL_DISPATCH_TASK_LEASE_SECONDS", "7200")
+    monkeypatch.setenv("AGENT_CONTROL_DISPATCH_TASK_DEADLINE_SECONDS", "3600")
+
+    with pytest.raises(ValueError, match="must not exceed"):
+        DispatchSettings(_env_file=None)
+
+
+def test_a_deployment_may_lower_a_ceiling_and_not_raise_it(monkeypatch) -> None:
+    """The models' constants are the ceiling; a deployment's number can only
+    be at or under it, so a setting cannot widen what the wire model allows."""
+    monkeypatch.setenv("AGENT_CONTROL_DISPATCH_MAX_STEPS_PER_TASK", "2")
+    monkeypatch.setenv("AGENT_CONTROL_DISPATCH_MAX_IMPORT_ITEMS", "10")
+    lowered = DispatchSettings(_env_file=None)
+    assert lowered.max_steps_per_task == 2
+    assert lowered.max_import_items == 10
+
+    monkeypatch.setenv("AGENT_CONTROL_DISPATCH_MAX_STEPS_PER_TASK", "99")
+    with pytest.raises(ValueError):
+        DispatchSettings(_env_file=None)

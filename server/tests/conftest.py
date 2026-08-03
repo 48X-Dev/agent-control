@@ -11,6 +11,8 @@ import pytest
 import uvicorn
 from fastapi.testclient import TestClient
 from sqlalchemy import MetaData, create_engine, inspect, text
+from sqlalchemy.engine import Connection, Engine
+from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from starlette.types import ASGIApp
 
@@ -71,30 +73,98 @@ def app():
     return fastapi_app
 
 
+def _admin_engine() -> Engine:
+    """A connection to ``postgres``, for statements that cannot run inside a database."""
+    admin_url = (
+        f"postgresql+{db_config.driver}://{db_config.user}:{db_config.password}@"
+        f"{db_config.host}:{db_config.port}/postgres"
+    )
+    return create_engine(admin_url, isolation_level="AUTOCOMMIT")
+
+
+def _drop_database(conn: Connection, name: str) -> None:
+    """Drop ``name``, evicting whatever is still connected to it.
+
+    ``WITH (FORCE)`` is Postgres 13 and later. Older servers get the explicit
+    ``pg_terminate_backend`` sweep, which is the same thing written out. Either
+    way a connection this process forgot to dispose must not turn teardown into
+    a hang, because a database left behind is a database a later run collides
+    with.
+    """
+    try:
+        conn.execute(text(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)'))
+        return
+    except (ProgrammingError, OperationalError):
+        pass
+    conn.execute(
+        text(
+            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+            " WHERE datname = :name AND pid <> pg_backend_pid()"
+        ),
+        {"name": name},
+    )
+    conn.execute(text(f'DROP DATABASE IF EXISTS "{name}"'))
+
+
 @pytest.fixture(scope="session", autouse=True)
-def db_schema() -> None:
-    # Ensure test database exists (PostgreSQL)
-    if engine.dialect.name == "postgresql":
-        admin_url = (
-            f"postgresql+{db_config.driver}://{db_config.user}:{db_config.password}@"
-            f"{db_config.host}:{db_config.port}/postgres"
-        )
-        admin_engine = create_engine(admin_url, isolation_level="AUTOCOMMIT")
+def db_schema() -> Iterator[None]:
+    """Own one database for the whole run, and hand it back at the end.
+
+    The name comes from ``server/conftest.py``, which appends a per-process
+    token to it before anything reads ``db_config``. This fixture is the other
+    half of that: created here, dropped here, so a second pytest process
+    running at the same time cannot be inside it when ``_truncate_all_tables``
+    fires. Sharing a name is not a rare race - the truncate runs before *every*
+    test, so a contended run corrupts a contended run's data continuously.
+
+    The drop is unconditional rather than best effort. Leaving the database
+    behind would be tidy-looking and wrong: the names accumulate, and a run
+    that later reuses one inherits its tables.
+    """
+    if engine.dialect.name != "postgresql":
+        # SQLite and friends: no database to create, and the file (or memory)
+        # is already per process.
+        reflected_metadata = MetaData()
+        reflected_metadata.reflect(bind=engine)
+        reflected_metadata.drop_all(bind=engine)
+        Base.metadata.create_all(bind=engine)
+        yield
+        return
+
+    admin_engine = _admin_engine()
+    try:
         with admin_engine.connect() as conn:
-            exists = conn.execute(
-                text("SELECT 1 FROM pg_database WHERE datname = :name"),
-                {"name": db_config.database},
-            ).scalar()
-            if not exists:
-                conn.execute(text(f'CREATE DATABASE "{db_config.database}"'))
+            # IF EXISTS rather than a check: the token makes a live collision
+            # impossible, so anything already holding this name is the wreckage
+            # of a run that died before its teardown.
+            _drop_database(conn, db_config.database)
+            conn.execute(text(f'CREATE DATABASE "{db_config.database}"'))
+
+        Base.metadata.create_all(bind=engine)
+        try:
+            yield
+        finally:
+            engine.dispose()
+            _dispose_async_engines()
+            with admin_engine.connect() as conn:
+                _drop_database(conn, db_config.database)
+    finally:
         admin_engine.dispose()
 
-    # Recreate tables for tests in the configured database.
-    reflected_metadata = MetaData()
-    reflected_metadata.reflect(bind=engine)
-    reflected_metadata.drop_all(bind=engine)
-    Base.metadata.create_all(bind=engine)
-    yield
+
+def _dispose_async_engines() -> None:
+    """Close the async pools so the drop is not fighting live connections.
+
+    ``AsyncEngine.dispose`` is a coroutine and teardown is synchronous, so the
+    pool is closed through the sync engine underneath it. That is the
+    documented escape hatch for exactly this case and it does not need a loop.
+    """
+    from agent_control_server import db as server_db
+
+    for candidate in (async_engine, getattr(server_db, "async_engine", None)):
+        if candidate is None:
+            continue
+        candidate.sync_engine.dispose()
 
 
 @pytest.fixture(autouse=True)

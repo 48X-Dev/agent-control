@@ -112,6 +112,10 @@ async def test_the_turn_carries_the_envelope_as_the_message() -> None:
         (429, "QUOTA_EXCEEDED", Disposition.PAUSED_QUOTA),
         (409, "TURN_IN_FLIGHT", Disposition.FAILED),
         (409, "AGENT_RUNTIME_NOT_BOUND", Disposition.BLOCKED),
+        # An unlinked team is blocked rather than retried: nothing the
+        # dispatcher can do makes the read succeed, and a person has to set
+        # linear_team_key before it ever will.
+        (409, "TEAM_NOT_LINKED", Disposition.BLOCKED),
         (403, "AUTH_INSUFFICIENT_PRIVILEGES", Disposition.BLOCKED),
     ],
 )
@@ -353,3 +357,149 @@ def test_the_two_observations_are_recorded_where_the_code_uses_them() -> None:
     assert "does not correlate" in client_module.TRACE_CORRELATION_NOTE
     assert "2026-08-02" in client_module.TRACE_CORRELATION_NOTE
     assert "AGENT_CONTROL_FLUSH_INTERVAL" in client_module.DENY_INGESTION_LAG_NOTE
+
+
+# --- the scope read, which is the only route slice 2 adds -------------------
+
+
+def _issues_payload(**overrides: Any) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "status": "ok",
+        "slug": "operations",
+        "linear_team_key": "OPS",
+        "milestone_id": "3dcd106d-e00a-4f32-a3b6-27b9fd64c6d6",
+        "issues": [
+            {
+                "ref": "uuid-1",
+                "identifier": "OPS-2",
+                "title": "Review the deck",
+                "description": "Owner noted in request: Clive.",
+                "url": "https://linear.app/acme/issue/OPS-2",
+                "created_at": "2026-08-01T14:56:49.290000Z",
+                "updated_at": "2026-08-01T15:05:08.924000Z",
+                "creator_id": "c087560f",
+                "creator_display_name": "paul",
+            }
+        ],
+        "counts": {
+            "fetched": 3,
+            "eligible": 1,
+            "skipped": {"started": 1, "assigned": 1, "other_team": 0},
+            "beyond_page_cap": False,
+        },
+        "cached": False,
+        "fetched_at": "2026-08-03T08:19:00Z",
+    }
+    payload.update(overrides)
+    return payload
+
+
+async def test_the_scope_read_is_a_get_and_carries_the_key() -> None:
+    seen: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((request.method, request.url.path))
+        assert request.headers["X-API-Key"] == "local-agent-key"
+        return httpx.Response(200, json=_issues_payload())
+
+    async with _client(handler) as client:
+        response = await client.fetch_milestone_issues(
+            team_slug="operations", milestone_id="3dcd106d-e00a-4f32-a3b6-27b9fd64c6d6"
+        )
+
+    assert seen == [
+        (
+            "GET",
+            "/api/v1/teams/operations/milestones/"
+            "3dcd106d-e00a-4f32-a3b6-27b9fd64c6d6/issues",
+        )
+    ]
+    assert [issue.identifier for issue in response.issues] == ["OPS-2"]
+    assert response.counts.skipped.started == 1
+
+
+async def test_the_scope_read_never_sends_a_body_or_a_query_string() -> None:
+    """There is no field to widen the scope with, over the wire either."""
+
+    seen: list[tuple[bytes, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((request.content, request.url.query.decode()))
+        return httpx.Response(200, json=_issues_payload())
+
+    async with _client(handler) as client:
+        await client.fetch_milestone_issues(team_slug="operations", milestone_id="m-1")
+
+    assert seen == [(b"", "")]
+
+
+async def test_a_path_shaped_team_cannot_retarget_the_request_either() -> None:
+    """``--team`` is interpolated too, and is not shape-checked before it is.
+
+    Quoting is what holds here: the server answers 404 for a slug that is not a
+    slug, which is the right answer, and the request never becomes a GET
+    against some other route.
+    """
+
+    seen: list[bytes] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.raw_path)
+        return httpx.Response(404, json={"detail": "not found"})
+
+    async with _client(handler) as client:
+        with pytest.raises(DispatchHTTPError):
+            await client.fetch_milestone_issues(
+                team_slug="../../agent-sessions", milestone_id="m-1"
+            )
+
+    assert seen == [
+        b"/api/v1/teams/..%2F..%2Fagent-sessions/milestones/m-1/issues"
+    ]
+
+
+async def test_a_path_shaped_id_cannot_retarget_the_request() -> None:
+    """httpx resolves ``..`` in a path, so the segments are quoted.
+
+    ``build_source`` refuses an id like this before it ever reaches the client,
+    and this is the second of the two: the request that gets sent still names
+    the route this method documents.
+    """
+
+    seen: list[bytes] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        # ``raw_path`` rather than ``path``: the latter percent-decodes, so it
+        # shows what the id said rather than what went down the wire.
+        seen.append(request.url.raw_path)
+        return httpx.Response(200, json=_issues_payload())
+
+    async with _client(handler) as client:
+        await client.fetch_milestone_issues(
+            team_slug="operations", milestone_id="../../../agent-sessions"
+        )
+
+    assert seen == [
+        b"/api/v1/teams/operations/milestones/..%2F..%2F..%2Fagent-sessions/issues"
+    ]
+
+
+async def test_an_unlinked_team_is_a_blocked_refusal_carrying_the_servers_words() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            409,
+            json={
+                "error_code": "TEAM_NOT_LINKED",
+                "detail": "Team 'marketing' is not linked to a Linear team.",
+            },
+        )
+
+    async with _client(handler) as client:
+        with pytest.raises(DispatchHTTPError) as excinfo:
+            await client.fetch_milestone_issues(
+                team_slug="marketing", milestone_id="m-1"
+            )
+
+    assert excinfo.value.disposition is Disposition.BLOCKED
+    assert excinfo.value.error_code == "TEAM_NOT_LINKED"
+    assert "not linked" in excinfo.value.detail
