@@ -1045,6 +1045,109 @@ With `attachments_enabled` false the routes are absent, and with `linear_attachm
 
 ---
 
+## 8A. Converter selection, measured against the real corpus
+
+Everything below was measured on 2026-08-03 against this workspace's actual Linear
+attachments and the operator's real `.pptx`, not estimated. Both candidate libraries
+are MIT, verified from installed package metadata.
+
+| | MarkItDown 0.1.7 (Microsoft) | Docling (IBM) |
+|---|---|---|
+| install | 253 MB, 38 packages | 1.0 GB, 103 packages |
+| real 8-slide `.pptx` | 13,679 chars, instant | 9,107 chars, 0.2s |
+| trivial 2-line PDF | clean, instant | identical text, **59.8s** |
+| real PNG visual | **0 chars** | **552 chars, 19.5s (OCR)** |
+
+Docling's 59.8s on a two-line PDF is an `rt_detr_v2` layout model running through torch
+on CPU. That is its worst case and this plan does not hold it against it: its value is
+OCR, multi-column layout and real tables, which is exactly where MarkItDown returns
+nothing. MarkItDown's 50% lead on the `.pptx` is because it emits `![alt](file.jpg)`
+references where Docling collapses every visual to a bare `<!-- image -->`, so an agent
+reading MarkItDown output at least *learns a visual exists*.
+
+**The corpus is the decision.** A first draft of this section proposed MarkItDown as the
+default with Docling as a rare escalation for scanned PDFs, and concluded the gigabyte
+stays optional. Measuring the actual attachments inverted that:
+
+| this workspace's 6 attachments | MarkItDown | Docling OCR |
+|---|---|---|
+| 1 carousel PDF (`application/pdf`) | 733 chars, real content | not needed |
+| 5 post visuals (`image/png`) | **0 chars each** | ~552 chars each, ~20s each |
+
+Five of six carry no text layer at all. **OCR is the main path here, not the exception,
+and the 1 GB install is not optional.** Any plan that treats OCR as a rare fallback is
+wrong about this corpus.
+
+Two structural consequences.
+
+**Conversion cannot run inline.** Five visuals on one issue is roughly 100s of OCR against
+a 25s per-step budget. Conversion is therefore out of band, keyed and cached by content
+`sha256`, with the step reading a cache entry rather than waiting on a converter. A cache
+miss yields a stated "not yet converted" descriptor, never a blocking wait. This is a
+structural requirement, not a timeout to tune.
+
+**OCR is the only route that works on this deployment's endpoint.** Verified against the
+configured proxy (`http://127.0.0.1:10531/v1`, `gpt-5.6-sol`): `POST /v1/files` returns
+404, an inline `{"type":"file","file_data":"data:..."}` block returns **HTTP 200 with the
+file silently dropped** (reproduced with a valid PDF and a real 1.3 MB `.pptx`; the model
+answers "I don't see a PDF attached"), and an image `data:` URI returns 500 `"URL scheme
+must be http or https"`. The same content as plain text answers correctly. So a
+vision-capable model would not help through this endpoint either. Text is the only
+transport it accepts, which makes server-side conversion mandatory rather than an
+optimisation.
+
+That 200-with-content-dropped is the failure mode to design against, and it is why
+`text_layer_extracted` must never be reported as `ok`: an agent is told a spec is
+attached, receives nothing, and answers confidently from the title alone. Nothing in the
+control plane would see a problem.
+
+**Ruled out on licence.** PyMuPDF4LLM (AGPL-3.0) and Marker (GPL-3.0) are both stronger
+PDF converters and both are unusable: this repo is Apache-2.0 and distributed, and AGPL
+reaches network services. Recorded here so neither is re-proposed. *(These two licences
+are from knowledge and were not verified in-session; confirm before acting on them.)*
+
+**One privacy note.** MarkItDown's extracted alt text on the real deck contained authoring
+paths (`/home/claude/mssp/assets/hero_panel.png`). Extraction surfaces metadata the author
+never meant to publish, and that text goes to the model.
+
+## 8B. File generation
+
+Generation is the opposite direction from everything above and is **new scope**, costed
+separately in section 13. Verified working and round-tripped through MarkItDown on
+2026-08-03: `python-pptx` 1.0.2 (MIT) produced a 28 KB `.pptx`, `python-docx` 1.2.0 (MIT)
+a 36 KB `.docx` including a table, `reportlab` 5.0.0 (BSD) a 1.3 KB `.pdf`. All three read
+back correctly. Neither LibreOffice, `soffice` nor `pandoc` is installed on the host.
+
+**Generation belongs in the executor as an agent tool, not in the control plane.** It sits
+beside the Exa web tools, and `before_tool_callback` sees the document content as *tool
+arguments before any file exists*. A control can refuse a deck containing customer names
+without ever parsing a `.pptx`, which is strictly better than inspecting bytes afterwards.
+
+Operators must scope controls to the **agent-qualified** step name, `root_agent.create_deck`,
+never the bare `create_deck`. A control on the bare name matches nothing, logs nothing and
+the tool runs. This already bit the Exa tools; see the example README.
+
+**PDF generation is the awkward one.** `reportlab` draws primitives at coordinates and does
+not accept Markdown. Going from agent-authored Markdown to a presentable PDF needs
+WeasyPrint (HTML/CSS to PDF, BSD, light) rather than LibreOffice headless, because
+LibreOffice converting an agent-authored document is a parser running on *model-generated*
+input, and the Linear trust decision covers Linear's authors, not the model. WeasyPrint's
+input is HTML this codebase generates, which is a materially smaller surface.
+
+**Templates.** `python-pptx` builds from slide layouts, so unaided output looks like default
+PowerPoint and nothing like the operator's own deck. Populating a supplied template's
+placeholders is supported and is the only thing this plan promises. Design output is not
+in scope.
+
+**Publishing gate.** A generated file leaving the executor is publishing. It reuses Phase 4's
+review queue, its self-approval refusal and its `decision_digest` rather than inventing a
+second mechanism: nothing auto-posts to Drive or Linear. See `agent-drive.md` for the
+folder structure and the standing decision that Gmail sending is out of scope.
+
+**Ceilings.** An agent that can write files can write many and large ones:
+`generated_max_bytes`, `generated_max_per_task`, and a refusal that reports the ceiling to
+the agent rather than failing the step silently.
+
 ## 9. Edge cases
 
 | Case | Behaviour |
