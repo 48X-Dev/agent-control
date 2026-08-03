@@ -1,9 +1,10 @@
 # Agent File Inputs: Implementation Plan
 
-**Status:** design. Nothing built.
-**Branch context:** `feat/agent-teams`.
-**Dependencies:** Phase 1 depends on the SDK alone. Phases 3 and 4 depend on the executor and turn machinery from `docs/plans/orchestration-plan.md`, which **has landed on this branch** (see the correction below). Phase 5 depends on that plan's Phase 3 chat panel, which has not. Nothing here depends on `docs/plans/agent-system-prompts.md`.
-**Verification note:** every claim about this repo was checked against the working tree while writing this. Claims about Google ADK's own API surface, and about what `adk api_server` accepts inside a `newMessage` part on `POST /run`, were **not**: `import google.adk` fails here and there is no `GOOGLE_API_KEY`. Those are flagged as assumptions with a spike that settles them.
+**Status:** Phase 1 landed. Phases 2 onward are design, and this document was renarrowed on 2026-08-03 for two named ingress sources (section 2.6).
+**Branch context:** `feat/task-dispatcher`.
+**What shipped:** `_extractors.py`, `_attachments.py`, `_descriptors.py` and `_sanitize.py` in `sdks/python/src/agent_control/integrations/google_adk/`. The walk covers every `Content`, descriptors carry name, declared and sniffed MIME, size, sha256, `first_seen` and `carried_over_count`, hashes memoize per invocation behind a size cap that fails closed, and `file_data` parts are refused by default. 174 tests. **An attachment delivered as an inline part is visible to every control in the deployment today.** Sections 3.1, 3.2, 7.1 and 7.2 describe built code; treat them as documentation, not as plan.
+**Dependencies:** the executor, turns, agent sessions, the chat panel, nudges, halt, progress, the task ledger, fleet ceilings, hand-off, agent runtime configuration and Linear milestone and milestone-scoped issue reads have all landed. Only F1 (section 6) and L0 (section 3.9) still gate anything.
+**Verification note:** every claim about this repo was checked against the working tree while writing this, including the corrections in 2.8. Claims about `adk api_server`'s `POST /run` body, about whether its event stream reports token usage, and about what a Linear attachment URL actually answers are flagged as F1, F8 and L0 and are unverified.
 
 **A correction to a dependency, because building against the wrong baseline wastes a week.** `orchestration-plan.md`'s header says "Phase 2 onward is still prose" and that `grep -rn "asyncio.shield" server/src` returns nothing. Both are now false. `server/src/agent_control_server/services/agent_turns.py`, `turn_locks.py` and `turn_quota.py` all exist, `POST /agent-sessions/{session_key}/turns` is registered at `endpoints/agent_sessions.py:362`, and the shielded release is at `agent_turns.py:191`. Phase 3 of this plan therefore extends shipped code rather than planned code, and the per-principal rate limiter this document reuses is a real class at `services/turn_quota.py`, not a proposal.
 
@@ -11,9 +12,13 @@
 
 ## 0. What ships
 
-A person attaches a PDF to a turn in the chat panel, the agent reasons over it, and every control in the deployment sees that a file arrived, what it is, how big it is, and what its text says, before the model does. PowerPoint and Word convert to PDF in an isolated sidecar the control plane does not link against. Google Slides is not accepted as a link, and the UI says why in one sentence.
+Two ingress paths, both named and both trusted by an explicit operator decision recorded in 2.6.
 
-Phase 1 ships alone and is worth shipping alone: it closes a prompt-injection channel that is open today.
+An operator attaches a PDF in the chat panel and the agent reasons over it. And an agent working a Linear issue reads the spec attached to that issue, fetched by the server, delivered inline, and described to every control before the model sees it. When a file cannot be delivered the agent is told so in a sentence rather than left to guess.
+
+Phase 1 already shipped and was worth shipping alone: it closed a prompt-injection channel that was open. What is left is storage, an upload route, delivery, the Linear fetch and the UI.
+
+PowerPoint and Word are refused by type with a sentence telling the sender to export a PDF. Google Slides is not accepted as a link. The isolated conversion sidecar and the chunked content evaluation are designed in full and deferred to optional Phases 6 and 7, because the trust decision made them optional rather than required. Section 2.7 works out exactly what that buys and what it does not.
 
 ---
 
@@ -81,9 +86,86 @@ The fully-scanned case is easy and is handled: no text, fail closed. The **mixed
 
 So the design does not claim coverage it does not have. The converter reports per-page `text_chars` and `image_area_ratio`; the descriptor and the summary carry `pages_with_no_text`, `low_text_pages` and `max_image_area_ratio`; `extraction_status="ok"` is renamed to `text_layer_extracted` so the status names what was actually covered; and "deny any attachment with more than K image-only pages" is a one-condition control. OCR moves out of the out-of-scope list and into section 15 as a **named open hole with its residual risk written down**, because OCR is the only thing that actually closes it.
 
+Under the trust decision in 2.6 none of that runs, because the sidecar that produces those numbers is deferred. 2.7 says what that costs and 17 keeps it as a named risk rather than letting it disappear with the phase.
+
+### 2.6 The trust decision, recorded
+
+**The deployment owner has judged Linear a trusted source, and an operator uploading in the chat panel a trusted uploader. This section records that as a decision with its precondition, not as an assumption the design absorbed quietly.**
+
+A Linear attachment is uploaded by anyone with access to the tracker. The decision holds only while all three of these are true of the workspace:
+
+1. No external guests. Linear's guest role has issue access, and a guest is by definition somebody outside the org.
+2. No public issue intake. A form or portal that creates issues makes "anyone with tracker access" mean anyone.
+3. No email-to-issue address. An inbound address turns an attachment into something a stranger can post by sending mail.
+
+**What I can and cannot verify from here.** I introspected Linear's `Issue` and `Attachment` types against the live API, so the field set in 3.9 is fact. I cannot verify any of the three preconditions: the server-held key is not in this session, and even with it a guest invited tomorrow would falsify a check made today. Two are checkable by the server at runtime and one is not:
+
+- Guests are checkable in principle, by counting the organization's guest users in one cheap query. **The exact query shape is unverified and is part of L0** (3.9), because this document flags what it introspected and must not slip an unchecked GraphQL selection in beside the checked ones. If the filter is not shaped as expected, precondition 1 has no runtime evidence at all and the trust decision rests on the operator's memory of a workspace setting. That is a materially weaker position and 17 says so.
+- Email intake is partly checkable, since a triage-enabled team with an intake address exposes it on the `Team` type. Partly, because Linear has changed where that lives and this design does not pin a field it has not run.
+- Public intake through Linear's customer-request surfaces is not reliably checkable from the GraphQL API, and this design does not claim it is.
+
+**So the mechanism is a flag plus a canary, and the flag is the operator's signature.**
+
+```
+AGENT_CONTROL_LINEAR_ATTACHMENTS_TRUSTED=false   # default
+AGENT_CONTROL_LINEAR_TRUST_CANARY_INTERVAL_SECONDS=900
+```
+
+`linear_attachments_trusted` defaults false, so a deployment that upgrades gets nothing new. Setting it true is the risk acceptance, made in the same file where somebody can later read it back. The canary runs at startup and every 900 seconds, counts guests, and on a non-zero count logs at WARNING, moves `agent_control_linear_guest_accounts` off zero, and shows a banner on the milestone confirm. It does **not** auto-disable ingress: a transient API error would either fail open, which is worse than useless, or break a working deployment on a network blip. The operator flipped the flag and the operator flips it back.
+
+The canary interval is also the honesty of the whole thing. A guest invited at 10:00 is unnoticed until the next sweep. Fifteen minutes of window, stated, rather than an implication of continuous enforcement.
+
+**Source B's trust is narrower than it looks, and the difference matters.** An operator uploading in the chat panel is authenticated, owns the session, and can already type sixteen thousand characters of anything into a turn. A file they chose is not more hostile than text they typed. What the trust does not cover is where they got the file. An operator forwarding a customer's PDF is trusted as the uploader and knows nothing about the document. Section 15 names that as the residual for source B rather than pretending the uploader's authentication says anything about the bytes.
+
+### 2.7 What the trust decision buys, worked out rather than asserted
+
+The heaviest parts of this plan exist to contain a parser reading attacker-supplied documents. The converter sidecar, the chunked content evaluation, the per-page counters, the text-layer-versus-rendering measurement in 2.5 and OCR in 15 are all one defence with five names. If both sources are trusted, that defence is optional. Nothing else in this document is.
+
+**What disappears from the schedule.**
+
+| Was | Now |
+|---|---|
+| Phase 3's converter sidecar with PDF text extraction, 2.5 weeks | Optional Phase 6, unscheduled |
+| Phase 4's LibreOffice layer, 1.5 weeks | Optional Phase 7, unscheduled, depends on 6 |
+| Chunked `<agent>.attachment` content evaluation | Ships with Phase 6 or never |
+| `attachments_require_extraction=True` blocking delivery | Applies only to origins outside the trusted set (3.3) |
+| Spike F2, F5, F6 | F2 and F5 settled by Phase 1 shipping. F6 moves to Phase 6 |
+
+**What shrinks but survives.** The spike drops from three days to two, because F2 (what a `Blob` actually holds) and F5 (the sniffer) are answered by shipped code and F3 is a measurement rather than a gate. The UI drops half a week, because there is no `converting` state to render and no page count to put in a cost notice.
+
+**What does not shrink at all, and this is most of the remaining work.** Phase 2 is unchanged. Streaming multipart with a hard byte cap, `python-multipart` as a new dependency, three tables and a migration, the quotas, the rate limiter, the forced-download headers, the namespace work and the orphan sweep are all orthogonal to whether a document is hostile. Phase 5 is unchanged in kind. Neither gets cheaper because Linear is trusted.
+
+**What must not be dropped, and why trust does not touch it.**
+
+| Stays | Why trust is irrelevant to it |
+|---|---|
+| The descriptor path and `attachment_summary` | Already shipped. It is how an operator bounds this at all: "PDFs only", "under 10MB", "no files for this agent". Cheap, and the difference between a bounded feature and an unbounded one |
+| The manifest and `unminted_count` | Trust is a claim about **two named paths**. It says nothing about a third. `unminted_count` is the control that catches an agent loading its own artifact, and under a trusted-source design it is the only content control that still bites. See the caveat in 3.2 about what it can and cannot distinguish |
+| `file_data` refusal | Structural. Bytes behind a URI the SDK never sees are unevaluatable regardless of who chose the URI |
+| Byte, count and rate ceilings | Cost and denial of service, not injection. A trusted 40-issue milestone is exactly as expensive as a hostile one |
+| Forced `application/octet-stream` download, `nosniff`, RFC 5987 filename | The console cookie is a valid credential on every admin endpoint, and under `api_key_enabled=False` on ADMIN ones too. A filename is chosen by whoever filed the issue. Trusting a document's contents is not trusting its name as markup |
+| Filename normalization and marker neutralization | Shipped, free, and both are about rendering rather than content |
+| Namespace isolation and the task-session write rule | Authorization. Orthogonal to source trust in both directions |
+| `X-Requested-With` and the samesite assertion | Cross-origin injection into a victim's session is an authorization bug. A trusted source does not make a forged cross-origin upload acceptable |
+| The tombstone row | It matters **more** under trust. If precondition 1 turns out to have been false, the tombstone is the only way to answer which conversations read a file from a guest account |
+
+**And one thing gets harder, not easier.** Under the untrusted design an operator pressed a button for every file. Under Linear ingress, files arrive because a chain reached a step. Nobody is in the room. Section 3.9's per-task byte ceiling and 3.7's token ceiling exist because of that, and they are new work the trust decision created.
+
+### 2.8 Four facts about this branch that an earlier draft of this amendment got wrong
+
+Each of these was checked against the working tree, each one inverted a design decision, and each is stated here because the wrong version is more plausible than the right one.
+
+**Under the default provider every session is unattributed.** `NoAuthProvider.authorize` (`auth_framework/providers/no_auth.py:29`) returns `Principal(namespace_key=..., scopes=...)`, which leaves `caller_id` at `None` and `is_admin` at `False`. `hash_caller_id(None)` returns `None` by design (`services/caller_identity.py:35`, and its docstring says inventing a placeholder would make "nobody" look like a specific somebody). So on the machine this is being built on, **`created_by_hash IS NULL` on every row**. A rule refusing uploads on a NULL creator would 403 every upload in the only deployment the user runs. 3.6 is written around that.
+
+**`require_content_access` returns before it reaches the task branch.** Line 1097 is `if is_admin or row.created_by_hash is None: return`; the `agent_task_id` branch is at 1101. So under `NoAuthProvider`, `for_turn=True` does **not** refuse an operator uploading into a dispatch-task session. Anything that needs to hold in that state has to be its own condition. 3.6 makes it one.
+
+**Dispatch sessions persist by default.** `DispatchOptions.delete_sessions` defaults to `False` (`dispatcher/.../dispatch.py:225`), and `_delete_sessions`'s own docstring says the `session_retention_seconds` grace is "deliberately absent" and the flag is off "precisely because the transcript is what an operator reads". `session_retention_seconds` appears nowhere in shipped code; it is a `task-dispatcher.md` design note. So the cascade in 3.5 does not fire on a task session unless somebody passes the flag, and storage grows rather than being reclaimed. 3.5 and section 4 are written around that.
+
+**The envelope is assembled before any step row exists.** In `_run_step`, `build_envelope` is at `dispatch.py:814`, `create_session` at `:837`, and `ledger.record_session` (which reaches the server's `start_step`) after that. A files section in the envelope cannot describe a fetch that has not happened. 3.9 reorders the step rather than pretending it fits.
+
 ---
 
-## 3. The eight decisions
+## 3. The decisions
 
 ### 3.1 What a control sees
 
@@ -229,11 +311,19 @@ AgentControlPlugin(
 
 `inline_data` from an unknown source starts at `warn` and moves to `block` in the SDK release that ships Phase 3. The reason is not squeamishness, it is that before Phase 3 there is no supported way to mint an attachment, so a `block` default would break any deployment that attaches files through its own ADK app the day they upgraded a patch version. `warn` emits the metric in section 10 and the descriptor, so a deployment that wants blocking on day one writes the `unminted_count` control, which is available from Phase 1. The default flip ships with a changelog entry and a `.env.example` line, not silently.
 
+**What the manifest cannot distinguish today, and it matters under trust.** `_manifest_lookup` (`_attachments.py:357`) already accepts a `Mapping` entry and reads `attachment_key` or `attachment_id` from it, so the server can seed `{sha256: {"attachment_key": ..., "origin": "linear"}}` against the **shipped** SDK with no release. What the shipped SDK does not read is `origin`, so a Linear-fetched file and an operator-uploaded file both come back `source="operator"`. That is correct in the sense that matters, this control plane minted both, and imprecise in the sense that will eventually want fixing. Stated here rather than in a testing footnote because 2.7's table calls `unminted_count` the last content control still biting under trust: it counts what this control plane did not mint, from either source, and a deployment that wants to tell tracker bytes from operator bytes needs an SDK release adding a third `source` value, not a control.
+
 **Where the critique is incomplete: do not suppress the deny with a seen-set.** The critique suggests "a per-invocation seen-set in the plugin so a deny fires once rather than on every model call of the same turn". Applied to enforcement that would recreate the exact gap section 1 opens with: post-tool model calls are where an injected instruction takes effect, so a file that was allowed on call 1 and must be blocked on call 3 has to be evaluated on call 3. Enforcement runs every model call. Deduplication belongs on the **log and event** side only, so a 40-turn session does not emit 40 identical WARNINGs for the same carried-over file: that dedupe is keyed on `(invocation_id, sha256)`, bounded, and evicted with the invocation, following the invocation-keyed dicts already in `plugin.__init__`.
 
 ### 3.3 Content evaluation
 
-**Decision: yes, extracted text is evaluated, in chunks, as its own `<agent>.attachment` pre-step. The extraction that produces it runs neither in the control plane nor in the executor process.**
+**Decision: content evaluation is gated on the origin, not on the deployment. An origin in the trusted set is delivered without extraction. An origin outside it requires extraction, and with no converter running that means it is refused.**
+
+`attachments_require_extraction: bool = True` is retained and its meaning is narrowed: it applies to attachments whose `origin` is not in `attachment_trusted_origins`. The default set is `{"operator_upload"}`. `"linear"` joins it only when `linear_attachments_trusted` is true (2.6). Anything else, and there is nothing else today, requires extraction, finds no converter, and is not sent.
+
+This is what stops the plan shipping inert, which was the failure mode 3.4's phase-ordering argument was built to avoid. The honest default is now true by construction: everything delivered came from a path somebody signed for, and everything else is refused rather than waved through by a flag under release pressure.
+
+**The rest of this section describes optional Phase 6 and is not scheduled.** It is the design to build the day an origin that is not trusted is admitted, or the day page caps are wanted. Building it before then would be containing a parser nobody is running.
 
 Metadata alone cannot express "this PDF contains an instruction to exfiltrate", which is the actual threat, so the text has to reach the engine. Where it comes from matters more than that it arrives.
 
@@ -270,13 +360,29 @@ Evaluation happens server-side at bind time, once per attachment, not per model 
 
 ### 3.4 Conversion
 
-**Decision: PPTX, DOCX and XLSX convert to PDF in the sidecar behind headless LibreOffice, opt-in, off by default, and in a later phase than PDF text extraction. Google Slides is not accepted as a link. Client-side conversion is rejected.**
+**Decision: conversion is now a capability question and nothing else. It is deferred to optional Phase 7. A file Gemini cannot interpret is delivered anyway when its type is accepted, or refused with a sentence when it is not, and the agent is told which.**
+
+Section 2.1 is unchanged by the trust decision and this is the part people will get wrong. **Gemini does document vision on PDF only.** Other formats are extracted as pure text with no understanding of the rendering, so charts, diagrams, slide layout and anything that is a picture of words are lost. 50MB, up to 1,000 pages, roughly 258 tokens per page, against the user's personal subscription quota. A trusted `.docx` arrives exactly as degraded as a hostile one. Trust is about who wrote a file; this is about what the model can read.
+
+**So what does the product do when someone attaches a .pptx or a .docx?** It refuses it, by type, with a sentence, and does not pretend.
+
+The accepted set is exactly the types the shipped `sniff_mime` can name and Gemini can use: `application/pdf`, `image/png`, `image/jpeg`, `image/webp`. The ZIP-container Office types sniff as `application/zip` and are refused with a 415 that names the type and says what to do: **export it to PDF and attach that.** For Linear ingress the same refusal becomes a delivery line the agent reads (3.10), because the person who attached the `.docx` is not in the room and the agent must not guess what it said.
+
+Two consequences worth stating rather than discovering.
+
+A file the sniffer cannot identify is refused. That includes `.txt`, `.csv` and `.md`, because `sniff_mime` returns `None` for plain text by design (`_sanitize.py:109-111`, and its docstring says the omission is deliberate) and a text-shaped guess would make `mime_mismatch` noise rather than signal. On the **upload** path the refusal copy says to paste the contents into the message, which costs nothing, fits inside `TURN_MESSAGE_MAX_LENGTH`, and is already evaluated by every text control in the deployment. That is a better answer than a file upload, not a worse one.
+
+**On the Linear path that answer does not exist, and refusing there would be the wrong trade.** Nobody is in the room to paste anything, and a markdown spec attached to an issue is the likeliest attachment in this user's own workflow. So for `origin='linear'` only, there is a text-inline path: a fetched body under `linear_attachment_inline_text_max_bytes` (32KB) whose sniff is `None`, which decodes as UTF-8 and contains no NUL byte, is inlined into the envelope as its own untrusted block through the existing `_bound` and `_defuse` machinery in `dispatcher/.../envelope.py`. Never as a file part. Never bypassing the 6,000-character per-block cap, and never bypassing the files-section budget in 3.10. It carries no parser, reuses shipped truncation, and turns the commonest refusal into the cheapest delivery. Anything that fails the decode is `unsupported_type` as specified.
+
+Turning on Phase 7 changes only which types the gate accepts. Nothing else in the design moves, which is the point of putting the accepted set in one setting.
+
+**The rest of this section describes optional Phase 7.** Until it exists, a `.docx` or `.pptx` is refused by type.
 
 Google Slides exports to PDF through the Slides and Drive APIs, and doing it on a user's behalf needs an OAuth consent flow, Drive scopes, a token store and a refresh path. This product's identity model is an API key or a session cookie; `HeaderAuthProvider._resolve_namespace_key` is literally `del request; return self._default_namespace_key`, and `AuthenticatedClient(api_key="")` makes `key_id` the string `"***"` for every browser caller (`services/caller_identity.py` says so in its own module docstring). There is no per-user identity to hang a Google grant on, and building one is a larger feature than this entire plan. The UI says, in one sentence next to the attach button: **File, Download, PDF Document, then attach the PDF.** Revisit when a deployment runs `HttpUpstreamAuthProvider`. Named in section 12 as Phase 6, sized, not built.
 
 PPTX and friends get LibreOffice, and it is not cheap: roughly a gigabyte of image, formats with a long CVE history, and occasional hangs on files that open fine on a desktop. That is why it goes in the sidecar, why it is off unless `AGENT_CONTROL_EXECUTOR_ATTACHMENTS_CONVERTER_URL` is set, why the published `docker-compose.yml` does not gain the service, and why its posture is pinned rather than defaulted (section 8).
 
-**Phase ordering is part of this decision, not separate from it.** A first draft delivered attachments to the model in Phase 3 with no extraction available until Phase 4. Under `attachments_require_extraction=True` that ships inert, so the real outcome would be release pressure to flip the flag, and a flag turned off during a phase gap stays off. What would ship is a supported, quota'd, UI-fronted path for putting unevaluated attacker-supplied documents in front of a model, which is worse than today's accidental gap because it looks governed. So the sidecar lands in **Phase 3 with pure-Python PDF text-layer extraction only**, no LibreOffice, and Phase 4 adds LibreOffice and the Office formats. The honest default is true from the first delivery, and the large-attack-surface dependency is confined to the later phase.
+**Phase ordering was part of this decision and the trust decision replaced the mechanism rather than the principle.** The original ordering existed to stop the plan shipping a supported, quota'd, UI-fronted path for putting unevaluated attacker-supplied documents in front of a model under release pressure to flip a flag. That failure is now prevented by the origin gate in 3.3 instead: an origin nobody signed for is refused rather than delivered, so there is no flag to lean on and no phase gap to lean on it during. The sidecar's ordering relative to LibreOffice is unchanged, Phase 7 depends on Phase 6, and both are outside the schedule.
 
 Client-side conversion is rejected on capability, not trust: no reliable browser-side PPTX renderer, results differing per browser, and nothing for the API path where automated callers live. Trust is a non-issue either way, since a client-supplied PDF is as attacker-controlled as a client-supplied PPTX and the server validates both identically.
 
@@ -286,7 +392,9 @@ Client-side conversion is rejected on capability, not trust: no reliable browser
 
 **Decision: Agent Control's Postgres. Metadata in `agent_session_attachments`, bytes in `agent_session_attachment_blobs` as `bytea`, behind an `AttachmentBlobStore` Protocol. Agent Control owns retention and deletion.**
 
-ADK artifacts are out on 2.2. Object storage is out for now because nothing in this repo speaks it: no `boto3`, no `google-cloud-storage`, no MinIO in either compose file. Adding an object store to the quick start is a bigger operational change than a `bytea` column when the per-file cap is 50MB and attachments belong to sessions that get deleted.
+ADK artifacts are out on 2.2. Object storage is out for now because nothing in this repo speaks it: no `boto3`, no `google-cloud-storage`, no MinIO in either compose file. Adding an object store to the quick start is a bigger operational change than a `bytea` column when the per-file cap is 20MB and bytes are reclaimed on a timer.
+
+The per-file numbers below still read 50MB in places because they were written against the original cap. 3.7 lowers it to 20MB and keeps 52,428,800 as the hard constant, so every argument here holds with a smaller constant and a wider margin.
 
 The cost, stated rather than glossed: a 50MB row TOASTs out of line and lands in `pg_dump` and every base backup. Ten sessions with a full-size deck each is half a gigabyte in a database that is otherwise tens of megabytes of configuration. Quotas are therefore not optional and ship in the same phase as the table.
 
@@ -308,17 +416,23 @@ The two-table split is load-bearing. Listing attachments, evaluating metadata an
 
 That third-from-last row is the honest one. Deleting our copy does not remove the file from ADK's session history. Only deleting the ADK session does, which is the existing hard delete plus `orphaned_pending_delete` retry (`endpoints/agent_sessions.py:294`). The delete route's docstring says so and the UI confirm dialog says so: this removes it from Agent Control and from future turns, and the model has already read it.
 
-**Retention.** Cascade from the session on `(namespace_key, session_id)`. Plus a TTL sweep for the pending case, because an attachment uploaded and never bound otherwise lives forever: rows in `pending`, `ready` or `failed` with no turn binding older than `attachment_orphan_ttl_hours` (default 72) are deleted, blobs first. One statement, run from the same acquire path pattern `orchestration-plan.md` section 9.5 uses for halt expiry. No new sweeper daemon.
+**Retention, and the fact that inverts it.** Cascade from the session on `(namespace_key, session_id)`. Plus a TTL sweep for the pending case, because an attachment uploaded and never bound otherwise lives forever: rows in `pending`, `ready` or `failed` with no turn binding older than `attachment_orphan_ttl_hours` (default 72) are deleted, blobs first. One statement, run from the same acquire path pattern `orchestration-plan.md` section 9.5 uses for halt expiry. No new sweeper daemon.
+
+**That is not enough on the dispatch path, and a first draft of this amendment assumed the opposite.** It claimed task sessions are deleted fifteen minutes after a task ends, and built the audit design on the cascade firing. Per 2.8 the real default is the other way: `DispatchOptions.delete_sessions` is `False`, `session_retention_seconds` is a design note in `task-dispatcher.md` and not shipped code, and dispatch sessions **persist**. So the cascade never fires unless somebody passes the flag, the orphan sweep never touches a bound attachment, and `attachment_namespace_total_bytes` fills with dispatch-step attachments that nothing reclaims. At the ceiling every upload 413s with no documented remedy, on the exact path (Linear ingress) that has no operator watching it.
+
+So a second sweep, and it deletes bytes rather than rows. An attachment whose most recent `agent_turn_attachments` binding is older than `attachment_blob_ttl_days` (default 14) has its blobs deleted and its metadata row moved to `tombstoned`, keeping name, hashes, size and origin. The tombstone from 3.4's storage table is what still answers "what did this conversation read" after the bytes are gone, and it is 300 bytes rather than twenty megabytes. Downloads on a tombstoned attachment return a written notice, not a 404 and not a broken link.
+
+The order matters and is stated so nobody reverses it: bytes are reclaimed on a timer, metadata is reclaimed by the cascade, and the cascade may never run.
 
 ### 3.6 Upload path and authorization
 
-**Decision: one new `Operation` at `AUTHENTICATED`, creator-scoped with a stricter predicate than transcript reads use. Reads reuse `AGENT_SESSION_CONTENT_READ`. Routes register only when the executor is enabled, inheriting the existing startup refusal.**
+**Decision: one new `Operation` at `AUTHENTICATED`. Authorization reuses the shipped `require_content_access` with `for_turn=True` for writes and `for_turn=False` for reads, plus exactly two named call-site conditions that hold under every provider. Routes register only when the executor is enabled, inheriting the existing startup refusal.**
 
 ```python
 # server/src/agent_control_server/auth_framework/core.py
     # Uploading a file is per-caller working state on the caller's own session,
-    # the same class as starting a turn. Scoped to the session's creator in the
-    # service, admin excepted, and refused outright on an unattributed session.
+    # the same class as starting a turn. Scoped in the service by the same
+    # predicate that gates a turn, because it is the same act.
     AGENT_ATTACHMENTS_WRITE = "agent_attachments.write"
 ```
 
@@ -331,15 +445,34 @@ One member, not three. Reading an attachment's name and downloading its bytes is
 
 `AUTHENTICATED` rather than `ADMIN`, on the `AGENT_SESSIONS_RUN` precedent: whoever may start a turn may attach a file to it, and an admin-only attach is a feature nobody can use. The tier is defensible **only because the content is evaluated**. `agent-system-prompts.md` section 3.3 raises its write to ADMIN precisely because its content is not evaluated. Same principle, opposite direction, and the lower tier here is earned by section 3.3 rather than assumed.
 
-**Creator scoping, and where it is degenerate.** `require_content_access` (`services/agent_sessions.py:996`) is the shared predicate, and its first line is `if is_admin or row.created_by_hash is None: return` (`:1008`). Two limitations follow and a first draft cited only the cosmetic one.
+**Authorization reuses the shipped predicate, and a first draft of this section got the reuse wrong in both directions.** `require_content_access` (`services/agent_sessions.py:1058`) already carries the `for_turn` distinction an upload needs. Read as shipped: `for_turn=False` grants read, halt and nudge on a dispatch-task session to any caller who reached the predicate; `for_turn=True` refuses that and reserves driving the conversation to the session holder or an admin.
 
-*Every browser caller shares one identity.* `key_id` is `"***"` for cookie callers, so all console users hash the same. Between two people using the dashboard, creator scoping separates nothing: either can attach a file to the other's session. `endpoints/agent_sessions.py:340-347` already states this for transcripts, and this plan repeats it rather than implying a boundary that is not there.
+An upload puts caller-chosen bytes into somebody's conversation and in front of a model. That is driving it. So:
 
-*An unattributed session is world-open.* `created_by_hash is None` returns success for everyone in the namespace. That predicate was written for a transcript **read**. An attachment **write** is a materially bigger deal: it puts attacker-chosen bytes into somebody else's conversation and in front of a model. So the write path diverges: `require_attachment_write_access` refuses when `created_by_hash is None`, with a written 403 naming the cause, rather than treating unattributed as open. Attachment content reads take the same stricter predicate. A namespace-isolation test covers the `created_by_hash is None` session on both.
+- `POST .../attachments` and `DELETE .../attachments/{key}` call `require_content_access(row, caller_hash=..., is_admin=..., for_turn=True)`.
+- The three GET routes call it with `for_turn=False`, the same as the transcript.
 
-`.env.example` gains one line: per-user attachment isolation requires `HttpUpstreamAuthProvider`; under the default provider this separates API keys and separates nothing between two people sharing the console.
+`require_attachment_write_access` is deleted from this plan. Two predicates that must agree about who owns a conversation will eventually disagree.
 
-**Remembering `NoAuthProvider`.** `api_key_enabled` defaults to `False` (`config.py:37`), so out of the box every operation succeeds including ADMIN ones, and the tier above is a claim about a configured deployment. Handled by reuse, not by a new gate: attachments only mean anything alongside `POST /turns`, the router registers only when `executor.enabled` is true, and `check_executor_startup_requirements` (`config.py:442`, refusal at `:465`) already refuses that combination unless `AGENT_CONTROL_EXECUTOR_ALLOW_INSECURE_LOCAL_DEV=true`. A second gate with its own env var would be a second thing to get wrong. The `.env.example` block points at the existing refusal and names file upload as one more reason it exists.
+**But `for_turn=True` alone does not hold under the provider this is being built on, and neither does the rule a first draft added to patch it.** Both failures come from the same line. `require_content_access` returns at `:1097` on `if is_admin or row.created_by_hash is None`, **before** the `agent_task_id` branch at `:1101`. Under `NoAuthProvider` every session has `created_by_hash IS NULL` (2.8), so:
+
+- `for_turn=True` does **not** refuse an operator uploading into a dispatch-task session. A first draft called that refusal "correct and it is free". It is neither.
+- A rule refusing uploads on a NULL creator would 403 **every** upload in the default deployment, and the minimum-useful-slice could not be demonstrated on the machine it is built on.
+
+And the two are coupled: relaxing the NULL rule so uploads work would simultaneously open task-session uploads to any caller. So the write path adds two explicit conditions at its own call site, neither of which depends on `created_by_hash` being populated:
+
+1. **A dispatch-task session refuses an upload** unless the caller is the row's creator or an admin. Checked directly on `row.agent_task_id is not None`, not inferred from the predicate. This is the property the design actually wants, that files reach a task session through the Linear path and never a bystander, and it holds under every provider rather than only under a configured one.
+2. **An unattributed session refuses an upload only when attribution was possible**, meaning `created_by_hash IS NULL` **and** `principal.caller_id is not None`. Under `NoAuthProvider` this is inert by construction, which is correct: that deployment is one trust domain and there is no boundary to enforce. Under a real provider it catches the session that could have been attributed and was not.
+
+Two shipped limitations remain and are repeated rather than glossed.
+
+*Every browser caller shares one identity.* `key_id` is `"***"` for cookie callers, so all console users hash the same. Between two people using the dashboard, creator scoping separates nothing. `endpoints/agent_sessions.py:340-347` already states this for transcripts.
+
+*Under the default provider there is no isolation at all,* because there is no caller to attribute. `.env.example` says that next to the existing insecure-local-dev refusal rather than implying a boundary that is not there: per-user attachment isolation requires `HttpUpstreamAuthProvider`; under the default provider this separates API keys and separates nothing between two people sharing the console.
+
+**Remembering `NoAuthProvider`, and the Linear consequence.** `api_key_enabled` defaults to `False` (`config.py:37`), so out of the box every operation succeeds including ADMIN ones, and the tier above is a claim about a configured deployment. Handled by reuse, not by a new gate: attachments only mean anything alongside `POST /turns`, the router registers only when `executor.enabled` is true, and `check_executor_startup_requirements` (`config.py:442`, refusal at `:465`) already refuses that combination unless `AGENT_CONTROL_EXECUTOR_ALLOW_INSECURE_LOCAL_DEV=true`. A second gate with its own env var would be a second thing to get wrong.
+
+Linear ingress needs that said out loud, because it is worse. Under `NoAuthProvider`, anyone who can reach the port can start a dispatch, and a dispatch causes **the server to spend its own Linear credential fetching bytes**. The defence is the startup refusal plus `linear_attachments_enabled` defaulting to false, and it is not the access level. `.env.example` says so next to the flag.
 
 **Transport is `multipart/form-data`, which is a new dependency.** `python-multipart` is absent from `server/pyproject.toml` and `UploadFile` appears nowhere in `server/src`. Small, real, and called out in the PR rather than discovered in a lockfile diff. Base64 in a JSON body is worse: it inflates 50MB to 67MB and Pydantic materializes the whole string before any handler runs.
 
@@ -351,29 +484,53 @@ One member, not three. Reading an attachment's name and downloading its bytes is
 
 ### 3.7 Limits and cost
 
-50MB is enforced three times: as a streaming byte count in the handler, as a `CHECK` constraint on the blob row, and as a UI pre-check that fails before the upload starts. Three places, for the reason `agent-system-prompts.md` section 6 gives about its 32,000-character cap: a direct database write should not smuggle past a bound the resolver assumes.
+`attachment_max_bytes` defaults to **20MB**, down from 50MB, with 52,428,800 retained as the hard constant and the `CHECK` bound. Twenty megabytes is a very large document, and the per-turn resident cost of one is 27MB once base64 inflates it inside a process that is also evaluating policy for every other agent in the deployment. It is enforced three times: as a streamed byte count in the handler, as the `CHECK` on the blob row, and as a UI pre-check. Three places, for the reason `agent-system-prompts.md` section 6 gives about its 32,000-character cap: a direct database write should not smuggle past a bound the resolver assumes.
 
-1,000 pages cannot be enforced at upload, because counting pages means parsing. Enforced from the converter's reported `page_count`, re-checked server-side against `attachment_max_pages`, and an over-limit file moves to `rejected` with its blobs deleted immediately. The bytes go; the row survives to explain what happened.
+**The page caps are not enforceable without a parser, and this is the real cost of dropping the sidecar.** Counting pages means opening the file. With no converter, `page_count` is null, `estimated_tokens` is null, and `attachment_max_pages`, `attachment_session_total_pages` and `attachment_warn_pages` are settings that cannot fire. They stay in the settings block, documented as inert until Phase 6, rather than being deleted and quietly re-added later.
 
-Token cost is an estimate and is labelled as one everywhere it renders: `page_count * 258`, `~` prefix, "estimate" in the helper text. Agent Control does not know which model an agent runs, since `agent_runtimes` records an executor URL and not a model id, and inventing a per-model number would be wrong in both directions.
+**Bytes are not a proxy for pages, and pretending otherwise would be the worst kind of wrong.** A text-heavy 1,000-page PDF can be three megabytes. A forty-page scan can be twenty. The byte cap bounds memory and disk. It does not bound tokens, and every token estimate this plan showed in the UI came from a page count that no longer exists.
 
-The cumulative session cap is what actually protects anybody. `attachment_session_total_pages` (default 400) refuses the attach that would cross it, naming the running total and pointing at starting a new session. That is the only workable answer to 2.4's no-eviction problem and it ships in the same phase as the first upload.
+So the token bound is observed rather than predicted.
+
+**Before the call, per turn: count and bytes only.** `attachment_max_per_turn` 3, `attachment_turn_total_bytes` 20MB, `attachment_max_per_session` 10, `attachment_session_total_bytes` 100MB, all checked before any blob is read. Blunt, cheap, and honest about what it is measuring.
+
+**After the call, cumulatively: real prompt tokens, counted by the server, from the response it already parses.** This is a correction to a first draft of this amendment, which put the accumulation in the SDK's `after_model_callback` and the refusal on the server with no channel between them. There is a better place and it needs no channel at all. `AdkExecutorClient` already decodes the executor's `POST /run` response and walks its event list in `_parse_messages` (`services/adk_executor_client.py:494`). ADK events carry their own usage metadata. So the server reads token usage off the events it is already parsing, accumulates it on the session and on the task, and refuses the next turn or the next step once a ceiling is crossed. No SDK release, no new transport, no eventual consistency, and the enforcing process is the one holding the number.
+
+Two ceilings, because there are two ingress shapes and one of them defeats a per-session counter:
+
+```
+attachment_session_token_ceiling: int = 400_000
+attachment_task_token_ceiling:    int = 600_000
+```
+
+`attachment_session_token_ceiling` is what protects a chat conversation, which is long-lived and where 2.4's re-send problem actually compounds.
+
+`attachment_task_token_ceiling` is keyed on `(namespace_key, task_key)` and is the one that matters for dispatch, because **the dispatcher opens a new session per step** (`client.create_session` inside `_run_step`). A twelve-step chain would reset a per-session counter twelve times and a per-session ceiling would never fire. It is checked in `start_step`, before any attachment is fetched, so a chain refuses the step that would cross it rather than discovering the cost after spending it. The refusal names the running total and the ceiling, and the agent is told (3.10, `over_task_budget`).
+
+**This rests on F8 and F8 has changed shape.** The question is no longer "does `usage_metadata` reach `after_model_callback`" but "does the pinned `adk api_server`'s `POST /run` event stream report prompt token counts, and under what key". If it does not, there is no observed token bound anywhere, the ceilings above do not exist, the UI says the figure is unavailable rather than estimating it, and the only remaining protection is count, bytes and `attachment_task_total_bytes`, none of which bounds tokens. That is a materially weaker product than the 400-page cap this plan used to promise, and 17 keeps it as a named risk. Half a day to know, and it rides the same live executor as F1.
+
+Any number the UI does show is labelled an estimate, carries a `~`, and never appears where a refusal decision is made. The thing that refuses is a count, a byte total or an observed token total, never a projection. Agent Control still does not know which model an agent runs, since `agent_runtimes` records an executor URL and not a model id, which is one more reason the bound is measured rather than calculated.
 
 ### 3.8 UI
 
 **Decision: attach lives on the composer in the chat panel. Attachments render as plain-text chips. Downloads are forced, never inline.**
 
-Files, extending the tree in `orchestration-plan.md` Phase 3:
+**Placement, concretely.** The chat panel shipped, so this is placement rather than proposal. The attach button is an icon `Button` in `message-composer.tsx`, in the existing `Group` that holds the character counter and the send button, to the left of send. Pending and ready chips render in a `Group` directly **above** the `Textarea`, inside the composer's own `Stack`, so they belong visibly to the message being written rather than to the transcript.
+
+Files:
 
 ```
 ui/src/core/page-components/agent-detail/agent-chat/attachment-picker.tsx
 ui/src/core/page-components/agent-detail/agent-chat/attachment-chip.tsx
-ui/src/core/page-components/agent-detail/agent-chat/attachment-cost-notice.tsx
 ui/src/core/hooks/query-hooks/use-session-attachments.ts
 ui/src/core/hooks/query-hooks/use-upload-attachment.ts
 ```
 
-Hooks follow `ui/src/core/hooks/query-hooks/use-teams.ts`: exported `*QueryKey` helpers, a `queryFn` unwrapping `{data, error}` and throwing, `retry: (n, error) => !isNotFoundError(error) && n < 1`. Client methods go into `ui/src/core/api/client.ts`. Upload uses `FormData`, sets `X-Requested-With`, and must not set `Content-Type` by hand, since the browser writes the boundary.
+`attachment-cost-notice.tsx` is deleted from the plan. Without a page count there is nothing for it to say that the chip's byte figure does not already say, and a component whose only content is an estimate nobody can compute is worse than no component.
+
+Hooks follow `ui/src/core/hooks/query-hooks/use-teams.ts`: exported `*QueryKey` helpers, a `queryFn` unwrapping `{data, error}` and throwing, `retry: (n, error) => !isNotFoundError(error) && n < 1`. Client methods go into `ui/src/core/api/client.ts`.
+
+**A pending upload** is a chip with a determinate `Progress` bar and a cancel button. One implementation note that will otherwise be discovered late: `fetch` reports no upload progress, so `uploadAttachment` is the single method in `client.ts` built on `XMLHttpRequest`, for `upload.onprogress` and for a real abort. It sets `X-Requested-With`, sends `FormData`, and must not set `Content-Type` by hand, since the browser writes the boundary.
 
 **Filename rendering, and the bigger surface behind it.** React escapes text and `grep -rn "dangerouslySetInnerHTML|innerHTML|DOMPurify" ui/src` returns nothing today, so a filename in a text node is safe. Three real surfaces remain:
 
@@ -381,13 +538,135 @@ Hooks follow `ui/src/core/hooks/query-hooks/use-teams.ts`: exported `*QueryKey` 
 2. **The `Content-Disposition` filename is RFC 5987 encoded**, `filename*=UTF-8''<pct-encoded display_name>`, from the server-normalized name, so a quote or a CRLF cannot split the header.
 3. **The chip renders `display_name`** with `white-space: pre-wrap`, no markdown, truncated with CSS rather than by slicing the string (slicing mid-surrogate produces a replacement character that looks like corruption). `title` carries the same normalized value. When `display_name_normalized` is true a small "renamed for display" hint sits next to it.
 
-**States, all visible.** `pending` shows "checking file". `converting` shows a spinner. `ready` shows type, size, page count and `~N tokens`. `blocked` shows the control that refused it, rendered with the control-block renderer. `rejected` and `failed` show their code. The composer stays usable: anything not `ready` is simply not bound to the turn, and the send button says so.
+**States, all visible.** `pending` shows "checking file". `ready` shows type and size. `blocked` shows the control that refused it, rendered with the control-block renderer. `rejected` and `failed` show their code. `converting` stays in the enum and is never reached until Phase 7. The composer stays usable: anything not `ready` is simply not bound to the turn, and the send button says so above itself, in words, before the click.
 
-**Two honest badges rather than a green tick.** A `ready` chip whose descriptor reports `pages_with_no_text > 0` carries "N pages have no readable text; the model can see them, the guardrails cannot", per 2.5. An `encrypted` attachment says the file is password protected and asks for an unprotected copy. Neither is a warning colour by default, because on a normal deck a couple of image-only slides is ordinary; they are statements of coverage.
+**No page count and no token figure on a chip**, because neither exists without a parser (3.7). A chip that showed `~N tokens` from a byte count would be inventing a number, and 2.4's cost warning is the one place in this product where a made-up figure would do the most damage.
 
-**Cost notice before the click.** `attachment-cost-notice.tsx` renders `page_count x 258 = ~N tokens per model call`, and once the session has more than one turn, adds the cumulative line from 2.4. Above `attachment_warn_pages` (default 100) it becomes a warning `Alert` and the attach button requires a second click. It never blocks.
+**A delivered file in the transcript costs nothing to render correctly, and that is worth knowing before anyone builds a component.** The SDK already appends the placeholder line into the message text, `message-list.tsx` renders message text through a Mantine `<Text>`, and `grep -rn "dangerouslySetInnerHTML" ui/src` returns nothing. So the marker renders as text today and is safe today.
 
-**Empty state and the Slides sentence.** One line under the picker: PowerPoint converts automatically when the converter is enabled; for Google Slides use File, Download, PDF Document, then attach the PDF.
+**Do not build a marker recognizer.** A first draft of this amendment added one to `transcript-annotations.ts`, keyed on the attachment list from the API and matched by the sha256 prefix in the marker, with the API match as its fail-safe. That fail-safe does not hold. `AttachmentDescriptor.placeholder_line` (`_descriptors.py:118`) emits `sha256={self.sha256[:16]}` into text the model reads, so an agent can copy a genuine sixteen-hex prefix out of its own context, emit an extra marker line, match a real attachment, and draw an authentic-looking "file delivered" chip in the operator console. Neutralization does not help: `neutralize_marker` rewrites markers in text the SDK did not author, and the model's own output is exactly the text an operator is reading to decide whether to trust the run. That file's own header already states the rule for nudges and halts, that both render from Agent Control's rows and never by pattern-matching transcript text, "which would also mean an agent could forge either one by saying the right sentence". Adding pattern matching to that file would break the rule in the file that states it.
+
+So attachment chips render the way nudges and halts already do: from `agent_turn_attachments` through the API, positioned among the messages by turn, as a third `TranscriptAnnotation` variant. The marker line stays plain text where it falls. Less code than the recognizer plus its fail-safe, and it inherits a rule the file already enforces.
+
+**Filename XSS, all three surfaces retained under trust.** The download route always sets `application/octet-stream`, `Content-Disposition: attachment` and `X-Content-Type-Options: nosniff`, never the declared or sniffed type, with no inline disposition parameter ever. The `Content-Disposition` filename is RFC 5987 encoded from the server-normalized name. The chip renders `display_name` in a `<Text lineClamp={1}>` with `title` set to the same string, truncated by CSS rather than by slicing, and no markdown. A Linear attachment's title is chosen by whoever filed the issue, and the console cookie is a credential on every admin endpoint, so none of this relaxes.
+
+**The task console gets read-only chips, no picker.** The step rail renders each step's files from `agent_task_steps.attachments_summary`, with the same forced download while the bytes still exist and a written notice after they have been reclaimed (3.5). There is no attach button on a task session, because 3.6 refuses it, and the UI should not offer a control the server will refuse.
+
+**Empty state and the Slides sentence.** One line under the picker: Word and PowerPoint are not accepted, so use File, Export, PDF and attach that; the same goes for Google Slides.
+
+### 3.9 The Linear fetch
+
+**Decision: the server fetches, once per step, for the one issue that step is working, only when the agent's deployment opted in, and only from a host allowlist that the tracker's own data cannot widen. The fetch runs outside any database session, and the step is reordered so the envelope can describe what it found.**
+
+**Where it runs.** `server/src/agent_control_server/services/linear_attachments.py`, beside `linear_issues.py`, using the same client shape. Not the executor, which holds the session-bound runtime token. Not the dispatcher, whose module docstring already says it never talks to Linear and whose whole safety property is that it cannot widen the scope it was given. Not the browser. The dispatcher receives attachment **keys** and a delivery summary, never a URL.
+
+**What the API actually offers**, introspected against the live API:
+
+```graphql
+attachments {
+  nodes { id title subtitle url metadata source sourceType }
+}
+```
+
+Note what is absent. An `Attachment` has no size and no content type. There is no way to know how big a file is before fetching it, which dictates the streaming discipline below. `bodyData`, `metadata`, `subtitle` and `creator` are read by nobody: they are free text written by whoever attached the file, and `sources/linear.py` already establishes the discipline of dropping provenance fields at the boundary rather than letting them drift into an envelope.
+
+**When it runs, and the reordering that makes 3.10 possible.**
+
+*Eagerly on the milestone read.* Rejected on cost. That read populates a confirm dialog before anything is claimed. Downloading attachments for forty issues to run three is bytes, tokens and Linear rate limit nobody asked for.
+
+*Lazily, when the agent asks.* Rejected on shape. An agent-callable fetch is a tool that dereferences a URL, which is the SSRF pivot `orchestration-plan.md` section 5 already names, and it would put a Linear-authenticated request behind a model's choice. The trust decision does not help here at all, because the risk is egress rather than content.
+
+*At `start_step`, for the claimed issue.* Chosen. The step is the unit that already resolves an agent and opens a row, so bytes are spent only on issues that actually run, once, where a byte ceiling can refuse.
+
+**But `_run_step` has to be inverted for that to work, and a first draft of this amendment missed it.** Today the order is `build_envelope` (`dispatch.py:814`), then `create_session` (`:837`), then `record_session`, which reaches the server's `start_step`. An envelope built first cannot describe a fetch that happens third, so 3.10's "2 of 3 files were delivered" line would have been unbuildable. The new order:
+
+```
+create_session  ->  start_step (server fetches, returns keys + delivery summary)
+                ->  build_envelope(files=summary)
+                ->  start_turn(attachment_keys=...)
+```
+
+One consequence that is real work rather than a reshuffle: envelope assembly now happens **after** the step row is open, so the `EnvelopeTooLongError` path at `dispatch.py:816-830` must close the started step rather than only calling `ledger.finish`. Phase 4 carries that, and 3.10 gives the files section a hard budget so it cannot be the thing that raises.
+
+**One cheap addition to the milestone read so the operator sees the cost before pressing play.** `_MILESTONE_ISSUES_QUERY` gains `attachments(first: 4) { nodes { id } }` and `MilestoneIssue` gains `attachment_count: int`, reported as "3+" at the cap, because the confirm dialog only needs to answer whether these issues carry files. **The `first: 4` is not decoration.** That query already runs at `first: PAGE_CAP` where `PAGE_CAP = 100` (`linear_issues.py:51`), and while it already carries one unbounded nested connection in `labels { nodes { name } }`, adding a second raises query complexity against a limiter this read has never had to clear at that width. The failure mode is not a missing count: `_post` maps a rejection to `LinearError(_REJECTED_MESSAGE)`, the milestone read returns `ERROR`, and `_STATUS_REFUSALS` then refuses to dispatch anything at all. A shipped, working read would stop working. So the connection is bounded, a server test asserts the read still succeeds against a 100-issue fixture carrying attachments, and "does the complexity limiter accept this at `PAGE_CAP`" goes into L0 beside the `sourceType` question, since both need the same live workspace.
+
+**The fetch, and the one genuinely new security mechanism in this amendment.**
+
+An attachment URL is a string that arrived in tracker data. The Linear API key is a server-held credential. Sending that credential to whatever host a data-supplied string names would be a credential leak dressed as a feature, and it is the case where the trust decision provides no cover at all: trusting a document says nothing about trusting a URL.
+
+```
+AGENT_CONTROL_LINEAR_ATTACHMENT_HOST_ALLOWLIST=uploads.linear.app
+AGENT_CONTROL_LINEAR_ATTACHMENT_MAX_REDIRECTS=2
+```
+
+- **The scheme must be `https`.** Stated as its own condition, because a host allowlist alone does not exclude `http://uploads.linear.app`, which would put the credential on the wire in cleartext.
+- The host is checked against the allowlist **before** the request. Not on it, no request is made at all, and the agent is told `link_only` or `blocked_host` with the host named.
+- Redirects are followed manually, at most twice, and every hop's host and scheme are re-checked. On a hop to a host outside the allowlist the `Authorization` header is dropped and the fetch is **refused**, not retried anonymously. A file worth having is not worth a credential.
+- The URL is never logged at any level, matching the rule `linear_issues.py:_post` already keeps when it logs only the exception class.
+- The response is streamed with a running byte count and aborted past `attachment_max_bytes`. There is no `await response.read()` and there is no trusting `Content-Length`, which a server can understate.
+- The fetched bytes are sniffed with the shipped sniffer. A body whose sniffed type is not in the accepted set is discarded and reported as `fetch_failed`. This is what catches an expired signed URL that answered `200` with an HTML login page.
+
+**What is not mitigated, said plainly.** A first draft claimed the resolved address is checked against loopback, link-local and RFC1918 "because DNS rebinding does not care what a hostname says". Checking a resolution and then letting httpx resolve again at connect time **is** the rebinding race it names. Closing it means pinning the resolved address into the connection through a custom `httpx.AsyncHTTPTransport`, which is work this design is not costing. So the control is the exact-host allowlist, the `https` requirement, per-hop re-checking, and header-drop-and-refuse. Rebinding is not mitigated, the allowlist is a single hostname under Linear's control, and 17 records that as a residual rather than letting a reviewer believe a check that is not there.
+
+**Which attachments are fetched at all.** Linear uses attachments for GitHub pull requests, Slack threads and Figma files as well as for uploaded documents, and `source` and `sourceType` are how they differ. Only a `sourceType` in `linear_attachment_source_types` is fetched. Everything else is reported to the agent as a link, with the host named and never dereferenced.
+
+**The literal value of that setting is L0 and I will not guess it.** I confirmed the field exists on the type. I did not confirm what Linear puts in it for a plain file upload, nor whether a personal API key authorizes `uploads.linear.app` at all, nor what the redirect chain looks like. If the key does not authorize the upload host, source A needs a different mechanism entirely and this section is re-costed rather than adjusted. One live workspace settles all of it, and it is the first thing in the spike.
+
+**Where the connection is held, because this module already has a rule about that.** `linear_issues.py:60` caps its outbound call at ten seconds with a comment saying it "runs on a request path holding a database session, so a hanging Linear must not be able to hold that session for a full request timeout". Three attachments at a per-file timeout would be a minute of network wait against `pool_size=5, max_overflow=10`, which is the same defect 3.4 spends a paragraph rejecting for conversion and `orchestration-plan.md` section 8.3 forbids outright. So `start_step` splits: it opens the row and returns, releasing the connection; the fetch runs outside any database session under a single wall-clock budget **across all attachments for the step** (`linear_attachment_step_budget_seconds`, default 25, per step and not per file, so three slow attachments cannot serialize into a minute); a second short write persists the rows and the summary.
+
+**Caps, because nobody is watching a chain.**
+
+```
+linear_attachments_enabled: bool = False
+linear_attachments_trusted: bool = False
+linear_attachments_max_per_issue: int = 3
+attachment_task_total_bytes: int = 41_943_040     # across every step of one task
+```
+
+`linear_attachments_max_per_issue` picks deterministically, ordered by attachment id, so two reads of an unchanged issue deliver the same three files and a chain does not shuffle what its steps saw. `attachment_task_total_bytes` is new and exists because the shipped fleet ceilings bound concurrency rather than bytes. A twelve-step chain over an attachment-heavy milestone is how this feature burns a personal subscription quota with no operator in the room, and the ceiling refuses the fetch on the step that would cross it and tells the agent so rather than skipping it silently. It bounds bytes and is not a token bound; `attachment_task_token_ceiling` in 3.7 is, when F8 holds.
+
+### 3.10 What the agent is told when a file does not arrive
+
+**Decision: every undelivered file produces a server-authored line the agent reads, the line above them is a count, and the whole section has a hard character budget so it can never fail a step.**
+
+The plan's standing principle, and `envelope.py`'s own reasoning about truncation, is that an agent which does not know something exists will confidently do half the job and report success. A missing spec is exactly that.
+
+`envelope.py` gains one section, rendered only when the issue carried attachments, placed **after** the fenced task block and before the footer, so it is never inside the untrusted delimiters:
+
+```
+## Files attached to this task
+2 of 3 files on this issue were delivered with this message. You can read the delivered
+ones directly. Do not guess at the contents of the ones that were not.
+
+  delivered       "q3-forecast.pdf"   application/pdf   2.4 MB
+  delivered       "architecture.png"  image/png         310 KB
+  NOT DELIVERED   "spec.docx"         this deployment does not accept Word documents.
+                                      Its contents are not available to you.
+```
+
+The count line is the whole point. "2 of 3" is what makes an agent write "I could not read the spec" instead of inventing one.
+
+**The section has its own budget and must never raise.** `build_envelope` raises `EnvelopeTooLongError` when the rendered envelope exceeds `TURN_MESSAGE_MAX_LENGTH` (16,000; `envelope.py:123`), and `_run_step` maps that to a FAILED step. Two untrusted blocks at 6,000 plus roughly 900 characters of fixed text leaves about 3,100 for the brief, so three 128-character filenames plus multi-clause refusal sentences plus the count paragraph is enough to tip a long, attachment-heavy issue over. That would turn "one file was not delivered" into "the step did not run", on exactly the issues this feature exists for. `EnvelopeTooLongError`'s own docstring currently says it is "only reachable through an absurd `brief`", and this section must not falsify it.
+
+So the files section gets `FILES_BLOCK_MAX_CHARS = 800`, is rendered **last**, after `_bound` has already spent the untrusted budget, and over budget it collapses to the count line alone: "2 of 3 files on this issue were delivered; one could not be." A test asserts that a maximal task block plus a maximal prior report plus three maximal filenames still renders under 16,000.
+
+**The names are untrusted and the statuses are not.** Filenames go through the same `normalize_display_name` the SDK already ships (NFKC, strip C0 and C1, strip bidi overrides, drop path separators, cap 128, replace quote, pipe, brackets, backslash and newline), then through `envelope._defuse` so a title containing `<<<TASK_END>>>` cannot close a block early. The status words are server-authored constants and are the only part of these lines a reader should rely on.
+
+**The refusal sentences**, each a hand-written module constant, no upstream text ever:
+
+| Code | What the agent is told |
+|---|---|
+| `unsupported_type` | this deployment does not accept files of that type |
+| `too_large` | the file is larger than this deployment's N MB limit |
+| `fetch_failed` | the file could not be retrieved from the tracker |
+| `not_found` | the tracker no longer has this file |
+| `link_only` | this is a link to `<host>`, not a file, and nothing here follows links |
+| `blocked_host` | the file is hosted somewhere this deployment will not fetch from |
+| `over_per_issue_cap` | the issue has N files and this deployment delivers at most M |
+| `over_task_budget` | this task has already used its file budget |
+| `blocked` | a guardrail refused this file |
+
+**The chat panel is deliberately asymmetric, and that is a design decision rather than an inconsistency.** In the dispatch case nobody is watching, so the agent has to be told. In the chat case the operator is right there, so the *operator* is told and the turn does not start: `POST /turns` returns 409 `ATTACHMENT_NOT_READY` naming the key, and the composer states "1 file will not be sent" above the send button before the click. Appending a server-authored line to a message a person wrote would be editing their words, which is a worse trade than a refusal they can see and act on.
 
 ---
 
@@ -428,6 +707,9 @@ chunk_count             SMALLINT     NULL
 pages_with_no_text      INTEGER      NULL
 low_text_pages          INTEGER      NULL
 max_image_area_ratio    NUMERIC(4,3) NULL
+origin                  VARCHAR(16)  NOT NULL DEFAULT 'operator_upload'
+                            -- operator_upload | linear
+origin_ref              VARCHAR(128) NULL       -- the Linear attachment id, audit and dedupe
 created_by_hash         VARCHAR(64)  NULL       -- hash_caller_id, never serialized
 created_at              TIMESTAMPTZ  NOT NULL DEFAULT CURRENT_TIMESTAMP
 updated_at              TIMESTAMPTZ  NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -439,20 +721,43 @@ UNIQUE (namespace_key, attachment_key)                uq_agent_session_attachmen
 UNIQUE (namespace_key, session_id, source_sha256)     uq_agent_session_attachments_content
 INDEX  (namespace_key, session_id, created_at)        idx_agent_session_attachments_session
 INDEX  (namespace_key, status, created_at)            idx_agent_session_attachments_sweep
+INDEX  (namespace_key, session_id, origin)            idx_agent_session_attachments_origin
 CHECK  (size_bytes > 0 AND size_bytes <= 52428800)    ck_agent_session_attachments_size
 ```
 
-Five deliberate things.
+`origin` and its index are what make "what did the tracker put in this conversation" one query, and the tombstone in 3.5 answers it after the bytes are gone.
+
+**Deferred to optional Phase 6 and left out of the first migration:** `extraction_status`, `text_chars`, `text_truncated`, `text_sha256`, `chunk_count`, `pages_with_no_text`, `low_text_pages`, `max_image_area_ratio`, and the `extracted_text` variant on the blob table. The **descriptor** keeps all of those fields, because `_descriptors.py` already ships them and they already read null, so adding the columns later changes a migration and nothing else. The `converting` status value stays in the enum and is simply never reached until Phase 7.
+
+**One new column on `agent_task_steps`, and it is the durable record.**
+
+```
+attachments_summary  JSONB  NULL
+```
+
+Written by `finish_step`, one object per delivered or refused file:
+
+```jsonc
+[{"display_name": "q3-forecast.pdf", "sha256": "9f2a…", "size_bytes": 2411903,
+  "sniffed_mime": "application/pdf", "origin": "linear",
+  "origin_ref": "att_01H…", "verdict": "sent", "failure_code": null}]
+```
+
+Bounded by `attachment_max_per_turn`, so it is a small column and not a blob wearing a JSON costume. No bytes, no text, no URL.
+
+Its justification is **not** the one a first draft gave. That draft said task sessions are deleted after fifteen minutes, so the attachment tables go silent and this column is the only survivor. Per 2.8 the sessions persist by default, so the tables do not go silent on their own. The correct justification is simpler and does not depend on a retention default at all: the step row is the queryable audit record of what one hop actually had, it survives whether or not the session does, and after `attachment_blob_ttl_days` reclaims the bytes (3.5) it is what still answers "did this step have the spec" a week later.
+
+Five deliberate things about `agent_session_attachments`, all unchanged by the narrowing.
 
 **`source_sha256` and `delivered_sha256` are separate columns**, because for a converted file they are different artifacts and a first draft had one `sha256` meaning both. The text evaluated in 3.3 is extracted from the **delivered** artifact, never from the source, so the control layer and the model read the same bytes. The manifest in 3.2 carries `delivered_sha256`. The delivery path in section 6 hashes the blob it reads and refuses to send on a mismatch.
 
 **Content uniqueness is per session, not per namespace.** Per namespace would let a caller in a shared namespace learn that somebody else had already uploaded a given file by observing a dedupe hit, which is a content oracle over a hash. Per session it tells you only about your own conversation.
 
-**`created_by_hash` is a hash and carries the usual limitation.** It identifies a credential, not a person, and browser callers all hash `"***"`. "Who attached this" is not answerable under the default provider and the UI does not claim it is.
+**`created_by_hash` is a hash and carries two limitations rather than one.** It identifies a credential, not a person, and browser callers under a configured provider all hash `"***"`. Under the default provider it is `NULL` on every row, because `NoAuthProvider` supplies no `caller_id` at all (2.8). "Who attached this" is not answerable in either state and the UI does not claim it is.
 
 **No verdict columns here.** `blocked_by_control_id` and `blocked_reason` live on the turn binding, per below.
 
-**`tombstoned` is a status, not a soft delete.** Deleting an attachment removes every blob and keeps a metadata row carrying name, hashes, size and page count so the transcript can still answer "what documents did this conversation see". A 50MB `bytea` behind a `deleted_at` would be worse than no history; a 300-byte tombstone is the audit record anyone investigating an injection will want.
+**`tombstoned` is a status, not a soft delete, and it now has two ways in.** Deleting an attachment removes every blob and keeps a metadata row carrying name, hashes, size and origin, and so does the TTL sweep in 3.5. Either way the transcript can still answer "what documents did this conversation see". A 20MB `bytea` behind a `deleted_at` would be worse than no history; a 300-byte tombstone is the audit record anyone investigating an injection will want, and under the trust decision it is what answers the question if precondition 1 turns out to have been false.
 
 ### `agent_session_attachment_blobs`
 
@@ -522,7 +827,18 @@ DELETE /api/v1/agent-sessions/{session_key}/attachments/{attachment_key}
            -> DeleteAttachmentResponse                     agent_attachments.write
 ```
 
-Content reads and the write route both take the stricter creator predicate from 3.6, not the transcript one.
+Three corrections to that table, all from 3.6. `POST` and `DELETE` take `require_content_access(..., for_turn=True)`; the three `GET` routes take `for_turn=False`; and no new predicate is minted. The write route additionally carries the two named call-site conditions: a dispatch-task session refuses a non-creator, and a NULL-creator session refuses only when attribution was possible.
+
+`GET .../attachments` gains `?origin=` alongside `?status=`.
+
+One new read-only route, for the task console step rail:
+
+```
+GET /api/v1/agent-tasks/{task_key}/steps/{step_index}/attachments
+           -> ListStepAttachmentsResponse                agent_tasks.read
+```
+
+It reads `agent_task_steps.attachments_summary` and never the session tables, which is what makes it still answer after the bytes have been reclaimed. It returns no download link once they have, and says so in a `notice` field rather than rendering a link that 404s.
 
 `StartTurnRequest` (`models/src/agent_control_models/sessions.py:392`) gains exactly one field:
 
@@ -552,7 +868,7 @@ That model's docstring currently reads "One field, deliberately", with the reaso
 | Turn in flight on `POST /turns` | 409 `TURN_IN_FLIGHT`, from the existing acquire |
 | Converter unreachable or over time | attachment `failed`; the upload itself is still 201 |
 
-New `ErrorCode` members in `models/src/agent_control_models/errors.py`, each with a title in `_ERROR_TITLES` (`:408`): `ATTACHMENT_NOT_FOUND`, `ATTACHMENT_NOT_READY`, `ATTACHMENT_REJECTED`, `ATTACHMENT_TOO_LARGE`. `VALIDATION_ERROR` (`:88`), `QUOTA_EXCEEDED` (`:98`), `TURN_IN_FLIGHT` and `EXECUTOR_UNAVAILABLE` already exist and are reused.
+New `ErrorCode` members in `models/src/agent_control_models/errors.py`, each with a title in `_ERROR_TITLES` (`:408`): `ATTACHMENT_NOT_FOUND`, `ATTACHMENT_NOT_READY`, `ATTACHMENT_REJECTED`, `ATTACHMENT_TOO_LARGE`, plus `ATTACHMENT_SOURCE_REFUSED` for the host-allowlist and `sourceType` refusals, which are a different fact from "rejected" and should not be flattened into it. `VALIDATION_ERROR` (`:88`), `QUOTA_EXCEEDED` (`:98`), `TURN_IN_FLIGHT` and `EXECUTOR_UNAVAILABLE` already exist and are reused.
 
 ---
 
@@ -615,7 +931,17 @@ The `file_data` and unminted blocks sit at the top of `before_model_callback`, i
 
 ### 7.3 What the plugin does not do
 
-It does not fetch attachments, does not talk to the converter, and holds no token for either. Its whole contribution is describing what it can see in a request it was handed, plus two structural refusals. That keeps the Phase 1 change small enough to ship ahead of every server-side phase, which is what closes the injection channel early.
+It does not fetch attachments, does not talk to the converter, and holds no token for either. Its whole contribution is describing what it can see in a request it was handed, plus two structural refusals. That keeps the Phase 1 change small enough to ship ahead of every server-side phase, which is what closed the injection channel early.
+
+### 7.4 The sniffer has to move, and it is the first commit of Phase 2
+
+`sniff_mime`, `is_mime_mismatch` and `normalize_display_name` are at `sdks/python/src/agent_control/integrations/google_adk/_sanitize.py`, inside the ADK integration subpackage. **The server cannot import them.** `server/pyproject.toml` lists fastapi, httpx, pydantic, SQLAlchemy, psycopg, alembic, jsonschema, PyJWT, google-re2 and agent-control-evaluators, and no dependency on the `agent-control` SDK at all.
+
+Three places in this plan route server-side gates through those functions: 3.4's accepted-type gate, 3.9's sniff of the fetched body, which is the control that catches an expired signed URL answering 200 with a login page, and Phase 2's upload gate. 3.10 routes Linear titles through `normalize_display_name` server-side as well.
+
+The alternative to fixing it is a second sniff table and a second normalizer in the server. Two implementations that must agree byte for byte, or the descriptor the SDK shows every control and the gate the server enforces disagree about the same file, which is precisely the drift `mime_mismatch` exists to make visible, reintroduced one layer down.
+
+So the three functions move into `agent_control_models` as a new `files.py`. Both the server and the SDK already bundle that package, so it is a move rather than a new dependency for either. `_sanitize.py` re-exports them, so the shipped SDK surface and its 174 tests are unchanged, and a test asserts the re-export is the same object rather than a copy. It is the first commit of Phase 2, before anything calls them, because doing it after two callers exist is a refactor instead of a move.
 
 ---
 
@@ -663,34 +989,59 @@ The client is `services/attachment_converter_client.py`, built like `AdkExecutor
 Settings on `ExecutorSettings`, keeping the existing `AGENT_CONTROL_EXECUTOR_` prefix rather than minting a second one:
 
 ```
+# Delivery. Enabled independently of the converter, which no longer gates it.
 attachments_enabled: bool = False
-attachments_converter_url: str = ""
-attachments_converter_secret: SecretStr = SecretStr("")
-attachments_converter_timeout_seconds: float = 90.0
-attachments_max_concurrent_conversions: int = 2
-attachments_office_formats_enabled: bool = False      # LibreOffice, Phase 4
-attachment_max_bytes: int = 52_428_800
-attachment_max_pages: int = 1000
-attachment_warn_pages: int = 100
+attachment_trusted_origins: set[str] = {"operator_upload"}
+attachments_require_extraction: bool = True      # applies to origins outside the trusted set
+attachment_accepted_mimes: set[str] = {
+    "application/pdf", "image/png", "image/jpeg", "image/webp",
+}
+attachment_max_bytes: int = 20_971_520           # hard ceiling constant stays 52_428_800
 attachment_max_per_turn: int = 3
 attachment_max_per_session: int = 10
 attachment_turn_total_bytes: int = 20_971_520
 attachment_session_total_bytes: int = 104_857_600
-attachment_session_total_pages: int = 400
+attachment_task_total_bytes: int = 41_943_040
+attachment_session_token_ceiling: int = 400_000  # observed, not estimated. Spike F8
+attachment_task_token_ceiling: int = 600_000     # per (namespace_key, task_key). Spike F8
 attachment_namespace_total_bytes: int = 2_147_483_648
 attachment_uploads_per_minute: int = 20
 attachment_uploads_per_namespace_hour: int = 200
-attachment_text_max_chars: int = 2_560_000
+attachment_orphan_ttl_hours: int = 72
+attachment_blob_ttl_days: int = 14               # bytes reclaimed; the tombstone stays
+attachment_hash_max_bytes: int = 67_108_864      # shipped, SDK side
+
+# Inert until optional Phase 6. Kept so they are not re-invented under new names.
+attachment_max_pages: int = 1000
+attachment_warn_pages: int = 100
+attachment_session_total_pages: int = 400
 attachment_chunk_chars: int = 40_000
 attachment_max_chunks: int = 64
+attachment_text_max_chars: int = 2_560_000
 attachment_low_text_page_chars: int = 40
-attachment_hash_max_bytes: int = 67_108_864
-attachments_require_extraction: bool = True
 attachments_allow_truncated_text: bool = False
-attachment_orphan_ttl_hours: int = 72
+attachments_converter_url: str = ""
+attachments_converter_secret: SecretStr = SecretStr("")
+attachments_converter_timeout_seconds: float = 90.0
+attachments_max_concurrent_conversions: int = 2
+attachments_office_formats_enabled: bool = False
 ```
 
-With `attachments_enabled` false the routes are absent and nothing in this plan runs, so every phase is inert for existing deployments until somebody opts in.
+On `LinearSettings`, `AGENT_CONTROL_LINEAR_` prefix (`config.py:346`):
+
+```
+attachments_enabled: bool = False
+attachments_trusted: bool = False
+attachments_max_per_issue: int = 3
+attachment_host_allowlist: set[str] = {"uploads.linear.app"}
+attachment_source_types: set[str] = set()        # literal values settled by L0
+attachment_max_redirects: int = 2
+attachment_inline_text_max_bytes: int = 32_768   # the .md and .csv path, 3.4
+attachment_step_budget_seconds: float = 25.0     # per step, not per file
+trust_canary_interval_seconds: float = 900.0
+```
+
+With `attachments_enabled` false the routes are absent, and with `linear_attachments_enabled` false the server never spends its Linear credential on a file. Every phase is inert for existing deployments until somebody opts in, twice.
 
 ---
 
@@ -699,11 +1050,28 @@ With `attachments_enabled` false the routes are absent and nothing in this plan 
 | Case | Behaviour |
 |---|---|
 | File is not what its extension claims | The declared MIME is advisory and never trusted. The server sniffs magic bytes over the first 16, and the sniffed type decides. Both ride the descriptor with `mime_mismatch`, and `attachment_summary.mismatch_count` makes "deny on mismatch" one condition. A type outside the accepted set is 415 naming both values. |
-| Encrypted or password-protected PDF | The server does not detect it, because detecting it means parsing. The converter reports `extraction_status="encrypted"`, the attachment goes `ready` with no text, and under `attachments_require_extraction=True` it is not sent. The UI asks for an unprotected copy. |
-| Scanned PDF, no text layer at all | `text_chars` zero, `pages_with_no_text == page_count`, not sent by default. The UI says the document is images and the guardrails cannot read it. OCR is the only real fix and is a named open hole (section 15), not a silent gap. |
-| **Mixed document: real text plus a screenshot carrying instructions** | The dangerous case, and the honest answer is that content evaluation does not catch it. `extraction_status` reads `text_layer_extracted`, not `ok`, and the per-page counters expose it: `pages_with_no_text`, `low_text_pages` and `max_image_area_ratio` are all in the descriptor and the summary, a one-condition control denies past a threshold, and the UI chip states how many pages the guardrails could not read. No green tick over an unread page. |
-| 1,001-page document | Not catchable at upload without parsing. The converter reports `page_count`, the server refuses past `attachment_max_pages`, status goes `rejected`, blobs are deleted immediately, the row survives to explain itself. |
-| Extracted text is enormous | Chunked at `attachment_chunk_chars` and evaluated chunk by chunk; a deny on any chunk denies the attachment. Past `attachment_max_chunks` the file is `rejected`, never tail-dropped. `text_truncated` is a hard deny unless `attachments_allow_truncated_text` is set. |
+| Encrypted or password-protected PDF | With no converter the server cannot detect it and does not try. It is delivered, the model reports it cannot read it, and the agent says so. One model call is spent finding out. Under Phase 6 it is `extraction_status="encrypted"` and refused before the call, which is the only real difference the sidecar makes to this row. |
+| Scanned PDF, no text layer at all | Delivered. The model reads the rendering and no control reads anything, because under this narrowing no control reads document content at all. This is 2.5 at its worst and it is the price of the trust decision, recorded in 17 rather than mitigated. |
+| **Mixed document: real text plus a screenshot carrying instructions** | Same answer, and the honest version of it is that the gap is now total rather than partial. Under Phase 6 the per-page counters would expose it. Without Phase 6 nothing does. |
+| 1,001-page document | **Not enforceable.** Counting pages means parsing. The provider's own 1,000-page limit returns an error, surfaced as a typed delivery failure naming attachments rather than as a generic executor fault. The byte cap does not catch it, because a 1,000-page text PDF can be three megabytes, and 3.7 says so rather than implying a bound that is not there. |
+| A file whose extension lies about its type | The declared type is advisory. The sniff decides, `mime_mismatch` is recorded, and a sniffed type outside `attachment_accepted_mimes` is refused. A `.pdf` that is really a ZIP is refused as a ZIP. |
+| Attachment added to the issue after the task claimed it | Not seen by the step that is running. The fetch happens once per step and is not repeated mid-turn: re-fetching inside an invocation is a race against both the manifest and the delivered-hash check. A later step in the same chain fetches again and sees it, and `attachments_summary` records what each step actually had. |
+| The same file on two issues | Two rows, two copies, because sessions are per step and content uniqueness is per session. The dedupe-oracle argument in section 4 holds regardless of trust. Bytes are bounded by `attachment_task_total_bytes` and reclaimed by `attachment_blob_ttl_days`. |
+| A Linear attachment that is a link, not a file | `sourceType` decides. Only values in `linear_attachment_source_types` are fetched. A GitHub PR, a Slack thread or a Figma link is reported `link_only` with the host named and is never dereferenced. This is the case the trust decision does not cover: a link is an egress question, not a content question. |
+| Attachment fetch needs a redirect | At most two hops, every hop's host and scheme re-checked against the allowlist. A cross-host hop drops the `Authorization` header and refuses. It does not retry anonymously. DNS rebinding is **not** mitigated and 3.9 says so. |
+| The fetch returns HTML | An expired signed URL answering 200 with a login page. The sniff runs on the fetched bytes, not on anything declared, so a body outside the accepted set is discarded and reported `fetch_failed`. This row is why the sniff is on the response and not on the request. |
+| `Content-Length` lies | The abort is driven by the streamed count. A small header over a large body is aborted mid-stream at `attachment_max_bytes`, and a test asserts the abort using a fake whose header understates its body. |
+| An issue with 40 attachments | The oldest three by attachment id, deterministically, so two reads deliver the same set. The agent is told the issue has 40 files and this deployment delivers at most 3. |
+| Linear `title` is not a filename | An `Attachment` has `title`, free text, possibly with no extension. `display_name` is the normalized title and the type always comes from the sniff. `report.pdf` on a PNG is a recorded `mime_mismatch`, delivered as a PNG. |
+| `bodyData`, `metadata`, `subtitle`, `creator` | Read by nothing, stored by nothing, in no envelope. Same discipline `sources/linear.py` keeps when it drops the creator's display name: an agent that can read who filed an issue is an agent an injection can address by name. |
+| A markdown, CSV or plain-text attachment on an issue | Refused on the upload path with "paste it into the message". On the Linear path nobody is there to paste, so a body under 32KB that decodes as UTF-8 with no NUL byte is inlined as its own bounded untrusted block (3.4). Anything else is `unsupported_type`. |
+| Two uploads racing on one session | Both proceed; uploads take no session lock and touch no executor. Identical bytes resolve through `uq_agent_session_attachments_content` with `INSERT ... ON CONFLICT`, returning the existing key with `deduplicated: true` rather than a 500. Past `attachment_max_per_session` the loser gets a 413 naming the running total. |
+| Upload to a session deleted mid-flight | Metadata row and blob are written in one transaction, metadata first. The delete either wins, and the cascade removes both, or loses, and the foreign-key violation is mapped to 404 `SESSION_NOT_FOUND`. No orphaned blob under either ordering, and no 500. |
+| Quota exhausted mid-chain by token cost | The step fails through the existing executor failure path. It is **not** retried with attachments stripped: a step that silently ran without its spec is the half-done job this whole design is against. `attachment_task_token_ceiling` (3.7) is what should have refused the step before the provider did, and if F8 fails there is no such ceiling and this row is the only backstop. |
+| Attachment on an issue in another team's milestone | Never fetched, because it is never read. `_MILESTONE_ISSUES_QUERY` filters `team.key eq $teamKey`, and the attachment fetch is keyed off an issue row this server already scoped, never off an id a caller supplied. Asserted by absence (T1, section 11). |
+| Trust precondition changes while a chain runs | The canary is periodic at 900 seconds, so a guest invited at 10:00 is unnoticed until the next sweep. 2.6 states the window rather than implying continuous enforcement, and the canary warns rather than auto-disabling. |
+| An operator uploads a file they got from a customer | Not covered by anything here. The trust is in the uploader and this is a claim about the document. Named in 15 as the residual for source B, and the answer if it ever matters is Phase 6 with `operator_upload` removed from `attachment_trusted_origins`, which is a one-line config change against a design that already exists. |
+| Attachment storage fills the namespace ceiling | Real, because dispatch sessions persist (2.8) and the cascade may never fire. `attachment_blob_ttl_days` reclaims bytes on a timer and leaves the tombstone. Without that sweep this row is "every upload 413s forever with no remedy". |
 | File uploaded while a turn is in flight | The upload succeeds: it touches no executor and no session lock. Binding is what is blocked, and `POST /turns` already 409s `TURN_IN_FLIGHT` from the acquire in `services/turn_locks.py`. The attachment stays `ready` and is offered on the next turn. |
 | Same file attached twice | `uq_agent_session_attachments_content` on `(namespace_key, session_id, source_sha256)` returns the existing row with `deduplicated: true` rather than a 409, because uploading the same file twice is a user action with an obvious intent. Binding it twice to one turn is idempotent by primary key. Binding to two turns re-sends it, which is what was asked for. |
 | Deleting an attachment mid-turn | 409 `TURN_IN_FLIGHT` when the attachment is bound to the session's `in_flight_trace_id`. Otherwise blobs are deleted and the row is `tombstoned`, retaining name, hashes, size and page count so `agent_turn_attachments` still answers "what did this conversation see". |
@@ -719,7 +1087,8 @@ With `attachments_enabled` false the routes are absent and nothing in this plan 
 | Attachment blocked by a control | Dropped from the turn, `agent_turn_attachments.verdict='blocked'` with the control recorded, the turn proceeds with the remaining files, and a plain-text transcript marker appears using the control-block renderer. Not a 403: someone who attached three files and had one refused wants the other two and a clear sentence. |
 | Executor rejects the inline part (F1 fails) | `EXECUTOR_REJECTED` 502 with hand-written text, the attachment stays `ready`, and the failure names attachments specifically so it does not read as a generic executor fault. |
 | Delivered bytes do not match `delivered_sha256` | The turn refuses with a typed error and an alert fires. It means storage corruption or a lying sidecar, and sending anyway would mean the model reads a document the controls never saw. |
-| Converter disabled but a PDF is uploaded | PDFs still need text extraction, which is why the sidecar lands in Phase 3 rather than Phase 4. With the sidecar genuinely off, `extraction_status` is `not_attempted` and under `attachments_require_extraction=True` the file is not sent. Anyone wanting PDFs with no extraction flips that setting and reads the paragraph next to it. |
+| Converter disabled but a PDF is uploaded | The normal case now, and the answer changed with 3.3. `extraction_status` is `not_attempted`, and whether the file is sent depends on its **origin** rather than on a flag: an origin in `attachment_trusted_origins` is delivered, anything else is refused. Nobody flips a setting under release pressure, because there is no setting on the path that works. |
+| Conversion rows above | All Phase 6 and Phase 7. With no converter running none of them are reachable, and they are kept because deleting a designed failure mode is how it gets rediscovered as a bug. |
 | Namespace isolation | Every table leads with `namespace_key`, all foreign keys are composite and namespace-leading, every service method takes `namespace_key=principal.namespace_key`, and the download route resolves the session before the attachment. New cases in `server/tests/test_namespace_isolation.py`, including a cross-namespace download returning 404 and an unattributed-session write returning 403. |
 
 ---
@@ -740,7 +1109,14 @@ agent_control_attachment_unreadable_pages_total    # pages with no text layer, d
 agent_control_attachment_unminted_parts_total{action=warn|block}
 agent_control_attachment_file_data_parts_total     # always blocked; any value is worth a look
 agent_control_attachment_hash_mismatch_total       # delivered bytes vs delivered_sha256
+agent_control_linear_attachment_fetches_total{result=ok|not_found|too_large|blocked_host|link_only|fetch_failed|over_budget}
+agent_control_linear_attachment_bytes_fetched_total
+agent_control_linear_guest_accounts                gauge; 2.6's canary, should be flat at zero
+agent_control_attachment_prompt_tokens_total       # observed, by namespace; null when F8 failed
+agent_control_attachment_blobs_reclaimed_total     # the TTL sweep in 3.5
 ```
+
+`linear_guest_accounts` is the one an operator should alert on. It is the only runtime evidence behind precondition 1, and 2.6 is honest that it lags by the canary interval and that its query shape is unverified until L0.
 
 The last three are the interesting ones. `unminted_parts_total` is the observable signature of the `save_artifact` path and anything else putting bytes in front of a model behind our back. `file_data_parts_total` should be flat at zero forever, because nothing in this design produces one. `hash_mismatch_total` moving means either storage corruption or a compromised sidecar, and both deserve a page.
 
@@ -773,20 +1149,40 @@ Content is never logged above DEBUG, extending `orchestration-plan.md` section 1
 
 The standing warning from `orchestration-plan.md` section 15 applies with force: that plugin test file injects hand-written fakes into `sys.modules["google.adk.*"]`, so it verifies this repo's fiction of ADK. The pinned-ADK contract job gains three cases: `types.Part` has `inline_data` and `file_data` attributes, `Blob` exposes `mime_type` and `data`, and `data` is `bytes` rather than base64 text. Without those, these tests prove only that the fake matches its author's guess.
 
+**None of the SDK work above is outstanding.** Phase 1 shipped all of it, including the `contents[0]` regression, manifest hit and miss, `file_data` refusal without `on_violation_callback`, marker neutralization and hash memoization. Two findings from reading that shipped code, both of which save a release:
+
+- `_manifest_lookup` (`_attachments.py:357`) already accepts a `Mapping` entry and reads `attachment_key` or `attachment_id`, so the server can seed the richer entry shape today against the shipped SDK. What it does not read is `origin`, with the consequence 3.2 records.
+- `sniff_mime`, `is_mime_mismatch` and `normalize_display_name` need moving into `agent_control_models` before any server code calls them (7.4), with a test asserting the SDK re-export is the same object rather than a copy.
+
 **Server:**
 
 - `test_agent_attachments_endpoints.py`, mirroring `test_agent_runtimes_endpoints.py`: upload, list, get, download, delete, dedupe returning the existing key, every quota refusal, MIME mismatch, zero bytes, oversize by `Content-Length` and by streamed count, missing `Content-Length`, missing `X-Requested-With`.
+- `test_linear_attachments_fetch.py`, against a recording transport in the `HttpLinearIssueClient` fake style: 404, a body aborted mid-stream at the cap, an understated `Content-Length`, a redirect to an allowlisted host, a `sourceType` outside the allowlist, an HTML body answering 200, a zero-byte body, an `http://` URL on an allowlisted host refused on scheme, and forty attachments truncated deterministically to three.
+- `test_linear_attachment_credential.py`, whose entire subject is the `Authorization` header.
+- `test_linear_milestone_attachment_count.py`: the milestone read still succeeds against a 100-issue fixture whose issues carry attachments, and reports "3+" at the bounded cap. This is the regression guard for 3.9's complexity risk, and it fails loudly rather than turning the milestone source off in production.
+- `test_agent_attachments_retention.py`: bytes reclaimed at `attachment_blob_ttl_days` with the tombstone intact, a tombstoned download returning a written notice rather than a 404, and the namespace ceiling reachable without the sweep and not with it.
 - `test_agent_attachments_download_headers.py`: asserts `Content-Type: application/octet-stream`, `Content-Disposition: attachment` and `X-Content-Type-Options: nosniff` for an uploaded `text/html` file, and that the RFC 5987 filename survives a quote and a CRLF. This is the XSS test and it is a server test, because the header is where the control lives.
-- `test_agent_attachments_auth.py`: restricted-authorizer 403 per operation; creator scoping; **a session with `created_by_hash IS NULL` refusing both write and content read**; a case asserting `AGENT_ATTACHMENTS_WRITE` is in `DEFAULT_OPERATION_ACCESS`. `test_auth_framework.py` already fails on an unregistered operation, so that guard is inherited.
+- `test_agent_attachments_auth.py`: restricted-authorizer 403 per operation; creator scoping; a case asserting `AGENT_ATTACHMENTS_WRITE` is in `DEFAULT_OPERATION_ACCESS`. `test_auth_framework.py` already fails on an unregistered operation, so that guard is inherited. **Three cases carry the corrections in 3.6 and every one of them is invisible to a suite that seeds `created_by_hash` explicitly, so each runs under both providers:** a non-creator refused an upload into a dispatch-task session; an upload **succeeding** on a NULL-creator session under `NoAuthProvider`, which is the case that would otherwise 403 the whole feature on the machine it is built on; and an upload refused on a NULL-creator session under a provider that does populate `caller_id`.
 - `test_agent_attachments_csrf.py`: asserts the session cookie is issued with `samesite=lax`, so the assumption in 3.6 fails loudly if anyone changes it.
-- `test_agent_attachments_converter.py` against a fake converter in the `LinearClient` fake style: encrypted, unsupported, over-page, truncated text, per-page counters, timeout, non-2xx, missing secret refused, a returned "PDF" whose magic bytes are wrong, a returned hash that does not match, and a case asserting no upstream body reaches the client.
-- `test_agent_attachments_chunking.py`: a document producing 17 chunks emits 17 steps; a deny on chunk 12 denies the attachment; past `attachment_max_chunks` the file is `rejected` rather than tail-dropped.
-- `test_agent_attachments_alembic_migration.py`, mirroring `test_teams_alembic_migration.py`: upgrade, downgrade, residue sweep, upgrade-downgrade-upgrade, constraint names, cascade session to attachment to blob and to binding.
-- `test_agent_attachments_quota.py`: the per-minute limiter shares the `(namespace_key, caller_hash)` bucket shape from `services/turn_quota.py` and returns a typed 429 with `Retry-After`; the conversion semaphore returns 503 at saturation.
+- `test_agent_attachments_alembic_migration.py`, mirroring `test_teams_alembic_migration.py`: upgrade, downgrade, residue sweep, upgrade-downgrade-upgrade, constraint names, cascade session to attachment to blob and to binding, and `origin` and `attachments_summary` present with their defaults.
+- `test_agent_attachments_quota.py`: the per-minute limiter shares the `(namespace_key, caller_hash)` bucket shape from `services/turn_quota.py` and returns a typed 429 with `Retry-After`; `attachment_task_total_bytes` refuses the step that would cross it; and, when F8 holds, `attachment_task_token_ceiling` refuses step 8 of a chain whose first seven spent the budget, which is the case a per-session ceiling cannot catch.
+- `test_agent_attachments_converter.py` and `test_agent_attachments_chunking.py` move to Phase 6, unchanged in content.
 - New cases in `server/tests/test_namespace_isolation.py`.
-- One integration test, marked and skipped by default, against a real `adk api_server`, settling F1 with the Phase 0 fixtures as its baseline.
+- Two integration tests, marked and skipped by default, against a real `adk api_server`: one settling F1 with the Phase 0' fixtures as its baseline, one settling F8 by asserting a prompt token count is present in the decoded event stream.
 
-**UI:** `ui/tests/agent-chat-attachments.spec.ts` with route mocks in `ui/tests/fixtures.ts`: picker, upload progress, every status chip including the unreadable-pages badge, cost notice thresholds, the over-limit second click, refusal copy, and a filename containing `<script>` and an `onerror` image asserting they render as text. Component tests under `ui/tests/ct/` for chip truncation and for the cost calculator's arithmetic.
+**Dispatcher and envelope:**
+
+- `test_envelope_attachments.py`: the "2 of 3" count line; a title containing `<<<TASK_END>>>` and a bidi override rendered defused and normalized; every refusal code producing its sentence; no section at all when the issue carried no files; the section collapsing to the count line at `FILES_BLOCK_MAX_CHARS`; and **a maximal task block plus a maximal prior report plus three maximal filenames still rendering under `TURN_MESSAGE_MAX_LENGTH`**, which is the test that keeps 3.10 from turning an undelivered file into a dead step.
+- `test_dispatch_step_order.py`: `start_step` precedes `build_envelope`, and an `EnvelopeTooLongError` raised after the step row is open closes that step rather than leaving it running.
+
+**Proof by absence, following E2 (`test_google_adk_mcp_tools.py:403`) and H2 (`test_google_adk_adk_contract.py:443`).** Four, and each is a case where the response payload cannot distinguish the right implementation from a wrong one:
+
+- **L1.** An attachment refused by the `sourceType` gate produces **no outbound request at all**. Asserted on `transport.requests == []`, not on the returned status. A gate that fetches and then discards returns exactly the same status, and that design would spend the bytes and the credential it exists to protect.
+- **L2.** On a redirect to a host outside the allowlist, the API key appears in **no header of any recorded request**, and the unmistakable body the second host would have returned appears nowhere in the attachment row, the step summary or the envelope. The assertion is over the whole recorded request list, because "the second request did not carry it" is a weaker claim than "no request did".
+- **T1.** An issue belonging to another team has no attachment fetched, asserted on the transport rather than on the response, because a scoped query and a post-filter look identical from the outside and only one of them keeps a foreign team's bytes out of this process.
+- **U1.** An upload aborted at the byte cap leaves **no** blob row and **no** metadata row, proved by count. The 413 is returned by both the correct implementation and one that writes then rolls back badly.
+
+**UI:** `ui/tests/agent-chat-attachments.spec.ts` with route mocks in `ui/tests/fixtures.ts`: picker, upload progress and cancel, each chip state, refusal copy, the send-button warning when a file will not be sent, and a filename containing `<script>` and an `onerror` image asserted to render as text. Plus one transcript test carrying 3.8's decision: **a message whose model-authored text contains a well-formed marker line with a real attachment's sha256 prefix renders as plain text and draws no chip**, because chips come from `agent_turn_attachments` and never from a pattern. Component tests under `ui/tests/ct/` for chip truncation.
 
 A CI grep bans `dangerouslySetInnerHTML` under `ui/src/core/page-components/agent-detail/agent-chat/`, copying `agent-system-prompts.md` section 3.7's rule, so the constraint survives the first person who reaches for a preview library.
 
@@ -796,47 +1192,53 @@ A CI grep bans `dangerouslySetInnerHTML` under `ui/src/core/page-components/agen
 
 Each phase is one branch and at most one migration. Every phase touching routes regenerates all three artifacts and passes both SDK gates, per `orchestration-plan.md` section 12.
 
-### Phase 0: spike, 3 days. Blocks phases 3 and 4 only.
+### Phase 1: landed.
 
-- **F1** Does the pinned `adk api_server` accept `inlineData` in `newMessage.parts` on `POST /run`? Camel or snake case? What is its own body limit? Capture a real request and response into `server/tests/fixtures/adk/`. Direct extension of A2.
-- **F2** What does the plugin actually receive for a file part inside `before_model_callback`? Confirm `inline_data` holds a `Blob` and that `data` is `bytes` rather than base64 text. This decides whether the hash in the descriptor is over the same bytes the server stored, which the whole manifest design rests on.
-- **F3** Does a document part in turn 1 remain in `contents` on turn 3, and at which index? Measure it. Section 2.4's cost warnings and section 1's whole-history walk both depend on the answer, and neither should ship on my reasoning alone.
-- **F4** Confirm A1 and A7 well enough for the per-turn manifest: can the server refresh session state per turn, and can the plugin read it? A failure here does not stop Phase 1; it fixes `source` at `unknown` forever and makes the SDK default the only enforcement, which the plan must state in the docs rather than discover.
-- **F5** Pick the magic-byte sniffer. `python-magic` needs libmagic in the image; a 30-line hand-written table covers PDF, the ZIP-container Office formats, PNG, JPEG and plain text with no dependency. Default to the table unless the spike finds a reason.
-- **F6** Pick the pure-Python PDF text extractor for Phase 3 and measure it against a decompression bomb, a deeply nested object graph and a 1,000-page document under the rlimits in section 8. Half a day, and it decides whether Phase 3's sidecar is as small as this plan assumes.
-- **F7** Confirm `JSONEvaluator` behaves as expected against a list at `context.agent_control.attachments` and a scalar at `...attachment_summary.count`. `_parse_json` passes dicts and lists through (`json/evaluator.py:150`), so this is a confirmation, not a question. Half an hour.
+`_extractors.py`, `_attachments.py`, `_descriptors.py`, `_sanitize.py`, the plugin's reserved-key merge, the manifest read, the `file_data` block and the unminted warn. 174 tests. Every file part reaching a model, on every model call, from any source, is described to every control in the deployment.
 
-### Phase 1: the extractor, the control payload and the two structural blocks, 1.5 weeks. Depends on nothing.
+### Phase 0': spike, 2 days. Gates Phases 3 and 4 only.
 
-`_extractors.py` with the whole-history walk, `plugin.py`, the reserved-key merge, filename normalization, marker neutralization, hash memoization and its measurement, `file_data_parts="block"`, `unminted_file_parts="warn"`, the SDK tests and the three contract cases. No server change, no migration, no UI, no upload path.
+- **L0** A real Linear workspace with a real uploaded attachment, and it is first because a "no" re-costs source A entirely. Four questions on one credential: does the server-held key authorize the upload host, what does the redirect chain look like, what literal `sourceType` does a plain file upload carry, and does the complexity limiter accept `attachments(first: 4)` nested under `issues(first: 100)`. One more while the workspace is open: the exact shape of the guest-count query behind 2.6's canary. Half a day.
+- **F1** Does the pinned `adk api_server` accept `inlineData` inside `newMessage.parts` on `POST /run`? Camel or snake case, and what is its own body limit. Fixtures into `server/tests/fixtures/adk/`. Half a day.
+- **F8** Does the `POST /run` event stream report a prompt token count, and under what key? Decides whether 3.7's cumulative token ceilings exist at all. Rides the same live executor as F1. Half a day.
+- **F3** Does a document part in turn 1 remain in `contents` on turn 3, and at which index? Now a measurement for 2.4's cost copy rather than a gate on anything. Half a day, and it can slip.
+- **F7** Confirm `JSONEvaluator` against a list at `context.agent_control.attachments` and a scalar at `attachment_summary.count`. Half an hour, a confirmation rather than a question.
 
-**Shippable as:** the injection channel closes. Every file part reaching a model, on every model call, from any source including an agent's own artifact, is described to every control in the deployment; `file_data` is refused outright; and "deny anything we did not mint" becomes writable. Worth landing on its own even if nothing below is built.
-
-Half a week more than a first draft's estimate, and the difference is the whole-history walk plus hash memoization, which is the correction in section 1.
+F2 and F5 are settled by Phase 1 shipping. F4 is settled by the manifest read shipping. F6 moves to Phase 6.
 
 ### Phase 2: storage, upload API, metadata gate, 1.5 weeks. Depends on nothing.
 
-All three tables and the migration, `models/src/agent_control_models/attachments.py`, `services/agent_attachments.py` and `services/attachment_blobs.py`, `endpoints/agent_attachments.py`, the operation and its `DEFAULT_OPERATION_ACCESS` entry, the stricter creator predicate, the error codes, the quotas and the upload rate limiter, streaming upload with the byte cap, magic-byte sniffing, `X-Requested-With` and the cookie test, the forced-download route, the orphan sweep, the `.env.example` block, all three generated artifacts.
+Unchanged from the original plan except for what it leaves out and one thing it adds first. The move of `sniff_mime`, `is_mime_mismatch` and `normalize_display_name` into `agent_control_models` (7.4) is the opening commit. Then: three tables and the migration with `origin` and `origin_ref` and without the extraction columns; `agent_task_steps.attachments_summary`; `models/.../attachments.py`; `services/agent_attachments.py` and `services/attachment_blobs.py`; `endpoints/agent_attachments.py`; `AGENT_ATTACHMENTS_WRITE` and its `DEFAULT_OPERATION_ACCESS` entry; the `require_content_access` reuse with its two call-site conditions; the error codes; the quotas and the upload rate limiter sharing `turn_quota`'s bucket shape; streaming upload with the byte cap; the accepted-type gate; `X-Requested-With` and the cookie test; the forced-download route; the orphan sweep **and the blob TTL sweep**; `.env.example`; all three generated artifacts.
 
-**Shippable as:** `curl` uploads a PDF to a session and reads it back with correct headers. Nothing reaches a model yet.
+**Shippable as:** `curl` uploads a PDF to a session and reads it back with headers that cannot be turned into stored XSS. Nothing reaches a model yet.
 
-### Phase 3: sidecar with PDF extraction, content evaluation, delivery, 2.5 weeks. Depends on Phase 2 and on the shipped turn machinery.
+### Phase 3: delivery, 1 week. Depends on Phase 2 and on F1.
 
-`services/attachment-converter/` and its image with **pure-Python PDF text extraction only, no LibreOffice**; its network, secret, rlimit, tmpfs, pids and process-group posture; `services/attachment_converter_client.py`; async conversion; page-count enforcement; per-page counters; the chunked `<agent>.attachment` evaluation; `verdict` handling on `agent_turn_attachments`; `attachments_require_extraction`; `StartTurnRequest.attachment_keys`; `AdkExecutorClient.run(attachments=...)`; the per-turn manifest seeded into session state; the delivered-hash check; per-turn caps; the transcript marker; the SDK default flip to `unminted_file_parts="block"` with its changelog entry.
+`StartTurnRequest.attachment_keys`; `AdkExecutorClient.run(attachments=...)` appending inline parts after the text part; the per-turn manifest seeded into session state in the richer entry shape; the delivered-hash check before send; per-turn count and byte caps checked before any blob is read; `attachment_trusted_origins`; token accumulation off the decoded event stream and the session ceiling, if F8 held; `agent_turn_attachments` and its verdict; the SDK default flip to `unminted_file_parts="block"` with its changelog entry.
 
-**Shippable as:** a PDF reaches the model, the agent reasons over it, and its text was evaluated first. This is the user's sentence satisfied for PDFs, with the honest default intact and no LibreOffice anywhere.
+**Shippable as:** an operator attaches a PDF in the chat panel and the agent reads it. That is the second half of the user's sentence, complete.
 
-### Phase 4: LibreOffice and Office formats, 1.5 weeks. Depends on Phase 3.
+### Phase 4: Linear ingress, 1.5 weeks. Depends on Phase 3 and on L0. New.
 
-The LibreOffice layer in the sidecar image with its pinned macro, remote-link and DTD posture; PPTX, DOCX and XLSX to PDF; `attachments_office_formats_enabled`; `docker-compose.dev.yml` wiring; the conversion metrics.
+`services/linear_attachments.py` with the host allowlist, the `https` requirement, manual redirect handling, streaming abort and response sniffing; the `sourceType` gate; the text-inline path for markdown and CSV; bounded `attachment_count` on the milestone read and on `MilestoneIssue`; the fetch outside any database session under a per-step budget; **the `_run_step` reordering and the `EnvelopeTooLongError` path closing an open step**; `envelope.py`'s files section, its 800-character budget and its refusal sentences; `attachments_summary` written at `finish_step`; `attachment_task_total_bytes` and the task token ceiling; the trust flag, the guest canary and its metric; the step-attachments read route; the `.env.example` block.
 
-**Shippable as:** PowerPoint works. Confined to its own phase because it is the largest attack surface in the plan and the only part that ships a gigabyte of third-party parser.
+Half a week more than a first draft of this amendment costed, and the difference is the step reordering. That is shipped dispatcher control flow, not a renderer.
 
-### Phase 5: UI, 1.5 weeks. Depends on Phase 3 and on orchestration Phase 3.
+**Shippable as:** an agent working a Linear issue reads the spec attached to it, and is told plainly about the one it could not have.
 
-Picker, chips, the unreadable-pages badge, cost notice, all status states, the Slides sentence, the hooks, the client methods, the Playwright and component tests, the CI grep.
+### Phase 5: UI, 1 week. Depends on Phases 3 and 4.
 
-### Phase 6: Google Slides by link, 1 week. Optional, deferred, not scheduled.
+Picker, chips, upload progress and cancel over `XMLHttpRequest`, attachment annotations rendered from `agent_turn_attachments` as a third `TranscriptAnnotation` variant, the task step rail chips, the hooks, the client methods, Playwright and component tests, the CI grep.
+
+### Phase 6: the converter sidecar, 2.5 weeks. Optional, unscheduled.
+
+Everything in 3.3 and section 8: the isolated container, its own internal network, the required secret, rlimits, sized tmpfs, pids limit, process groups, the decompression ratio cap, pure-Python PDF text extraction, per-page counters, the chunked `<agent>.attachment` evaluation, the deferred columns, server-side re-validation, F6. **Build this the day an origin that is not trusted is admitted, or the day page caps are wanted.** Not before, because containing a parser nobody runs is work with no product on the other side of it.
+
+### Phase 7: LibreOffice and Office formats, 1.5 weeks. Optional, depends on 6.
+
+Unchanged. Until it exists, a `.docx` or `.pptx` is refused by type with a sentence (3.4).
+
+### Phase 8: Google Slides by link, 1 week. Optional, deferred, not scheduled.
 
 Buildable only when a deployment has real per-user identity, meaning `HttpUpstreamAuthProvider` plus an OAuth grant store. Named so nobody scopes it into an earlier phase.
 
@@ -846,19 +1248,25 @@ Buildable only when a deployment has real per-user identity, meaning `HttpUpstre
 
 | Phase | Estimate | Confidence |
 |---|---|---|
-| 0. Spike | 3 days | Medium. F1, F3 and F4 need a working `adk api_server` and a model key, neither of which exists here. |
-| 1. Extractor, control payload, structural blocks | 1.5 weeks | High. One file plus a merge rule, a normalization function and a memoization cache, all bounded. |
-| 2. Storage, upload API, metadata gate | 1.5 weeks | Medium. Streaming multipart with a hard byte cap is a first for this codebase and `python-multipart` is a new dependency. |
-| 3. Sidecar, content evaluation, delivery | 2.5 weeks | Low. F1 gates delivery, and a new container with rlimits that must be right rather than approximately right is where packaging estimates go wrong. |
-| 4. LibreOffice and Office formats | 1.5 weeks | Low. Image size, CVE surface and a posture that has to be pinned rather than defaulted. Packaging work in this repo has been priced at zero once already. |
-| 5. UI | 1.5 weeks | Medium. Upload progress and status transitions always overrun. |
-| TS SDK regeneration and overlay churn | 2 days x 3 gated phases | Medium. |
+| 1. Extractor, control payload, structural blocks | **landed** | Shipped, 174 tests |
+| 0'. Spike (L0, F1, F8, F3, F7) | 2 days | Medium. L0, F1 and F8 need credentials this session did not have |
+| 2. Storage, upload API, metadata gate | 1.5 weeks | Medium. Streaming multipart with a hard byte cap is a first here, `python-multipart` is a new dependency, and the sniffer move touches two packages |
+| 3. Delivery | 1 week | Low until F1 lands. High after it |
+| 4. Linear ingress | 1.5 weeks | Low until L0 lands. The redirect and allowlist discipline is small but must be exactly right, and the step reordering touches shipped dispatcher control flow |
+| 5. UI | 1 week | Medium. Upload progress and abort always overrun |
+| TS SDK regeneration | 2 days x 2 gated phases (2 and 4) | Medium |
+| 6. Converter sidecar | 2.5 weeks | Optional, unscheduled. Low confidence |
+| 7. LibreOffice | 1.5 weeks | Optional, unscheduled. Low confidence |
 
-**Total: 9 to 11 weeks** of focused work, of which Phase 1 is 1.5 weeks and stands alone.
+**Scheduled total: about 5.5 weeks**, down from 9 to 11. Deferred but designed: 4 weeks.
 
-**Minimum useful slice: Phase 1, 1.5 weeks.** It ships no feature and closes a live hole, and it is the only part of this plan I would argue should land regardless of whether the rest is ever built.
+**Where the saving comes from, so nobody reads this as a relabel.** Four weeks of parser containment leave the schedule: the sidecar at 2.5 and LibreOffice at 1.5. The spike loses a day because two of its seven questions were answered by shipping Phase 1 and a third by the manifest read shipping. The UI loses half a week because there is no `converting` state, no page-count notice, and no marker recognizer. Against that, Linear ingress adds a week and a half that did not exist in the original plan, half of which is reordering `_run_step`. Phase 2 is not cheaper by a single day, and neither is anything about authorization, headers, quotas, retention or namespacing.
 
-**Next useful slice: Phases 0 through 3 and 5, roughly 7.5 weeks**, giving PDF attachments end to end with content evaluation, no LibreOffice, and honest copy telling users to export PowerPoint themselves. A real stopping point.
+**Minimum useful slice: Phases 0' + 2 + 3, about 3 weeks.** An operator attaches a PDF in the chat panel, the agent reads it, every control sees a descriptor before the model does, and the download route cannot be turned into stored XSS. The comparable point in the original plan was "Phases 0 through 3 and 5, roughly 7.5 weeks", so this is **4.5 weeks earlier**, and it is earlier because the parser is gone rather than because the estimates were squeezed.
+
+**Add Phase 4 and the slice reaches 4.5 weeks** with Linear attachments feeding dispatch chains, which is the half of the user's request nobody can do by hand. **Add Phase 5 and the SDK regeneration and it is about 5.5.**
+
+**The caveat is unchanged by any of this.** If F1 fails, delivery is impossible in this executor topology, Phases 3, 4 and 5 do not happen, and the plan stops after Phase 2 at a working, audited, quota'd file store that cannot send anything. Three days of trust reasoning did not move that risk by an inch, which is exactly why L0 and F1 come first.
 
 The estimate includes the verification load this repo imposes: `make check` spans eight workspace members, the UI job runs lint, prettier, typecheck, `next build`, Playwright and component tests, and any phase moving the OpenAPI surface needs generate, name-check and generate-check with a pinned Speakeasy CLI and an API key.
 
@@ -875,17 +1283,27 @@ Ongoing cost: a second container to keep patched, and from Phase 4 a LibreOffice
 | 3 | Content evaluation | Chunked `<agent>.attachment` pre-steps over text extracted from the **delivered** artifact, denying on any chunk, capped by chunk count rather than truncated | Parsing in the FastAPI app; parsing in the executor (a parser exploit beside the session runtime token); a single 200k-char cap with an advisory `text_truncated` (leaves the majority of a long document unevaluated while the model reads all of it); extracting from the source rather than the delivered artifact |
 | 4 | Conversion | Isolated sidecar on its own internal network with a required secret; PDF extraction in Phase 3, LibreOffice in Phase 4; Slides is a documented manual export | LibreOffice in the server image; in the executor; on the same network as the executor; client-side conversion; Slides by link now; shipping delivery before extraction (turns the honest default into a flag people switch off) |
 | 5 | Storage and ownership | Agent Control's Postgres, metadata and blobs split, behind a Protocol, quotas and rate limits from day one, tombstone on delete | ADK artifacts (in-memory only for this user, no namespace concept, not deletable by us); object storage (no SDK or service in the repo); one table (a careless select pulls 50MB); a `deleted_at` soft delete holding 50MB |
-| 6 | Upload path and authorization | One `AGENT_ATTACHMENTS_WRITE` at AUTHENTICATED, creator-scoped with a **stricter** predicate that refuses unattributed sessions; reads reuse `AGENT_SESSION_CONTENT_READ`; routes register only with the executor | A separate read operation; ADMIN writes; a second `ALLOW_INSECURE_LOCAL_DEV` gate; base64 in JSON; reusing `require_content_access` unchanged on the write path (it returns success when `created_by_hash is None`) |
-| 7 | Limits and cost | 50MB and 1,000 pages enforced in three places each; `~pages x 258` shown before attaching; cumulative session page cap as the real protection; upload rate limit sharing the `turn_quota` bucket shape; bounded conversion concurrency | A per-model token calculation (we do not know the model); blocking on cost; byte ceilings with no rate limit; pretending an attached file can be un-sent |
-| 8 | UI | Composer picker, plain-text chips, forced octet-stream download, cost notice before the click, an unreadable-pages badge instead of a green tick | Inline preview of any kind; markdown in chips; trusting the sniffed MIME on the download response; a "checked" badge over a document with image-only pages |
+| 6 | Upload path | One `AGENT_ATTACHMENTS_WRITE` at AUTHENTICATED; reads reuse `AGENT_SESSION_CONTENT_READ`; routes register only with the executor; multipart rather than base64. **Superseded on authorization by row 15** | A separate read operation; ADMIN writes; a second `ALLOW_INSECURE_LOCAL_DEV` gate; base64 in JSON |
+| 7 | Limits and cost | 20MB enforced in three places; the byte, count and rate ceilings; upload rate limit sharing the `turn_quota` bucket shape. **Superseded on pages and tokens by row 14** | A per-model token calculation (we do not know the model); blocking on cost; byte ceilings with no rate limit; pretending an attached file can be un-sent |
+| 8 | UI | Composer picker, plain-text chips, forced octet-stream download, chips rendered from `agent_turn_attachments` as a `TranscriptAnnotation` | Inline preview of any kind; markdown in chips; trusting the sniffed MIME on the download response; a marker recognizer in `transcript-annotations.ts`, whose sha256 fail-safe an agent can satisfy by copying sixteen hex characters out of its own context |
+| 9 | Is Linear a trusted source | Yes, by an explicit operator decision recorded as `linear_attachments_trusted`, defaulting false, with three named preconditions and a guest canary at 900 seconds | Adopting the trust silently; auto-disabling ingress on a canary failure (a network blip breaks a working deployment, and failing open is worse than useless); claiming the preconditions are verifiable when one is not and a second has an unverified query behind it |
+| 10 | What the trust buys | The converter sidecar, chunked content evaluation, OCR and the text-layer measurement become optional Phases 6 and 7. Four weeks leave the schedule | Dropping descriptors, the manifest, `unminted_count`, the `file_data` refusal, the byte and rate ceilings, the forced-download headers or the authorization rules, none of which are about document hostility |
+| 11 | Where the Linear fetch runs, and when | The server, once per step, for the claimed issue only, outside any database session, gated on a flag, with `_run_step` reordered so the envelope can describe the result | Eagerly on the milestone read (bytes for 37 issues that never run); an agent-callable fetch tool (a model-chosen dereference of a URL, the SSRF pivot section 5 already names); the dispatcher fetching; fetching inside `start_step` while it holds a pooled connection, which is the defect 3.4 and `orchestration-plan.md` 8.3 both refuse |
+| 12 | Sending the server-held key to an attachment URL | `https` required, host allowlist checked before the request and after every redirect hop, at most two hops, header dropped and fetch refused on a cross-host hop, URL never logged | Following redirects with `follow_redirects=True`; retrying anonymously after dropping the header; **claiming DNS-rebinding protection from a pre-connect address check**, which is the race it names rather than a defence against it; treating the trust decision as cover for a URL |
+| 13 | Non-PDF formats with no converter | Office types refused by sniffed type with a sentence naming PDF export. Markdown, CSV and plain text refused on upload with "paste it instead", and **inlined as a bounded untrusted block on the Linear path**, where nobody is there to paste | Delivering a `.docx` as flattened text and letting the model act on charts it cannot see; refusing a 12KB markdown spec on the one path where the human cannot compensate |
+| 14 | Page and token limits with no parser | Page caps stated as unenforceable and left inert. Bounds are count, bytes, and observed prompt tokens read off the executor's own event stream, keyed per session **and per task** | A byte cap presented as a token bound (a 1,000-page text PDF is three megabytes); a heuristic page count from `/Type /Page` occurrences; accumulating tokens in the SDK's `after_model_callback` and enforcing on the server with no channel between them; a per-session ceiling alone, which a dispatcher resets on every step |
+| 15 | Upload authorization | Reuse `require_content_access`, `for_turn=True` for write and delete, `for_turn=False` for reads, plus two call-site conditions that hold under every provider: a task session refuses a non-creator, and a NULL creator refuses only when attribution was possible | Minting `require_attachment_write_access` (two predicates that drift); relying on `for_turn=True` alone to protect a task session (it returns at `:1097` first); refusing every NULL-creator session (403s every upload in the default deployment) |
+| 16 | The durable record and reclaiming bytes | A bounded JSONB summary on `agent_task_steps` written at `finish_step`, plus a blob-only TTL sweep leaving the tombstone | Justifying the summary by a fifteen-minute session delete that is not the shipped default; keeping blobs indefinitely because the cascade "will" fire, when `delete_sessions` is off by default and it will not |
 
 Also rejected: suppressing enforcement with a per-invocation seen-set (would restore the post-tool gap; the dedupe belongs on logging only); scanning tool arguments and results for base64 that looks like a file (heuristics over arbitrary JSON produce false positives, and the model boundary catches it anyway); an inline-disposition query parameter on the download route; treating the converter's shared secret as defence in depth rather than as the control.
 
 ---
 
-## 15. Explicitly out of scope, and one open hole
+## 15. Explicitly out of scope, and two named residuals
 
-**OCR of scanned and image-heavy pages: an open hole, not out of scope.** This is the residual risk of the whole design and it is written down rather than deferred quietly. The model reads the rendered page; we read the text layer. A screenshot pasted into a slide is invisible to every control in this plan. What the design does about it: per-page counters, a one-condition control, an honest UI badge, and a metric counting delivered pages with no text layer. What it does not do: read them. Closing it means an OCR engine in the sidecar, which is another parser, another gigabyte and another CVE feed, and the right time to add it is when a deployment's `agent_control_attachment_unreadable_pages_total` says it matters.
+**OCR of scanned and image-heavy pages: deferred with Phase 6, and the second thing that returns if the trust decision is revoked.** The model reads the rendered page; the control layer reads a text layer, and under this narrowing it reads nothing at all because the sidecar that produces the text layer is unscheduled. Per-page counters, the threshold control and the honest UI badge all live in Phase 6 with it. If an origin outside the trusted set is ever admitted, Phase 6 comes back first and OCR comes back immediately after, because Phase 6 alone leaves a screenshot on slide 14 invisible. Another parser, another gigabyte, another CVE feed, and the right time is when somebody needs it rather than now.
+
+**An operator uploading a file they received from a third party.** The trust in 2.6 is in the uploader and not in the document, and nothing in this design distinguishes the two. An operator forwarding a customer's PDF is authenticated, owns the session, and knows no more about the bytes than anyone else does. This is the residual for source B, it is not mitigated, and the answer if it ever matters is Phase 6 with `operator_upload` removed from `attachment_trusted_origins`.
 
 **Evaluating `save_artifact` at write time.** No hook exists in the pinned ADK surface. Section 9 covers the read side, which is the boundary that matters, and 7.2 warns at bind time. If ADK later exposes an artifact callback this becomes a small addition rather than a redesign.
 
@@ -926,12 +1344,18 @@ Known pre-existing and not caused by this work: ruff I001 on `server/src/agent_c
 
 ## 17. The riskiest remaining assumptions
 
-Not the schema, not the sidecar, not the authorization tier. Those have visible failure modes and tests that catch them.
+The order has changed, and what used to be second is now first.
 
-**First, F1: that `adk api_server`'s `POST /run` accepts inline binary data inside `newMessage.parts`.** Phase 3 rests entirely on it, Phase 4 is downstream of Phase 3, and Phase 5 renders what Phase 3 delivers. If it does not hold, getting bytes to the model needs ADK's own artifact service, which 2.2 rules out for this user because only `GcsArtifactService` persists and there is no Google Cloud project here. In that case the honest answer is that documents cannot be attached to a Gemini agent through this executor topology at all until the user has GCS, and the plan stops after Phase 2 with a working, audited, quota'd file store and no delivery. That is a bad outcome, it is three days away from being known, and it is why Phase 1 is deliberately independent of it.
+**First, the trust precondition itself.** Every phase saving in this document rests on a Linear workspace with no external guests, no public intake and no email-to-issue address. One of those three is checkable from here at runtime and its query shape is unverified (2.6, L0), one is partly checkable, and one is not checkable at all. If any is false, a document reaching a model came from a stranger, every content control in this design is absent because it was deferred to Phase 6, and the failure is silent: the file is delivered, the agent acts on it, and nothing in the product looks wrong. That is a materially worse failure shape than anything in the original plan, and it is the price of the four weeks. The canary, the metric and the default-false flag exist so the decision is visible and revocable, and the answer if it ever turns is one config line against a Phase 6 that is designed but unbuilt.
 
-**Second, and the one I would bet on being wrong in a way that matters: section 2.5.** The control layer reads a text layer and the model reads a rendering, and no amount of engineering in this plan closes that. Every mitigation here is measurement, not prevention: counters, a threshold control, a badge and a metric. A deployment that turns on attachments and writes no control on `pages_with_no_text` has content evaluation that a screenshot defeats, and the UI will not stop them. The counters exist so that failure is visible in a dashboard rather than in an incident, and OCR is named as the only real closure.
+**Second, L0: that the server-held Linear key authorizes an attachment download at all.** I confirmed the `Attachment` type and its fields against the live API. I did not confirm that a personal API key opens `uploads.linear.app`, what the redirect chain is, what `sourceType` a plain file upload carries, or that the complexity limiter accepts a second nested connection on the milestone query. If the key does not work there, source A needs a different mechanism and Phase 4 is re-costed rather than adjusted. Half a day.
 
-**Third, A1 by inheritance.** The provenance manifest rides the same session-state channel `orchestration-plan.md` calls its riskiest assumption. Failure does not stop the plan, but it permanently fixes `source` at `unknown`, which turns the SDK's own default block into the only enforcement and makes "deny anything we did not mint" indistinguishable from "deny every file". The docs have to say that plainly rather than let an operator discover it by turning a knob.
+**Third, F1, unchanged and still gating.** Whether `adk api_server`'s `POST /run` accepts inline binary data inside `newMessage.parts`. Phases 3, 4 and 5 all rest on it. The fallback remains ADK's own artifact service, which 2.2 rules out for this user because only `GcsArtifactService` persists and there is no Google Cloud project here, and the honest outcome in that case is a file store with no delivery.
 
-**Fourth, and it will be argued about: 258 tokens per page is a rate card, not a physical constant.** Every cost number in the UI derives from it. If it moves or differs by model, every warning in 3.7 is wrong by that factor. Which is why the number lives in one named constant, why every figure is labelled an estimate, and why the cumulative **page** cap rather than the token estimate is the thing that actually refuses an attach.
+**Fourth, F8: that the executor's event stream reports a prompt token count.** If it does not, the only cumulative bound is count and bytes, neither of which bounds tokens, and a chain over attachment-heavy issues can exhaust a personal subscription quota with nobody watching. Not a safety failure, a bill, and the edge-case table's "quota exhausted mid-chain" row is then the only backstop, which fires after the money is spent.
+
+**Fifth, section 2.5 by demotion rather than by resolution.** The model reads a rendering and the control layer reads a text layer. Under this narrowing the control layer reads nothing at all, so the gap is total rather than partial. It stops being the second-riskiest assumption only because the trust decision moved the question upstream: we no longer claim to evaluate document content, so we are no longer at risk of claiming it falsely with a green tick. The moment an origin outside the trusted set is admitted, 2.5 returns exactly where it was, with Phase 6 as its answer and OCR still the only real closure.
+
+**Sixth, A1 by inheritance, unchanged.** The provenance manifest rides the same session-state channel `orchestration-plan.md` calls its riskiest assumption. Failure fixes `source` at `unknown` permanently, makes the SDK's own default the only enforcement, and makes "deny anything we did not mint" indistinguishable from "deny every file". Phase 1 shipped without depending on it, which is still why that phase was built first.
+
+**Seventh, and it is no longer load-bearing: 258 tokens per page.** It used to drive every cost number in the UI. With no page count it drives nothing that refuses anything, and the observed token counters in 3.7 replaced it. It stays in 2.1 as the reason a 100-slide deck is expensive, and it is a rate card rather than a physical constant, which is now a documentation caveat instead of a risk.
