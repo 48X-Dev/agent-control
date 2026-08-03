@@ -568,6 +568,41 @@ attachments {
 }
 ```
 
+**And that connection is not where this workspace's files are.** Measured 2026-08-03 across
+43 issues: **6 carry `Attachment` rows, 4 carry `uploads.linear.app` links embedded as
+markdown in `description`, and they are different files.** OPS-2, the issue an agent was
+actually asked to work, has `attachments: 0` and its deck reaches it only as body text:
+
+```
+[EarlyCore_MSSP_Deck (1).pptx](https://uploads.linear.app/3387082b-.../e47010e1-...)
+```
+
+The distinction is who uploaded it. Every `Attachment` row in this workspace has
+`sourceType: "oauthClient"`, so that connection is where *integrations* put files. A person
+dragging a file into an issue gets a markdown link in the body and no `Attachment` row at
+all. A design that reads only the connection therefore misses exactly the human-authored
+case this feature exists for, and it fails silently: the query succeeds and returns an empty
+list.
+
+This is not hypothetical. An agent run on OPS-2 reported, correctly and without inventing
+anything, that it "could not fetch the Linear upload URL from the available tools" and fell
+back to the public website. It could see the link in the body and could not dereference it,
+because `web_fetch_exa` is an unauthenticated public-web fetcher and the Linear key is
+server-held by design.
+
+**So ingress reads both channels**: `attachments { nodes { url } }` *and* markdown links
+matching the `uploads.linear.app` host allowlist extracted from `description`. Body
+extraction is a host-allowlisted regex over a field the tracker's own users write, which is
+untrusted input, so it is subject to the same allowlist, the same per-step count ceiling and
+the same byte ceiling as the connection. A link to any other host is dropped without a
+fetch, not followed.
+
+Verified the fetch works for this channel: the server-held key returns **HTTP 200,
+1,414,578 bytes**, `application/vnd.openxmlformats-officedocument.presentationml.presentation`,
+with no redirect; the same URL unauthenticated returns **401**. MarkItDown extracts 13,679
+characters from that file, and that text answers correctly through the configured endpoint.
+Every hop of this path is proven; only the code joining them is missing.
+
 Note what is absent. An `Attachment` has no size and no content type. There is no way to know how big a file is before fetching it, which dictates the streaming discipline below. `bodyData`, `metadata`, `subtitle` and `creator` are read by nobody: they are free text written by whoever attached the file, and `sources/linear.py` already establishes the discipline of dropping provenance fields at the boundary rather than letting them drift into an envelope.
 
 **When it runs, and the reordering that makes 3.10 possible.**
