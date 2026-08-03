@@ -21,8 +21,19 @@ logger = logging.getLogger(__name__)
 # the same example at a different registered agent.
 AGENT_NAME = os.getenv("AGENT_CONTROL_AGENT_NAME", "google-adk-plugin")
 SERVER_URL = os.getenv("AGENT_CONTROL_URL", "http://localhost:8000")
-MODEL_NAME = os.getenv("AGENT_MODEL") or os.getenv("GOOGLE_MODEL", "gemini-2.5-flash")
-OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL")
+# Both names, because the SDK's managed-model swap accepts either. Honouring only
+# one here produces a half-configured process: the SDK applies a managed OpenAI
+# model while this module still declares Gemini as the agent's own baseline.
+OPENAI_BASE_URL = os.getenv("AGENT_CONTROL_MODEL_BASE_URL") or os.getenv("OPENAI_BASE_URL")
+
+# The baseline, used only when the console has no model configured for this agent.
+# It follows the endpoint rather than being fixed: defaulting to Gemini while
+# pointed at an OpenAI-compatible base URL sends traffic to Google with a key this
+# deployment may not even hold, and the operator sees a working agent either way.
+DEFAULT_OPENAI_MODEL = os.getenv("AGENT_CONTROL_DEFAULT_MODEL", "gpt-5.6-sol")
+MODEL_NAME = os.getenv("AGENT_MODEL") or (
+    DEFAULT_OPENAI_MODEL if OPENAI_BASE_URL else os.getenv("GOOGLE_MODEL", "gemini-2.5-flash")
+)
 
 
 def _build_model(model_name: str, base_url: str | None) -> object:
