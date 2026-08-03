@@ -12,7 +12,9 @@ import type { Attachment } from '@/core/api/types';
  * admin endpoint in the product. There is no sanitizer here and there is not
  * meant to be one: React escapes a text node, so the file called
  * `<img src=x onerror=alert(1)>` renders as those characters and does nothing.
- * No markdown, no `dangerouslySetInnerHTML`, and no link built from a filename.
+ * No markdown, no raw-HTML escape hatch, and no link built from a filename.
+ * CI greps this directory for the name of that escape hatch, which is why this
+ * comment describes it instead of spelling it.
  *
  * The name is truncated by CSS rather than by slicing the string. Slicing at a
  * fixed length can cut a surrogate pair in half, and the replacement character
