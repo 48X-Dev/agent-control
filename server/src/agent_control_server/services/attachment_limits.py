@@ -36,6 +36,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..config import ExecutorSettings
 from ..errors import APIError
 from ..models import AgentSessionAttachment
+from .attachment_converter_containers import refine_container_mime
 from .attachment_quota import get_attachment_quota
 from .executor_metrics import (
     ATTACHMENT_UPLOAD_QUOTA,
@@ -52,15 +53,19 @@ def require_accepted_type(
 
     The declared type decides nothing. A ``.pdf`` that is really a ZIP is
     refused as a ZIP, which is also what happens to every Office format, since
-    OOXML and ODF are ZIP containers. The message says to export a PDF rather
-    than leaving the caller to work out why their deck was called a zip file.
+    OOXML and ODF are ZIP containers, so the sniff alone cannot tell a deck from
+    an archive. ``refine_container_mime`` resolves the OOXML three structurally
+    before this gate reads the type; anything still called ``application/zip``
+    here is a container this deployment cannot open, and the message says to
+    export a PDF rather than leaving the caller to work out why their file was
+    called a zip.
 
     Plain text, markdown and CSV sniff as nothing at all, so they arrive here as
     ``unrecognized``. The hint names the remedy the plan names for them - paste
     the contents into the message - because a list of accepted types tells
     somebody holding a ``.md`` file what they cannot do and not what they can.
     """
-    sniffed = sniff_mime(data)
+    sniffed = refine_container_mime(data, sniff_mime(data))
     accepted = settings.attachment_accepted_mimes
     if sniffed is not None and sniffed in accepted:
         return sniffed

@@ -545,6 +545,14 @@ class ExecutorSettings(BaseSettings):
         "image/png",
         "image/jpeg",
         "image/webp",
+        # OOXML. These sniff as application/zip and are resolved structurally by
+        # attachment_containers.refine_container_mime, never from the filename.
+        # The converter reads their text layer; a chart or a pasted screenshot
+        # inside one is still invisible, which is why the status stays
+        # text_layer_extracted rather than ok.
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     }
 
     # Twenty megabytes is a very large document and the resident cost of one is
