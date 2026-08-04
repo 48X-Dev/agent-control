@@ -20,7 +20,11 @@ type AuthState =
   | { status: 'loading' }
   | { status: 'not-required' }
   | { status: 'needs-login' }
-  | { status: 'authenticated'; isAdmin: boolean }
+  // `isAdmin` is null when the session was resumed from a cookie: the config
+  // route reports that a session exists, never what tier its key holds. Only
+  // a login in this tab answers that, so null means unknown and must not be
+  // read as "not an admin".
+  | { status: 'authenticated'; isAdmin: boolean | null }
   | { status: 'error'; message: string };
 
 type AuthContextValue = {
@@ -55,7 +59,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
         } else {
           if (config.has_active_session) {
             // Cookie or header already authenticated; no need to prompt.
-            setAuth({ status: 'authenticated', isAdmin: false });
+            setAuth({ status: 'authenticated', isAdmin: null });
           } else {
             setAuth({ status: 'needs-login' });
           }

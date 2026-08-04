@@ -760,6 +760,7 @@ function teamSummary(
     namespace_key: 'default',
     description: null,
     linear_team_key: null,
+    default_agent_name: null,
     member_count: 0,
     created_at: '2024-01-01T00:00:00Z',
     updated_at: '2024-01-01T00:00:00Z',
@@ -783,6 +784,7 @@ const teamsList: TeamSummary[] = [
     slug: 'sales-outreach',
     display_name: 'Sales & Outreach',
     description: 'Owns pipeline, prospecting and follow-up.',
+    default_agent_name: 'lead-qualifier',
     member_count: teamMemberNames['sales-outreach'].length,
   }),
   teamSummary({
@@ -2480,6 +2482,43 @@ export const mockRoutes = {
   },
 
   /**
+   * Mock `GET /api/v1/agent-models`, the admin-tier probe.
+   *
+   * The route is gated on `AGENT_CONFIGS_WRITE`, so the UI reads a 403 here as
+   * "this credential is not an admin" and disables admin-only controls. Pass
+   * `admin: false` to be that read-only session. Answering 200 by default
+   * keeps every other test on the admin path it already assumed.
+   *
+   * Distinct from the fuller `agentConfig` mock, which also serves this path:
+   * that one spans `**\/api\/v1\/agents\/**` and is kept out of the default
+   * set for the timing reason documented on it. This is one exact path.
+   */
+  adminProbe: async (page: Page, options: { admin?: boolean } = {}) => {
+    await page.route('**/api/v1/agent-models', async (route) => {
+      if (options.admin === false) {
+        await route.fulfill({
+          status: 403,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            type: 'about:blank',
+            title: 'Forbidden',
+            status: 403,
+            detail: 'Admin key required',
+            error_code: 'FORBIDDEN',
+            reason: 'Forbidden',
+          }),
+        });
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ models: agentModelOptions }),
+      });
+    });
+  },
+
+  /**
    * Mock GET /api/v1/teams and GET /api/v1/teams/:slug.
    *
    * `details` supplies the per-team responses the overview fetches for member
@@ -2597,10 +2636,19 @@ export const mockRoutes = {
    * Mock PATCH /api/v1/teams/:slug, the write the Linear link form makes.
    *
    * Records each submitted body so a test can assert what left the browser.
+   *
+   * Pass the same `details` object given to {@link mockRoutes.teams} to have an
+   * accepted write land in it, so the refetch that follows returns the new
+   * value. Without it the GET keeps serving the old one and a test cannot tell
+   * a refreshed view from a stale one.
    */
   teamPatch: async (
     page: Page,
-    options: { status?: number; errorCode?: string } = {}
+    options: {
+      status?: number;
+      errorCode?: string;
+      details?: Record<string, GetTeamResponse>;
+    } = {}
   ) => {
     const submitted: Array<Record<string, unknown>> = [];
 
@@ -2633,6 +2681,14 @@ export const mockRoutes = {
       const slug = decodeURIComponent(
         new URL(request.url()).pathname.split('/').pop() ?? ''
       );
+
+      const stored = options.details?.[slug];
+      if (stored && 'default_agent_name' in body) {
+        stored.default_agent_name = (body.default_agent_name ?? null) as
+          | string
+          | null;
+      }
+
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -2642,6 +2698,7 @@ export const mockRoutes = {
           display_name: mockData.teamDetails[slug]?.display_name ?? slug,
           description: null,
           linear_team_key: body.linear_team_key ?? null,
+          default_agent_name: body.default_agent_name ?? null,
         }),
       });
     });
@@ -2683,6 +2740,7 @@ export const mockRoutes = {
  */
 export async function mockApiRoutes(page: Page) {
   await mockRoutes.config(page);
+  await mockRoutes.adminProbe(page);
   await mockRoutes.agents(page);
   await mockRoutes.agent(page);
   await mockRoutes.evaluators(page);
@@ -2711,6 +2769,7 @@ export async function mockApiRoutesWithAuthRequired(page: Page) {
       has_active_session: false,
     },
   });
+  await mockRoutes.adminProbe(page);
   await mockRoutes.agents(page);
   await mockRoutes.agent(page);
   await mockRoutes.evaluators(page);

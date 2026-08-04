@@ -25,6 +25,7 @@ import { getAgentRoute } from '@/core/constants/agent-routes';
 import { useTeamAgents } from '@/core/hooks/query-hooks/use-team-agents';
 import { useInfiniteScroll } from '@/core/hooks/use-infinite-scroll';
 
+import { TeamDefaultAgent } from './team-default-agent';
 import classes from './team-detail.module.css';
 
 const SKELETON_ROW_COUNT = 4;
@@ -192,6 +193,11 @@ export function TeamAgents({ slug }: { slug: string }) {
             </Text>
           ) : null}
         </Group>
+
+        {/* Above the list, not inside it: the default names one of these
+            agents, and which one it is decides the controls a dispatched
+            task runs under. */}
+        <TeamDefaultAgent slug={slug} />
 
         {renderBody()}
       </Stack>

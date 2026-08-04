@@ -41,10 +41,11 @@ export function useAgentModels() {
  * Whether this credential may write an agent's configuration.
  *
  * Derived from the allowlist route rather than from the login response,
- * because a session resumed from a cookie reports `isAdmin: false` whatever
- * the key behind it actually is. `GET /agent-models` is gated on the same
- * operation as every write on this tab, so its answer is the one that matters:
- * a 403 means Save would be refused too.
+ * because a session resumed from a cookie reports `isAdmin: null` - unknown,
+ * not false, since `/api/config` never says what tier the key holds. Unknown
+ * is not an answer either, so the probe stays. `GET /agent-models` is gated on
+ * the same operation as every write on this tab, so its answer is the one that
+ * matters: a 403 means Save would be refused too.
  *
  * Undefined while the probe is in flight, so callers can hold off on
  * disabling controls they are about to enable.
