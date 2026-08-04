@@ -33,6 +33,8 @@ from pathlib import Path
 from types import TracebackType
 from typing import Protocol
 
+from agent_control_models.attachments import StepFilesSummary
+
 from .envelope import PriorReport
 from .sources.base import SourceItem
 
@@ -151,8 +153,13 @@ class TaskLedger(Protocol):
         agent_name: str,
         brief: str,
         step_index: int | None = None,
-    ) -> None:
+    ) -> StepFilesSummary | None:
         """Record the session this item's step is running on, before its turn.
+
+        Returns what the server found attached to the item, when it looked.
+        ``None`` means it did not look - no tracker behind this task, or the
+        source switched off - and an envelope says nothing at all in that case
+        rather than claiming an issue carries no files.
 
         ``step_index`` defaults to the position the claim reported, which is
         where a one-step task and a reclaimed task both resume. A chain passes
@@ -424,11 +431,13 @@ class LocalTaskLedger:
         agent_name: str,
         brief: str,
         step_index: int | None = None,
-    ) -> None:
+    ) -> StepFilesSummary | None:
         del agent_name, brief, step_index
         self._ledger.record_session(
             source_kind=source_kind, ref=ref, session_key=session_key
         )
+        # The local ledger has no server behind it and therefore no fetch.
+        return None
 
     async def finish(
         self,

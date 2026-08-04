@@ -527,6 +527,18 @@ def get_conversion_scheduler() -> ConversionScheduler:
     return _scheduler
 
 
+def reset_conversion_scheduler() -> None:
+    """Forget what this process thinks is in flight.
+
+    For tests, following ``reset_turn_quota`` and ``reset_attachment_quota``.
+    The in-flight set is cleared by :meth:`ConversionScheduler._run`'s own
+    ``finally``, which a server process always reaches; a test whose event loop
+    ends with a task still pending never runs it, and the marker it left behind
+    would make the next test's identical content refuse to schedule at all.
+    """
+    _scheduler._inflight.clear()
+
+
 def schedule_conversion(
     *,
     namespace_key: str,

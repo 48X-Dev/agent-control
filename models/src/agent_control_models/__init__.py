@@ -77,6 +77,7 @@ from .attachments import (
     Attachment,
     AttachmentKey,
     AttachmentOrigin,
+    AttachmentRefusalCode,
     AttachmentStatus,
     AttachmentVariant,
     CreateAttachmentResponse,
@@ -84,6 +85,7 @@ from .attachments import (
     GetAttachmentResponse,
     ListAttachmentsResponse,
     StepAttachmentSummary,
+    StepFilesSummary,
     TurnAttachmentVerdict,
 )
 from .controls import (
@@ -397,6 +399,8 @@ __all__ = [
     "GetAttachmentResponse",
     "ListAttachmentsResponse",
     "StepAttachmentSummary",
+    "StepFilesSummary",
+    "AttachmentRefusalCode",
     "TurnAttachmentVerdict",
     "MAX_DISPLAY_NAME_CHARS",
     "is_mime_mismatch",

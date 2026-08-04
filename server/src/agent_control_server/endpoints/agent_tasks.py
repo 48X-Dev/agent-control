@@ -32,6 +32,9 @@ deadline.
 
 from __future__ import annotations
 
+import logging
+
+from agent_control_models.attachments import StepFilesSummary
 from agent_control_models.errors import ErrorCode
 from agent_control_models.server import PaginationInfo
 from agent_control_models.tasks import (
@@ -67,6 +70,15 @@ from ..errors import BadRequestError
 from ..services.agent_tasks import AgentTasksService
 from ..services.agent_workflows import AgentWorkflowsService
 from ..services.caller_identity import hash_caller_id
+from ..services.step_attachment_conversions import settle_step_conversions
+from ..services.step_attachments import (
+    fetch_step_files,
+    plan_step_files,
+    record_step_summary,
+    store_step_files,
+)
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/agent-tasks", tags=["agent-tasks"])
 
@@ -389,6 +401,20 @@ async def start_agent_task_step(
     Refused past the task's deadline. That ceiling is checked here rather than
     in the dispatcher precisely because a hung dispatcher is the thing it
     bounds.
+
+    **And this is where the tracker's own files are fetched**, in three parts
+    around one commit, which is the reason the route reads the way it does.
+    The row is opened and committed first, so the connection goes back to the
+    pool; the fetch then runs with no session in hand at all, under a single
+    wall-clock budget across every file on the step; a second short write
+    stores what arrived. Twenty-five seconds of network wait inside the first
+    transaction would hold a pooled connection for the whole of it, against a
+    pool of five with ten overflow.
+
+    ``files`` on the response is what lets the dispatcher's envelope say "2 of
+    3 files were delivered". ``None`` means no fetch ran - the deployment has
+    the source off, or this task did not come from one - which is a different
+    answer from a fetch that found nothing.
     """
     service = _service(db)
     step, task = await service.start_step(
@@ -400,8 +426,47 @@ async def start_agent_task_step(
         brief=request.brief,
         session_key=request.session_key,
     )
+    plan = await plan_step_files(
+        db,
+        namespace_key=principal.namespace_key,
+        task=task,
+        step_index=request.step_index,
+        session_key=request.session_key,
+        caller_hash=hash_caller_id(principal.caller_id),
+    )
     await db.commit()
-    return AgentTaskStepResponse(step=step, task=task)
+    if plan is None:
+        return AgentTaskStepResponse(step=step, task=task)
+
+    try:
+        files = await fetch_step_files(plan)
+        stored = await store_step_files(db, plan=plan, files=files)
+        await db.commit()
+        # After the commit, deliberately. The bytes have to be visible to the
+        # background converter's own session before there is anything to wait
+        # for, and this wait holds no connection of its own.
+        summary = await settle_step_conversions(plan=plan, stored=stored)
+        await record_step_summary(db, plan=plan, summary=summary)
+        await db.commit()
+    except Exception:
+        # The step row is already committed. Answering 500 here would tell the
+        # dispatcher the step never opened, so it would close out the task and
+        # leave a row running until a reclaim swept it - a worse outcome than
+        # a step that ran with no files. Logged as an exception because unlike
+        # every refusal above, reaching this is a defect in this server.
+        await db.rollback()
+        logger.exception("Attaching this step's tracker files failed.")
+        # Not ``files=None``, which renders nothing at all, and not a zero
+        # count, which asserts the issue carries no files. This server tried to
+        # list them and could not, and an agent that is told there is nothing
+        # to read will confidently answer from the title - the exact failure
+        # this route exists to remove.
+        return AgentTaskStepResponse(
+            step=step,
+            task=task,
+            files=StepFilesSummary(found=0, delivered=0, files=[], read_failed=True),
+        )
+    return AgentTaskStepResponse(step=step, task=task, files=summary)
 
 
 @router.post(

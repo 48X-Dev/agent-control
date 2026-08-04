@@ -32,6 +32,7 @@ from typing import Any
 from urllib.parse import quote
 
 import httpx
+from agent_control_models.attachments import StepFilesSummary
 from agent_control_models.dispatch import (
     DispatchStateSnapshot,
     GetDispatchStateResponse,
@@ -41,6 +42,7 @@ from agent_control_models.observability import ControlExecutionEvent
 from agent_control_models.sessions import TurnResponse
 from agent_control_models.tasks import (
     AgentTaskDetail,
+    AgentTaskStepResponse,
     ClaimAgentTaskResponse,
     GetAgentTaskResponse,
     ImportAgentTasksResponse,
@@ -92,6 +94,15 @@ Two flush intervals plus room for the round trip. It costs nothing on a blocked
 turn, because the loop returns the moment an event appears, and it costs the
 full window on every clean one. That is the price of not silently reporting a
 refusal as a finding."""
+
+DEFAULT_STEP_TIMEOUT_SECONDS = 90.0
+"""How long ``POST /agent-tasks/{key}/steps`` may take.
+
+Longer than the 30-second client default because that route now fetches the
+issue's files before it answers, under a server-side per-step budget that
+defaults to 25 seconds across all of them. Shorter than a turn by a wide
+margin: nothing behind this call runs a model, so a step that has not answered
+in a minute and a half is a fault rather than a long job."""
 
 DEFAULT_TURN_TIMEOUT_SECONDS = 300.0
 DEFAULT_RETRY_AFTER_SECONDS = 60.0
@@ -215,6 +226,7 @@ class DispatchClient:
     ) -> None:
         self._api_root = base_url.rstrip("/") + "/api/v1"
         self._turn_timeout = turn_timeout_seconds
+        self._step_timeout = DEFAULT_STEP_TIMEOUT_SECONDS
         self._attributed_deny_ids: set[str] = set()
         self._client = httpx.AsyncClient(
             headers={"X-API-Key": api_key, "Content-Type": "application/json"},
@@ -255,7 +267,13 @@ class DispatchClient:
         session = payload["session"]
         return str(session["session_key"])
 
-    async def start_turn(self, *, session_key: str, message: str) -> TurnResponse:
+    async def start_turn(
+        self,
+        *,
+        session_key: str,
+        message: str,
+        attachment_keys: Sequence[str] = (),
+    ) -> TurnResponse:
         """Run one turn to completion.
 
         ``EXECUTOR_UNAVAILABLE`` is the only status retried, three attempts,
@@ -271,7 +289,10 @@ class DispatchClient:
                 payload = await self._request(
                     "POST",
                     f"/agent-sessions/{session_key}/turns",
-                    json={"message": message},
+                    json={
+                        "message": message,
+                        "attachment_keys": list(attachment_keys),
+                    },
                     timeout=self._turn_timeout,
                 )
             except DispatchHTTPError as exc:
@@ -459,10 +480,20 @@ class DispatchClient:
         agent_name: str,
         brief: str,
         session_key: str | None,
-    ) -> None:
-        """Open the step row before the turn, so a death leaves a mark."""
+    ) -> StepFilesSummary | None:
+        """Open the step row before the turn, so a death leaves a mark.
 
-        await self._request(
+        The server fetches the issue's files inside this call and answers with
+        what it found against what it stored. ``None`` means no fetch ran at
+        all, which is not the same as a fetch that found nothing: this side
+        renders the second and says nothing about the first.
+
+        No URL crosses this boundary in either direction. What comes back is
+        attachment keys and server-authored refusal codes, which is the whole
+        reason the fetch is on that side.
+        """
+
+        payload = await self._request(
             "POST",
             f"/agent-tasks/{quote(task_key, safe='')}/steps",
             json={
@@ -472,7 +503,9 @@ class DispatchClient:
                 "brief": brief,
                 "session_key": session_key,
             },
+            timeout=self._step_timeout,
         )
+        return AgentTaskStepResponse.model_validate(payload).files
 
     async def finish_task_step(
         self,

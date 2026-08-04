@@ -66,6 +66,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TextIO
 
+from agent_control_models.attachments import StepFilesSummary
 from agent_control_models.sessions import TurnResponse
 
 from .client import DispatchClient, DispatchHTTPError, Disposition
@@ -768,6 +769,18 @@ async def _run_one(
     return result
 
 
+def _delivered_keys(files: StepFilesSummary | None) -> list[str]:
+    """The attachment keys to send with the turn, and nothing else.
+
+    A key is an opaque server-minted handle. This process never sees a tracker
+    URL and could not construct one, which is the property that keeps the
+    Linear credential on the server side of the wire where it was issued.
+    """
+    if files is None:
+        return []
+    return [entry.attachment_key for entry in files.files if entry.attachment_key is not None]
+
+
 async def _run_step(
     *,
     client: DispatchClient,
@@ -780,7 +793,7 @@ async def _run_step(
     stream: TextIO,
     opened_sessions: list[str],
 ) -> TaskResult:
-    """One hop: build the envelope, open a session, run a turn, record it."""
+    """One hop: open a session, open the step, build the envelope, run a turn."""
 
     prior: PriorReport | None = None
     if step.index > 0:
@@ -810,29 +823,13 @@ async def _run_step(
             )
 
     _emit(stream, f"step {step.index}     {step.agent_name}")
-    try:
-        message = build_envelope(
-            item=item, brief=step.brief, source_kind=source_kind, prior=prior
-        )
-    except EnvelopeTooLongError as exc:
-        await ledger.finish(
-            source_kind=source_kind,
-            ref=item.ref,
-            status=ClaimStatus.FAILED,
-            outcome_code=ENVELOPE_TOO_LONG,
-            detail=str(exc),
-            step_index=step.index,
-        )
-        _emit(stream, f"outcome    {ENVELOPE_TOO_LONG}: {exc}")
-        return TaskResult(
-            ref=item.ref,
-            status=ClaimStatus.FAILED,
-            outcome_code=ENVELOPE_TOO_LONG,
-            detail=str(exc),
-        )
-    if options.print_envelope:
-        _emit(stream, _indent(message))
 
+    # The order here is the reordering plan section 3.9 asks for, and it is not
+    # a reshuffle. The envelope has to describe the files the step found, so the
+    # fetch has to happen before the envelope is built; the fetch happens inside
+    # the server's start_step, which needs a session to store against. Hence
+    # session, then step, then envelope, then turn. An envelope built first
+    # could not say "2 of 3 files were delivered" about anything.
     try:
         session_key = await client.create_session(
             agent_name=step.agent_name,
@@ -852,18 +849,58 @@ async def _run_step(
     # reached the executor rather than leaving nothing at all. The heartbeat
     # rides along inside it, which is what keeps a four-hop chain from being
     # reclaimed underneath itself while its third turn is running.
-    await ledger.record_session(
-        source_kind=source_kind,
-        ref=item.ref,
-        session_key=session_key,
-        agent_name=step.agent_name,
-        brief=step.brief,
-        step_index=step.index,
-    )
+    try:
+        files = await ledger.record_session(
+            source_kind=source_kind,
+            ref=item.ref,
+            session_key=session_key,
+            agent_name=step.agent_name,
+            brief=step.brief,
+            step_index=step.index,
+        )
+    except DispatchHTTPError as exc:
+        return await _fail(ledger, source_kind, item, exc, stream, session_key=session_key)
     _emit(stream, f"session    {session_key}")
+    if files is not None:
+        _emit(stream, f"files      {files.delivered} of {files.found} delivered")
 
     try:
-        turn = await client.start_turn(session_key=session_key, message=message)
+        message = build_envelope(
+            item=item,
+            brief=step.brief,
+            source_kind=source_kind,
+            prior=prior,
+            files=files,
+        )
+    except EnvelopeTooLongError as exc:
+        # The step is open by now, so this closes it rather than only the task.
+        # Before the reorder there was no step to close here; leaving that as it
+        # was would leave a row stuck at ``running`` until a reclaim swept it.
+        await ledger.finish(
+            source_kind=source_kind,
+            ref=item.ref,
+            status=ClaimStatus.FAILED,
+            outcome_code=ENVELOPE_TOO_LONG,
+            detail=str(exc),
+            step_index=step.index,
+        )
+        _emit(stream, f"outcome    {ENVELOPE_TOO_LONG}: {exc}")
+        return TaskResult(
+            ref=item.ref,
+            status=ClaimStatus.FAILED,
+            outcome_code=ENVELOPE_TOO_LONG,
+            detail=str(exc),
+            session_key=session_key,
+        )
+    if options.print_envelope:
+        _emit(stream, _indent(message))
+
+    try:
+        turn = await client.start_turn(
+            session_key=session_key,
+            message=message,
+            attachment_keys=_delivered_keys(files),
+        )
     except DispatchHTTPError as exc:
         return await _fail(ledger, source_kind, item, exc, stream, session_key=session_key)
 

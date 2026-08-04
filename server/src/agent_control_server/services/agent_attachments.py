@@ -187,6 +187,7 @@ class AgentAttachmentsService:
         data: bytes,
         origin: AttachmentOrigin = AttachmentOrigin.OPERATOR_UPLOAD,
         origin_ref: str | None = None,
+        enforce_rate: bool = True,
     ) -> tuple[AgentSessionAttachment, bool]:
         """Store one file against one session. Returns ``(row, deduplicated)``.
 
@@ -209,12 +210,20 @@ class AgentAttachmentsService:
         failed. All three are resurrected instead: same key, same
         ``created_at``, bytes back, status ``ready``. Minting a second row would
         break the audit chain the tombstone exists to keep.
+
+        ``enforce_rate`` is off for exactly one caller: the Linear fetch, which
+        is already bounded by a per-issue count and a per-task byte ceiling and
+        has no browser behind it. The per-minute limiter exists to stop a person
+        or a script flooding the upload route; charging a three-file step
+        against it would refuse real files on a long chain for a reason that
+        has nothing to do with what the step was doing.
         """
-        enforce_upload_rate(
-            settings=self._settings,
-            namespace_key=namespace_key,
-            caller_hash=caller_hash,
-        )
+        if enforce_rate:
+            enforce_upload_rate(
+                settings=self._settings,
+                namespace_key=namespace_key,
+                caller_hash=caller_hash,
+            )
 
         source_sha = hashlib.sha256(data).hexdigest()
         existing = await self._find_by_content(
