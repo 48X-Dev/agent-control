@@ -88,6 +88,15 @@ def refs_digest(refs: Sequence[str]) -> str:
     return f"sha256:{hashlib.sha256(joined).hexdigest()}"
 
 
+_CANCELLABLE_TASK_STATUSES: frozenset[AgentTaskStatus] = frozenset(
+    {AgentTaskStatus.QUEUED, AgentTaskStatus.BLOCKED}
+)
+"""What an operator may clear by hand, both of them before any turn ran.
+
+Deliberately not a status that ran or is running: those end at a real outcome
+or at a halt, never at somebody deciding they did not happen."""
+
+
 class AgentTasksService:
     """One namespace's dispatch ledger."""
 
@@ -654,17 +663,34 @@ class AgentTasksService:
     async def cancel(
         self, *, namespace_key: str, task_key: str, reason: str | None
     ) -> AgentTaskDetail:
-        """Take a queued task off the list, before anything ran.
+        """Take a task off the list from ``queued`` or ``blocked``, before anything ran.
 
-        Only from ``queued``. Cancelling a running task would tell the operator
+        Not from ``running``. Cancelling a running task would tell the operator
         that work had stopped when the turn is still going: stopping a turn is
         a halt, and it is a different button with a different mechanism.
+
+        ``blocked`` is here because leaving it out was a dead end, found by
+        walking into it. ``blocked`` is in neither ``TERMINAL_TASK_STATUSES``
+        nor ``RECLAIMABLE_TASK_STATUSES``: it holds the source ref so the issue
+        cannot be queued again, and no dispatcher may take it back. With cancel
+        refusing it too, a task blocked on a configuration mistake pinned its
+        issue permanently, and the only way out was editing the database. That
+        contradicts what ``TERMINAL_TASK_STATUSES`` says about itself - "a held
+        slot is always recoverable by something".
+
+        Nothing ran, which is what makes this safe: ``blocked`` is set before a
+        turn is started, and its whole meaning is that a human has to change
+        something first. Once they have, clearing the row is how the issue gets
+        queued again against the fixed configuration.
         """
         row = await self._require_row(namespace_key=namespace_key, task_key=task_key)
-        if AgentTaskStatus(row.status) is not AgentTaskStatus.QUEUED:
+        if AgentTaskStatus(row.status) not in _CANCELLABLE_TASK_STATUSES:
             raise ConflictError(
                 error_code=ErrorCode.TASK_STATUS_CONFLICT,
-                detail=f"Task {task_key} is {row.status}; only a queued task can be cancelled.",
+                detail=(
+                    f"Task {task_key} is {row.status}; only a queued or blocked task "
+                    "can be cancelled."
+                ),
                 resource="AgentTask",
                 resource_id=task_key,
                 hint="A running turn is stopped with a halt, not by cancelling its task.",
