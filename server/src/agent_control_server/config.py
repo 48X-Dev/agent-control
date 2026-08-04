@@ -374,10 +374,91 @@ class LinearSettings(BaseSettings):
     max_projects: int = Field(default=50, ge=1, le=250)
     max_milestones_per_project: int = Field(default=50, ge=1, le=250)
 
+    # ---------------------------------------------------------------------
+    # Files uploaded to Linear, fetched for the issue a step is working.
+    #
+    # The API key above is a server-held credential and an attachment URL is a
+    # string that arrived in tracker data. Sending the first to whatever host
+    # the second names would be a credential leak wearing a feature's clothes,
+    # and it is the one place the plan's trust decision provides no cover at
+    # all: trusting a document says nothing about trusting a URL. Everything
+    # below exists to keep those two apart.
+    # ---------------------------------------------------------------------
+    attachments_enabled: bool = False
+
+    # Exact hostnames, matched case-insensitively and never as suffixes. A
+    # suffix rule would admit uploads.linear.app.evil.test.
+    attachment_host_allowlist: set[str] = {"uploads.linear.app"}
+
+    # Followed by hand, re-checked per hop. A hop outside the allowlist drops
+    # the Authorization header and refuses rather than retrying anonymously.
+    attachment_max_redirects: int = Field(default=2, ge=0, le=5)
+
+    # Picked deterministically by attachment id, so two reads of an unchanged
+    # issue deliver the same files and a chain does not shuffle what its steps
+    # saw.
+    #
+    # Bounded by what one turn can actually carry rather than by a round number.
+    # ``StartTurnRequest.attachment_keys`` validates its length against
+    # ``ATTACHMENT_MAX_PER_TURN``, so a deployment that raised this above it
+    # would fetch and store files it could not then send, and the step would
+    # fail at the turn on a 422 rather than at the setting.
+    attachments_max_per_issue: int = Field(
+        default=3, ge=1, le=ATTACHMENT_MAX_PER_TURN
+    )
+
+    # A wall-clock budget across every attachment on one step, not per file.
+    # Three attachments at a per-file timeout would be a minute of network wait
+    # for one step. The fetch runs outside any database session, but a step is
+    # still a unit somebody is waiting on.
+    attachment_step_budget_seconds: float = Field(default=25.0, gt=0)
+
+    # How long the step waits for the text of the files it just fetched.
+    #
+    # Delivery to the model is text, so a stored file whose conversion has not
+    # finished is a file the agent cannot read. Nobody is watching a dispatch
+    # chain, and the gap between opening the step and starting its turn is one
+    # HTTP round trip - a background conversion cannot possibly have finished
+    # in it, so without this wait the goal of the whole feature fails on the
+    # step that fetched the file and succeeds only on a step that runs the same
+    # issue again.
+    #
+    # This is not the blocking conversion the plan's section 3.4 rejects. That
+    # rejection is about a request holding a pooled database connection for the
+    # length of an OCR run; this waits with no session in hand, on a route
+    # nobody is watching, under a ceiling, and answers honestly when it runs
+    # out. The chat path still never waits, because an operator is standing in
+    # front of it.
+    attachment_conversion_wait_seconds: float = Field(default=40.0, ge=0)
+
+    # How often the wait above looks. Short enough that a fast MarkItDown
+    # extraction is not padded to a second, long enough that a forty-second
+    # wait is not four hundred database reads.
+    attachment_conversion_poll_seconds: float = Field(default=0.25, gt=0)
+
+    # Ceiling on one fetched body. An Attachment carries no size and no content
+    # type, so nothing knows how big a file is before fetching it: this is
+    # enforced against a running count while the body streams, never against a
+    # Content-Length a server can understate.
+    attachment_max_bytes: int = Field(default=20_971_520, ge=1, le=52_428_800)
+
+    # ``Attachment.sourceType`` values worth spending a fetch on. Empty means
+    # no filtering, which is the shipped default and is deliberate: measured
+    # against this workspace on 2026-08-03, every Attachment row carries
+    # ``oauthClient`` and the six human-uploaded files reach their issues as
+    # markdown links with no Attachment row at all. Filtering on a guessed
+    # value would drop real files, and the control that actually keeps this
+    # honest is the host allowlist above, which no tracker author can widen.
+    attachment_source_types: set[str] = set()
+
     def get_api_key(self) -> str | None:
         """Return the configured API key, or ``None`` when Linear is not set up."""
         key = self.api_key.get_secret_value().strip()
         return key or None
+
+    def allows_host(self, host: str) -> bool:
+        """Whether this exact hostname may receive the API key."""
+        return host.lower() in {allowed.lower() for allowed in self.attachment_host_allowlist}
 
 
 class ExecutorSettings(BaseSettings):
@@ -484,6 +565,14 @@ class ExecutorSettings(BaseSettings):
     attachment_turn_total_bytes: int = Field(default=20_971_520, ge=1)
     attachment_session_total_bytes: int = Field(default=104_857_600, ge=1)
     attachment_namespace_total_bytes: int = Field(default=2_147_483_648, ge=1)
+
+    # Across every step of one dispatch task, and separate from the ceilings
+    # above because those bound concurrency and disk rather than bytes pulled
+    # over the wire with nobody in the room. A twelve-step chain over an
+    # attachment-heavy milestone is how this feature spends a personal
+    # subscription's quota unattended; the step that would cross this is
+    # refused and the agent is told, rather than skipped in silence.
+    attachment_task_total_bytes: int = Field(default=41_943_040, ge=1)
 
     # Two rates, because a stored-bytes ceiling is not a rate and upload
     # flooding fills the namespace ceiling long before anyone notices.

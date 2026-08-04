@@ -97,7 +97,7 @@ async def test_the_turn_carries_the_envelope_as_the_message() -> None:
     async with _client(handler) as client:
         await client.start_turn(session_key="sk", message="<<<TASK_BEGIN>>>")
 
-    assert bodies == [{"message": "<<<TASK_BEGIN>>>"}]
+    assert bodies == [{"message": "<<<TASK_BEGIN>>>", "attachment_keys": []}]
 
 
 # --- section 11.3 -----------------------------------------------------------

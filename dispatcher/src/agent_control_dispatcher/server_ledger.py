@@ -39,6 +39,7 @@ import socket
 from collections.abc import Sequence
 from uuid import uuid4
 
+from agent_control_models.attachments import StepFilesSummary
 from agent_control_models.tasks import AgentTaskStepStatus
 
 from .client import DispatchClient, DispatchHTTPError, Disposition
@@ -272,8 +273,13 @@ class ServerTaskLedger:
         agent_name: str,
         brief: str,
         step_index: int | None = None,
-    ) -> None:
+    ) -> StepFilesSummary | None:
         """Open the step row, carrying the session, before the turn starts.
+
+        This is also where the server fetches whatever the tracker has attached
+        to the item, which is why it now returns something. It has to happen
+        here and not earlier: the envelope is built from the answer, and an
+        envelope built before the fetch could not describe it.
 
         The heartbeat immediately before it is not ceremony, and on a chain it
         is what the lease depends on. The claim's lease started when the claim
@@ -291,14 +297,14 @@ class ServerTaskLedger:
         """
         key = self._task_keys.get((source_kind, ref))
         if key is None:
-            return
+            return None
         index = (
             step_index
             if step_index is not None
             else self._step_index.get((source_kind, ref), 0)
         )
         await self._client.heartbeat_task(task_key=key, instance_id=self._instance_id)
-        await self._client.start_task_step(
+        files = await self._client.start_task_step(
             task_key=key,
             instance_id=self._instance_id,
             step_index=index,
@@ -309,6 +315,7 @@ class ServerTaskLedger:
         self._step_index[(source_kind, ref)] = index
         self._agent_names[(source_kind, ref)] = agent_name
         self._open_steps.add((source_kind, ref))
+        return files
 
     async def complete_step(
         self,

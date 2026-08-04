@@ -40,6 +40,7 @@ from typing import Annotated
 from pydantic import ConfigDict, Field, StringConstraints, field_validator
 
 from .agent_runtimes import AgentName
+from .attachments import StepFilesSummary
 from .base import BaseModel
 from .dispatch import DispatchStateSnapshot
 from .server import PaginationInfo
@@ -773,10 +774,19 @@ class FinishAgentTaskStepRequest(BaseModel):
 
 
 class AgentTaskStepResponse(BaseModel):
-    """The step as recorded, and the task it belongs to."""
+    """The step as recorded, the task it belongs to, and the files it found.
+
+    ``files`` is what makes the envelope able to say "2 of 3 files were
+    delivered". It is answered here rather than by a later read because the
+    step is the point where the fetch happens and the envelope is built from
+    what it returns. ``None`` means no fetch ran at all - the deployment has
+    the Linear source off, or this step opened on something with no issue
+    behind it - which is different from a fetch that found nothing.
+    """
 
     step: AgentTaskStep = Field(...)
     task: AgentTaskSummary = Field(...)
+    files: StepFilesSummary | None = Field(default=None)
 
 
 # =============================================================================

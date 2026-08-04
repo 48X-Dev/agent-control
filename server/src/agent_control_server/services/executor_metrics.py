@@ -281,3 +281,24 @@ Any reading above zero is a defect in this deployment's own code rather than
 anything about the file, which is why it is a label of its own: it is the only
 value here that nobody should ever see, and folding it into ``no_text`` would
 hide a server fault inside a normal-looking rate."""
+
+LINEAR_ATTACHMENT_FETCHES = Counter(
+    "agent_control_server_linear_attachment_fetches_total",
+    "Files found on a Linear issue, by what happened to each.",
+    ("result",),
+)
+"""``ok`` against the sum of everything else is the reconciliation an operator
+watches. The interesting label is ``blocked_host``: nothing in an ordinary
+workspace produces one, so a rate above zero means a tracker author is putting
+URLs somewhere this server declined to follow, and that is worth reading the
+issue over."""
+
+LINEAR_FETCH_OK = "ok"
+
+LINEAR_ATTACHMENT_BYTES = Counter(
+    "agent_control_server_linear_attachment_bytes_fetched_total",
+    "Bytes pulled from the upload host, counted as they stream.",
+)
+"""Counted while the body arrives rather than from a stored length, so bytes
+spent on a fetch that was then aborted at the ceiling are still counted. They
+were spent."""

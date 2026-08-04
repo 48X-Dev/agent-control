@@ -11,6 +11,7 @@ show them.
 from __future__ import annotations
 
 import datetime as dt
+from collections.abc import Sequence
 from typing import Any
 
 import pytest
@@ -111,6 +112,7 @@ class StubClient:
 
     def __init__(self, **_: Any) -> None:
         self.turns: list[str] = []
+        self.turn_attachment_keys: list[list[str]] = []
         self.deleted: list[str] = []
         self.created: list[tuple[str, str]] = []
         self.session_task_keys: list[str | None] = []
@@ -171,9 +173,16 @@ class StubClient:
             raise self.raise_on_session[index]
         return f"session-{index}"
 
-    async def start_turn(self, *, session_key: str, message: str) -> TurnResponse:
+    async def start_turn(
+        self,
+        *,
+        session_key: str,
+        message: str,
+        attachment_keys: Sequence[str] = (),
+    ) -> TurnResponse:
         index = len(self.turns)
         self.turns.append(message)
+        self.turn_attachment_keys.append(list(attachment_keys))
         if index in self.raise_on_turn:
             raise self.raise_on_turn[index]
         now = dt.datetime.now(dt.UTC)

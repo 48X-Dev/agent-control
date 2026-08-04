@@ -259,18 +259,56 @@ class DeleteAttachmentResponse(BaseModel):
     )
 
 
+class AttachmentRefusalCode(StrEnum):
+    """Why one file the step found is not in front of the agent.
+
+    Every value maps to one hand-written sentence in the dispatcher's envelope.
+    The code is server-authored and the sentence is server-authored; nothing
+    upstream writes either, because a parser's or a tracker's own words about a
+    file are attacker-influenced text arriving through the channel the whole
+    attachment design is guarding.
+    """
+
+    UNSUPPORTED_TYPE = "unsupported_type"
+    TOO_LARGE = "too_large"
+    FETCH_FAILED = "fetch_failed"
+    NOT_FOUND = "not_found"
+    LINK_ONLY = "link_only"
+    BLOCKED_HOST = "blocked_host"
+    OVER_PER_ISSUE_CAP = "over_per_issue_cap"
+    OVER_TASK_BUDGET = "over_task_budget"
+    BLOCKED = "blocked"
+    NOT_CONVERTED = "not_converted"
+    NO_TEXT = "no_text"
+
+    # The last two are about a file this server holds every byte of, and they
+    # exist because "stored" and "readable" are different facts. Delivery to a
+    # model is text (nothing else survives the configured endpoint), so a file
+    # whose text is not there is a file the agent cannot read, and an envelope
+    # calling it delivered while the delivery section beneath says it was not
+    # included would leave two server-authored sentences contradicting each
+    # other about one file.
+
+
 class StepAttachmentSummary(BaseModel):
     """What one dispatch step actually carried, kept on the step row.
 
     The durable record. It survives the session, and it survives the blob TTL
     that reclaims the bytes, which is what still answers "did this step have
     the spec" a week later. No bytes, no text, no URL.
+
+    **A file that never arrived gets a row here too**, carrying its refusal and
+    nothing else. Recording only the deliveries would leave the audit trail
+    saying the same thing an under-delivering step says to an agent - that
+    there was nothing to deliver - which is the failure this whole path exists
+    to prevent. So ``sha256``, ``size_bytes`` and ``sniffed_mime`` are optional:
+    they are facts about stored bytes, and a refusal has none.
     """
 
     display_name: str = Field(..., max_length=ATTACHMENT_DISPLAY_NAME_MAX_LENGTH)
-    sha256: str
-    size_bytes: int
-    sniffed_mime: str
+    sha256: str | None = None
+    size_bytes: int | None = None
+    sniffed_mime: str | None = None
     origin: AttachmentOrigin
     origin_ref: str | None = Field(
         default=None, max_length=ATTACHMENT_ORIGIN_REF_MAX_LENGTH
@@ -278,4 +316,67 @@ class StepAttachmentSummary(BaseModel):
     verdict: TurnAttachmentVerdict
     failure_code: str | None = Field(
         default=None, max_length=ATTACHMENT_FAILURE_CODE_MAX_LENGTH
+    )
+    attachment_key: AttachmentKey | None = Field(
+        default=None,
+        description=(
+            "The stored file, when there is one. The only identifier for it "
+            "that leaves this server: a dispatcher receives keys and never a "
+            "tracker URL."
+        ),
+    )
+    text_ready: bool = Field(
+        default=False,
+        description=(
+            "Whether this file's converted text will be in the turn message. "
+            "Storing a file and putting it in front of a model are different "
+            "events, and only this one means the agent can read it."
+        ),
+    )
+    bytes_fetched: int | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "Bytes pulled over the wire for this file, whatever became of "
+            "them. Distinct from size_bytes, which counts only what was "
+            "stored: an aborted download, a login page and a type refusal all "
+            "cost real bytes and store none, and a per-task byte ceiling that "
+            "charged for none of them would bound nothing."
+        ),
+    )
+
+
+class StepFilesSummary(BaseModel):
+    """Distinct files found on one issue against the ones actually delivered.
+
+    ``found`` is the count of distinct upload URLs the discovery sweep saw, and
+    it is deliberately not ``len(files)``: a per-issue cap means the step may
+    never attempt most of them, and an envelope that said "1 of 1" about an
+    issue carrying twelve would be the confident half-answer the count line
+    exists to stop. ``files`` holds the ones this step attempted, delivered or
+    refused, bounded by that cap.
+
+    ``delivered`` counts files whose text is actually in the turn message, not
+    files that were stored. The two differ, and the count line is the one
+    sentence this whole path asks an agent to rely on.
+
+    ``read_failed`` is the third state, and it is the reason this model does
+    not simply collapse a failure to zero. A tracker that was down and an issue
+    with nothing attached both produce ``found == 0``, and telling an agent
+    positively that no files are attached when nobody could look is strictly
+    worse than the silence it replaces: it is a server-authored sentence
+    backing the wrong conclusion.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    found: int = Field(..., ge=0)
+    delivered: int = Field(..., ge=0)
+    files: list[StepAttachmentSummary] = Field(default_factory=list)
+    read_failed: bool = Field(
+        default=False,
+        description=(
+            "The issue's files could not be listed at all. Distinct from an "
+            "issue that has none."
+        ),
     )
