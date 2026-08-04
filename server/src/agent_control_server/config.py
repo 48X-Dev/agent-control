@@ -375,6 +375,24 @@ class LinearSettings(BaseSettings):
     max_milestones_per_project: int = Field(default=50, ge=1, le=250)
 
     # ---------------------------------------------------------------------
+    # Write-back: the one place this server mutates the tracker.
+    #
+    # Off by default because the first deployment should be able to read and
+    # reason without gaining the ability to edit anybody's tracker. With this
+    # false, comment rows queue and stay pending, and the accept route refuses
+    # with LINEAR_WRITE_DISABLED. The flag must reach the process: it is
+    # passed through docker-compose.yml and documented in .env.example, in the
+    # same change that added it, because a setting that exists and a setting
+    # that reaches the process are different things.
+    # ---------------------------------------------------------------------
+    write_enabled: bool = False
+
+    # Absolute origin of the console, used only to append a chain link to each
+    # posted comment. Empty means the comment carries no link, which beats a
+    # relative link that 404s in the tracker.
+    console_base_url: str = ""
+
+    # ---------------------------------------------------------------------
     # Files uploaded to Linear, fetched for the issue a step is working.
     #
     # The API key above is a server-held credential and an attachment URL is a
@@ -715,6 +733,11 @@ class DispatchSettings(BaseSettings):
     # retroactively move a namespace that has already dispatched anything.
     default_max_tasks_per_hour: int = Field(default=DEFAULT_MAX_TASKS_PER_HOUR, ge=0)
     default_max_turns_per_hour: int = Field(default=DEFAULT_MAX_TURNS_PER_HOUR, ge=0)
+
+    # When a review-queue entry starts rendering as stale. Rendering only:
+    # nothing expires into approval or out of the queue, because an approval
+    # queue that times out into a decision is not a queue.
+    review_stale_after_hours: int = Field(default=48, ge=1)
 
     @model_validator(mode="after")
     def _fleet_must_not_squeeze_human_chat_out_of_the_session_ceiling(

@@ -66,11 +66,13 @@ from ..config import DispatchSettings
 from ..errors import ConflictError, NotFoundError
 from ..models import AgentTask
 from ..models import AgentTaskStep as AgentTaskStepRow
+from ..models import AgentTaskWriteback as WritebackRow
 from .agent_dispatch_state import (
     charge_imported_tasks,
     read_snapshot,
     require_dispatch_not_paused,
 )
+from .agent_task_writeback_queue import wire_writeback
 from .turn_locks import new_trace_id
 
 _TERMINAL_VALUES = tuple(status.value for status in TERMINAL_TASK_STATUSES)
@@ -945,10 +947,18 @@ class AgentTasksService:
                 .order_by(AgentTaskStepRow.step_index.asc())
             )
         ).scalars().all()
+        writebacks = (
+            await self._db.execute(
+                select(WritebackRow)
+                .where(WritebackRow.task_id == row.id)
+                .order_by(WritebackRow.id.asc())
+            )
+        ).scalars().all()
         return AgentTaskDetail(
             **self._summary(row).model_dump(),
             body=row.body,
             steps=[self._step(step) for step in steps],
+            writebacks=[wire_writeback(w, task_key=row.task_key) for w in writebacks],
         )
 
     def _summary(self, row: AgentTask) -> AgentTaskSummary:

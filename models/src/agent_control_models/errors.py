@@ -141,6 +141,29 @@ class ErrorCode(StrEnum):
     # commit they pressed. A digest over the sorted refs, so four items swapped
     # for four others fails too, where a count would not.
     SCOPE_CHANGED = "SCOPE_CHANGED"
+    # The approving credential is the one that ran the agents: it equals the
+    # task's claimed_by_hash, or the created_by_hash on a session belonging to
+    # the task. A refusal rather than an access tier, because the local
+    # credential path has three tiers and no per-key operation allowlist, so
+    # "may run agents, may not accept their work" is not expressible as a tier.
+    SELF_APPROVAL_REFUSED = "SELF_APPROVAL_REFUSED"
+    # The write-back's output text, target issue, or resolved completed state
+    # moved between the review card the human read and the accept they pressed.
+    # The digest covers all three, because a reviewer is accountable for the
+    # mutation they authorised, not only for the text they read.
+    DECISION_CHANGED = "DECISION_CHANGED"
+    # A writeback id that names nothing on this task. Steps and writebacks
+    # share the pattern: the id is scoped to the task in the path.
+    AGENT_TASK_WRITEBACK_NOT_FOUND = "AGENT_TASK_WRITEBACK_NOT_FOUND"
+    # The deployment has AGENT_CONTROL_LINEAR_WRITE_ENABLED off, which is the
+    # shipped default. A conflict rather than a 403: the caller's credentials
+    # are fine, and the same request succeeds unchanged once an operator turns
+    # the flag on.
+    LINEAR_WRITE_DISABLED = "LINEAR_WRITE_DISABLED"
+    # Linear could not be read or written at the moment an accept needed it.
+    # Nothing was changed; the proposal keeps waiting and the same press works
+    # once Linear answers.
+    LINEAR_UNAVAILABLE = "LINEAR_UNAVAILABLE"
     # Level 1 of the fleet stop. New work is refused: import, claim, and every
     # dispatch-origin turn. A conflict rather than a 403, because the caller's
     # credentials are fine and the namespace's state is not - and because the
@@ -531,6 +554,11 @@ ERROR_TITLES: dict[ErrorCode, str] = {
     ErrorCode.TURN_NOT_IN_FLIGHT: "No Turn Is Running",
     ErrorCode.PLAN_REVISION_STALE: "The Plan Was Revised",
     ErrorCode.SCOPE_CHANGED: "The Scope Changed",
+    ErrorCode.SELF_APPROVAL_REFUSED: "The Credential That Ran This May Not Approve It",
+    ErrorCode.DECISION_CHANGED: "The Decision Changed Since It Was Shown",
+    ErrorCode.AGENT_TASK_WRITEBACK_NOT_FOUND: "Write-Back Not Found",
+    ErrorCode.LINEAR_WRITE_DISABLED: "Linear Write-Back Is Disabled",
+    ErrorCode.LINEAR_UNAVAILABLE: "Linear Is Unavailable",
     ErrorCode.TASK_ALREADY_CLAIMED: "Task Already Claimed",
     ErrorCode.TASK_NOT_CLAIMED: "Task Not Claimed By This Caller",
     ErrorCode.TASK_STATUS_CONFLICT: "Task Status Conflict",
