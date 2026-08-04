@@ -4,6 +4,7 @@ import {
   Box,
   Divider,
   Group,
+  Select,
   Stack,
   Switch,
   Text,
@@ -50,6 +51,12 @@ export type ScopeConfirmProps = {
   onDryRunChange: (value: boolean) => void;
   requeueCompleted: boolean;
   onRequeueCompletedChange: (value: boolean) => void;
+  /** null runs the implicit one-step plan under the team's default agent. */
+  workflowKey: string | null;
+  onWorkflowKeyChange: (value: string | null) => void;
+  /** Configured workflows this team may run. Admin-authored; the press only
+      chooses among them and never composes one. */
+  workflowChoices: AgentWorkflow[];
   onCommit: () => void;
   committing: boolean;
   commitError: unknown;
@@ -280,6 +287,9 @@ export function ScopeConfirm({
   onDryRunChange,
   requeueCompleted,
   onRequeueCompletedChange,
+  workflowKey,
+  onWorkflowKeyChange,
+  workflowChoices,
   onCommit,
   committing,
   commitError,
@@ -379,6 +389,27 @@ export function ScopeConfirm({
       <BudgetSummary state={dispatchState} />
 
       <Divider />
+
+      {/* Which reviewed configuration runs each issue. The agents and briefs
+          come from the workflow an admin wrote, never from this panel; a
+          multi-step chain multiplies the turn ceiling shown above, which is
+          why the choice sits beside the price rather than in settings. */}
+      <Select
+        size="xs"
+        value={workflowKey ?? ''}
+        onChange={(value) => onWorkflowKeyChange(value || null)}
+        label="Workflow"
+        description="A chain hands each step's report to the next agent as untrusted data. One step runs the team's default agent."
+        data-testid="scope-workflow-picker"
+        allowDeselect={false}
+        data={[
+          { value: '', label: 'One step (team default agent)' },
+          ...workflowChoices.map((choice) => ({
+            value: choice.workflow_key,
+            label: `${choice.display_name} (${choice.steps.length} steps)`,
+          })),
+        ]}
+      />
 
       {/* Off by default and deliberately separate from the press. A source
           re-read on a timer would otherwise pay for the same work every pass,
