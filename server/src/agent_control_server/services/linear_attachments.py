@@ -59,6 +59,7 @@ from agent_control_models.attachments import AttachmentRefusalCode
 from agent_control_models.files import sniff_mime
 
 from ..config import LinearSettings
+from .attachment_converter_containers import refine_container_mime
 from .executor_metrics import LINEAR_ATTACHMENT_BYTES, LINEAR_ATTACHMENT_FETCHES, LINEAR_FETCH_OK
 from .linear_attachment_discovery import (
     DiscoveredFile,
@@ -454,7 +455,7 @@ async def _attempt(
         _logger.warning("Fetching one Linear upload failed: %s", type(exc).__name__)
         return refused(AttachmentRefusalCode.FETCH_FAILED)
 
-    sniffed = sniff_mime(data)
+    sniffed = refine_container_mime(data, sniff_mime(data))
     if sniffed is None:
         # Nothing matched a magic number, and the two ways that happens need
         # different sentences. An expired signed URL answers 200 with an HTML

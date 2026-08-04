@@ -53,12 +53,31 @@ DEFAULT_TEXT_MAX_CHARS = 2_560_000
 """The plan's ``attachment_text_max_chars``. A cap, not a policy: exceeding it
 sets ``text_truncated`` and the caller decides what that is worth."""
 
-DEFAULT_CONVERTIBLE_MIMES = frozenset({"application/pdf", "image/png", "image/jpeg", "image/webp"})
+DEFAULT_CONVERTIBLE_MIMES = frozenset(
+    {
+        "application/pdf",
+        "image/png",
+        "image/jpeg",
+        "image/webp",
+        # OOXML. Sniffing sees application/zip; the server resolves the real type
+        # structurally in attachment_containers before anything reaches here.
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    }
+)
 """The types this library will hand to a parser.
 
 The same set the plan admits, restated as a default argument rather than read
 from configuration, because this module reads no configuration. A caller with a
-different accepted set passes it in."""
+different accepted set passes it in.
+
+**This set and ``settings.attachment_accepted_mimes`` must be changed together.**
+Nothing in the server constructs ``ConversionOptions`` from settings today, so
+they are two independent lists of the same policy: admitting a type upstream and
+not here stores a file and then refuses to read it, which is a worse answer than
+refusing the upload. If a deployment ever needs to configure this, the fix is to
+build the options from settings rather than to widen this default."""
 
 FAILURE_TYPE_NOT_CONVERTIBLE = "type_not_convertible"
 FAILURE_EMPTY_INPUT = "empty_input"

@@ -52,6 +52,7 @@ from .attachment_converter_backends import (
     EncryptedDocumentError,
     default_backends,
 )
+from .attachment_converter_containers import refine_container_mime
 from .attachment_converter_types import (
     DEFAULT_CONVERTIBLE_MIMES,
     DEFAULT_OPTIONS,
@@ -119,7 +120,7 @@ def convert_attachment(
     Never raises for a bad document. Every failure is a status and a code.
     """
     active = default_backends() if backends is None else backends
-    sniffed = sniff_mime(data)
+    sniffed = refine_container_mime(data, sniff_mime(data))
     base = ConversionResult(
         status=ConversionStatus.FAILED,
         sniffed_mime=sniffed,

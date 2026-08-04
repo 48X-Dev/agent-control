@@ -49,6 +49,9 @@ _EXTENSION_BY_MIME = {
     "image/png": ".png",
     "image/jpeg": ".jpg",
     "image/webp": ".webp",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation": ".pptx",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
 }
 """Sniffable types this module knows how to hand to a converter.
 

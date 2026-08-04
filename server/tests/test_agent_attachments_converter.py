@@ -27,9 +27,11 @@ import ast
 import asyncio
 import importlib.util
 import inspect
+import io
 import os
 import subprocess
 import sys
+import zipfile
 from dataclasses import fields, replace
 from pathlib import Path
 
@@ -62,6 +64,12 @@ from agent_control_server.services.attachment_converter_cache import (
     CONVERSION_CONTRACT_VERSION,
     conversion_cache_key,
 )
+from agent_control_server.services.attachment_converter_containers import (
+    OOXML_DOCUMENT,
+    OOXML_PRESENTATION,
+    OOXML_SHEET,
+    refine_container_mime,
+)
 
 PDF = b"%PDF-1.7\n" + b"trailer\n" * 8
 PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
@@ -69,6 +77,25 @@ JPEG = b"\xff\xd8\xff\xe0" + b"\x00" * 64
 WEBP = b"RIFF\x00\x00\x00\x00WEBPVP8 " + b"\x00" * 64
 GIF = b"GIF89a" + b"\x00" * 64
 ZIP = b"PK\x03\x04" + b"\x00" * 64
+
+
+def _ooxml(root: str) -> bytes:
+    """A minimal real OOXML container.
+
+    Built rather than pasted because the property under test is structural: a
+    ZIP carrying ``[Content_Types].xml`` and one well-known root directory. A
+    hand-written byte string would pass whatever the refiner happened to do.
+    """
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("[Content_Types].xml", "<Types/>")
+        archive.writestr(f"{root}/document.xml", "<x/>")
+    return buffer.getvalue()
+
+
+PPTX = _ooxml("ppt")
+DOCX = _ooxml("word")
+XLSX = _ooxml("xl")
 OLE = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 64
 POSTSCRIPT = b"%!PS-Adobe-3.0\n" + b"\x00" * 64
 
@@ -80,6 +107,7 @@ CONVERTER_SOURCES = (
     "attachment_converter_types.py",
     "attachment_converter_backends.py",
     "attachment_converter_cache.py",
+    "attachment_converter_containers.py",
 )
 
 BANNED_IMPORT_ROOTS = frozenset(
@@ -396,10 +424,20 @@ class TestTheTypeGateAndTheSniffAgree:
             "image/png": PNG,
             "image/jpeg": JPEG,
             "image/webp": WEBP,
+            # These three sniff as application/zip and are only reachable
+            # through the structural refinement, which is exactly why they
+            # belong in this test: a convertible type nothing can produce is
+            # the dead entry this class exists to catch.
+            OOXML_PRESENTATION: PPTX,
+            OOXML_DOCUMENT: DOCX,
+            OOXML_SHEET: XLSX,
         }
 
         assert set(fixtures) == set(DEFAULT_CONVERTIBLE_MIMES)
-        assert all(sniff_mime(data) == mime for mime, data in fixtures.items())
+        assert all(
+            refine_container_mime(data, sniff_mime(data)) == mime
+            for mime, data in fixtures.items()
+        )
         assert set(DEFAULT_CONVERTIBLE_MIMES) <= set(_EXTENSION_BY_MIME)
 
     @pytest.mark.parametrize(
