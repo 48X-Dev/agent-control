@@ -3,7 +3,14 @@ import type { Page } from '@playwright/test';
 import { getAgentRoute } from '@/core/constants/agent-routes';
 import { getTeamRoute } from '@/core/constants/team-routes';
 
-import { expect, mockData, mockRoutes, test } from './fixtures';
+import { mockDispatchRoutes } from './dispatch-fixtures';
+import {
+  expect,
+  mockApiRoutesWithAuthRequired,
+  mockData,
+  mockRoutes,
+  test,
+} from './fixtures';
 
 const SALES = 'sales-outreach';
 const EMPTY_TEAM = 'marketing';
@@ -285,6 +292,7 @@ test.describe('Team Detail', () => {
   test('shows skeletons while the agent list loads', async ({ page }) => {
     const { held, release } = gate();
     await mockRoutes.config(page);
+    await mockRoutes.adminProbe(page);
     await mockRoutes.teams(page);
     await mockRoutes.agents(page);
     await mockRoutes.teamMilestones(page);
@@ -318,6 +326,7 @@ test.describe('Team Detail', () => {
 
   test('a failed agent read shows a retry that recovers', async ({ page }) => {
     await mockRoutes.config(page);
+    await mockRoutes.adminProbe(page);
     await mockRoutes.teams(page);
     await mockRoutes.agents(page);
     await mockRoutes.teamMilestones(page);
@@ -991,13 +1000,14 @@ test.describe('Team Detail', () => {
     expect(doc.scrollWidth).toBeLessThanOrEqual(doc.clientWidth + 1);
   });
 
-  test('the panels sit side by side on a wide viewport', async ({
+  test('the panels stay stacked full width on a wide viewport', async ({
     mockedPage,
   }) => {
     await mockedPage.setViewportSize({ width: 1440, height: 900 });
     await mockedPage.goto(SALES_URL);
 
     await expect(mockedPage.getByTestId('team-agents-panel')).toBeVisible();
+    await expect(mockedPage.getByTestId('milestones-panel')).toBeVisible();
 
     const agentsBox = await mockedPage
       .getByTestId('team-agents-panel')
@@ -1005,7 +1015,10 @@ test.describe('Team Detail', () => {
     const milestonesBox = await mockedPage
       .getByTestId('milestones-panel')
       .boundingBox();
-    expect(milestonesBox!.x).toBeGreaterThan(agentsBox!.x);
+    expect(milestonesBox!.y).toBeGreaterThan(
+      agentsBox!.y + agentsBox!.height - 1
+    );
+    expect(Math.abs(milestonesBox!.x - agentsBox!.x)).toBeLessThanOrEqual(1);
   });
 
   test('an agent row is keyboard reachable and shows a focus ring', async ({
@@ -1114,5 +1127,309 @@ test.describe('Team Detail', () => {
     await expect(page.getByTestId('team-display-name')).toHaveText('Odd Slug');
     // Never the literal "[slug]" placeholder, and never a truncated value
     expect(requested).toContain('team-with-a-very-long-slug-2024');
+  });
+
+  // ==========================================================================
+  // Default agent
+  // ==========================================================================
+
+  test('shows the agent a team dispatches under', async ({ mockedPage }) => {
+    await mockedPage.goto(SALES_URL);
+
+    await expect(mockedPage.getByTestId('team-default-agent-value')).toHaveText(
+      'lead-qualifier'
+    );
+    await expect(mockedPage.getByTestId('team-default-agent')).toContainText(
+      'names no agent'
+    );
+  });
+
+  test('a team without one says so rather than showing nothing', async ({
+    mockedPage,
+  }) => {
+    await mockedPage.goto(getTeamRoute('engineering'));
+
+    await expect(mockedPage.getByTestId('team-default-agent-unset')).toHaveText(
+      'Not set'
+    );
+    await expect(
+      mockedPage.getByTestId('team-default-agent-value')
+    ).toHaveCount(0);
+  });
+
+  test('the picker offers this team’s members and nothing else', async ({
+    page,
+  }) => {
+    await mockRoutes.config(page);
+    await mockRoutes.adminProbe(page);
+    await mockRoutes.teams(page);
+    await mockRoutes.agents(page);
+    await mockRoutes.teamMilestones(page);
+    await mockRoutes.teamPatch(page);
+
+    await page.goto(getTeamRoute('engineering'));
+    await page.getByTestId('team-default-agent-change').click();
+    await page.getByTestId('team-default-agent-select').click();
+
+    const options = page.getByRole('option');
+    await expect(options).toHaveText([
+      'No default agent',
+      'code-review-assistant',
+      'data-analysis-agent',
+    ]);
+    // A member of another team is not offered: the server refuses a non-member
+    await expect(options.filter({ hasText: 'lead-qualifier' })).toHaveCount(0);
+  });
+
+  test('choosing an agent sends it as the default', async ({ page }) => {
+    await mockRoutes.config(page);
+    await mockRoutes.adminProbe(page);
+    await mockRoutes.teams(page);
+    await mockRoutes.agents(page);
+    await mockRoutes.teamMilestones(page);
+    const submitted = await mockRoutes.teamPatch(page);
+
+    await page.goto(getTeamRoute('engineering'));
+    await page.getByTestId('team-default-agent-change').click();
+    await page.getByTestId('team-default-agent-select').click();
+    await page.getByRole('option', { name: 'data-analysis-agent' }).click();
+    await page.getByTestId('team-default-agent-submit').click();
+
+    await expect.poll(() => submitted.length).toBe(1);
+    expect(submitted[0]).toEqual({ default_agent_name: 'data-analysis-agent' });
+    await expect(page.getByTestId('team-default-agent-form')).toHaveCount(0);
+  });
+
+  test('a team can be returned to having no default agent', async ({
+    page,
+  }) => {
+    await mockRoutes.config(page);
+    await mockRoutes.adminProbe(page);
+    await mockRoutes.teams(page);
+    await mockRoutes.agents(page);
+    await mockRoutes.teamMilestones(page);
+    const submitted = await mockRoutes.teamPatch(page);
+
+    await page.goto(SALES_URL);
+    await page.getByTestId('team-default-agent-change').click();
+    await page.getByTestId('team-default-agent-select').click();
+    await page.getByRole('option', { name: 'No default agent' }).click();
+    await page.getByTestId('team-default-agent-submit').click();
+
+    await expect.poll(() => submitted.length).toBe(1);
+    // Explicitly null, not omitted: the server leaves omitted fields alone
+    expect(submitted[0]).toEqual({ default_agent_name: null });
+  });
+
+  test('a 403 says an admin key is needed and keeps the form open', async ({
+    page,
+  }) => {
+    await mockRoutes.config(page);
+    await mockRoutes.adminProbe(page);
+    await mockRoutes.teams(page);
+    await mockRoutes.agents(page);
+    await mockRoutes.teamMilestones(page);
+    await mockRoutes.teamPatch(page, { status: 403 });
+
+    await page.goto(getTeamRoute('engineering'));
+    await page.getByTestId('team-default-agent-change').click();
+    await page.getByTestId('team-default-agent-select').click();
+    await page.getByRole('option', { name: 'code-review-assistant' }).click();
+    await page.getByTestId('team-default-agent-submit').click();
+
+    await expect(page.getByTestId('team-default-agent-error')).toContainText(
+      'admin API key'
+    );
+    await expect(page.getByTestId('team-default-agent-form')).toBeVisible();
+  });
+
+  test('a 409 explains that the agent is not in the team', async ({ page }) => {
+    await mockRoutes.config(page);
+    await mockRoutes.adminProbe(page);
+    await mockRoutes.teams(page);
+    await mockRoutes.agents(page);
+    await mockRoutes.teamMilestones(page);
+    await mockRoutes.teamPatch(page, {
+      status: 409,
+      errorCode: 'AGENT_NOT_IN_TEAM',
+    });
+
+    await page.goto(getTeamRoute('engineering'));
+    await page.getByTestId('team-default-agent-change').click();
+    await page.getByTestId('team-default-agent-select').click();
+    await page.getByRole('option', { name: 'code-review-assistant' }).click();
+    await page.getByTestId('team-default-agent-submit').click();
+
+    await expect(page.getByTestId('team-default-agent-error')).toContainText(
+      'not in this team'
+    );
+  });
+
+  test('a team with no agents cannot set one, and says why', async ({
+    mockedPage,
+  }) => {
+    await mockedPage.goto(getTeamRoute(EMPTY_TEAM));
+
+    const blocked = mockedPage.getByTestId('team-default-agent-blocked');
+    await expect(blocked).toHaveAttribute(
+      'data-reason',
+      'Add an agent to this team first'
+    );
+    await expect(
+      mockedPage.getByTestId('team-default-agent-change')
+    ).toBeDisabled();
+  });
+
+  test('a non-admin session gets a reason, not a button that 403s', async ({
+    mockedPage,
+  }) => {
+    // A session resumed from its cookie, which is the ordinary case: nothing
+    // in this tab ever logged in, so the verdict can only come from the probe.
+    await mockRoutes.adminProbe(mockedPage, { admin: false });
+
+    await mockedPage.goto(SALES_URL);
+
+    const blocked = mockedPage.getByTestId('team-default-agent-blocked');
+    await expect(blocked).toHaveAttribute(
+      'data-reason',
+      'Requires an admin key'
+    );
+    await expect(
+      mockedPage.getByTestId('team-default-agent-change')
+    ).toBeDisabled();
+    // The current value is still readable; only the write is withheld
+    await expect(mockedPage.getByTestId('team-default-agent-value')).toHaveText(
+      'lead-qualifier'
+    );
+  });
+
+  test('a read-only key that logged in this tab is refused too', async ({
+    page,
+  }) => {
+    await mockApiRoutesWithAuthRequired(page);
+    await mockRoutes.adminProbe(page, { admin: false });
+    // The dispatch reads this page issues are admin-gated on the real server.
+    // Left unmocked they answer 401, and a 401 sends the session back to the
+    // login modal, which is a different story than the one under test.
+    await mockDispatchRoutes(page);
+    await mockRoutes.login(page, { authenticated: true, is_admin: false });
+
+    await page.goto(SALES_URL);
+    await expect(
+      page.getByText('Enter your API key to continue.')
+    ).toBeVisible();
+    await page.getByPlaceholder('Enter your API key').fill('read-only-key');
+    await page.getByRole('button', { name: 'Sign in' }).click();
+    await expect(page.getByTestId('team-detail-header')).toBeVisible();
+
+    await expect(
+      page.getByTestId('team-default-agent-blocked')
+    ).toHaveAttribute('data-reason', 'Requires an admin key');
+  });
+
+  test('a probe that fails for any other reason leaves the control usable', async ({
+    mockedPage,
+  }) => {
+    // A 500 is a server fault, not a statement about this credential. Guessing
+    // "not an admin" from it would hide the control from an admin.
+    await mockedPage.route('**/api/v1/agent-models', async (route) => {
+      await route.fulfill({
+        status: 500,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          type: 'about:blank',
+          title: 'Error',
+          status: 500,
+          detail: 'boom',
+          error_code: 'INTERNAL_ERROR',
+          reason: 'Server error',
+        }),
+      });
+    });
+
+    await mockedPage.goto(SALES_URL);
+
+    await expect(
+      mockedPage.getByTestId('team-default-agent-change')
+    ).toBeEnabled();
+    await expect(
+      mockedPage.getByTestId('team-default-agent-blocked')
+    ).toHaveCount(0);
+  });
+
+  test('the shown default updates after a save, without a reload', async ({
+    page,
+  }) => {
+    // A private copy: the PATCH mock writes into it, so the refetch that
+    // follows the save returns the new value rather than the seeded one.
+    const details = {
+      engineering: structuredClone(mockData.teamDetails.engineering),
+    };
+
+    await mockRoutes.config(page);
+    await mockRoutes.adminProbe(page);
+    await mockRoutes.teams(page, { details });
+    await mockRoutes.agents(page);
+    await mockRoutes.teamMilestones(page);
+    await mockRoutes.teamPatch(page, { details });
+
+    await page.goto(getTeamRoute('engineering'));
+    await expect(page.getByTestId('team-default-agent-unset')).toHaveText(
+      'Not set'
+    );
+
+    await page.getByTestId('team-default-agent-change').click();
+    await page.getByTestId('team-default-agent-select').click();
+    await page.getByRole('option', { name: 'data-analysis-agent' }).click();
+    await page.getByTestId('team-default-agent-submit').click();
+
+    await expect(page.getByTestId('team-default-agent-value')).toHaveText(
+      'data-analysis-agent'
+    );
+    await expect(page.getByTestId('team-default-agent-unset')).toHaveCount(0);
+  });
+
+  test('a default naming a non-member is shown as such, and can be cleared', async ({
+    page,
+  }) => {
+    // Reachable for rows written before the server enforced membership, or
+    // edited outside the API. The picker must represent the value it holds
+    // instead of rendering blank, and clearing must stay available.
+    const details = {
+      engineering: {
+        ...structuredClone(mockData.teamDetails.engineering),
+        default_agent_name: 'retired-agent',
+      },
+    };
+
+    await mockRoutes.config(page);
+    await mockRoutes.adminProbe(page);
+    await mockRoutes.teams(page, { details });
+    await mockRoutes.agents(page);
+    await mockRoutes.teamMilestones(page);
+    const submitted = await mockRoutes.teamPatch(page, { details });
+
+    await page.goto(getTeamRoute('engineering'));
+    await expect(page.getByTestId('team-default-agent-value')).toHaveText(
+      'retired-agent'
+    );
+
+    await page.getByTestId('team-default-agent-change').click();
+    await page.getByTestId('team-default-agent-select').click();
+    await expect(page.getByRole('option')).toHaveText([
+      'No default agent',
+      'retired-agent (not in this team)',
+      'code-review-assistant',
+      'data-analysis-agent',
+    ]);
+
+    await page.getByRole('option', { name: 'No default agent' }).click();
+    await page.getByTestId('team-default-agent-submit').click();
+
+    await expect.poll(() => submitted.length).toBe(1);
+    expect(submitted[0]).toEqual({ default_agent_name: null });
+    await expect(page.getByTestId('team-default-agent-unset')).toHaveText(
+      'Not set'
+    );
   });
 });

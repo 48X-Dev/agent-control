@@ -126,6 +126,12 @@ export type TeamSummary = {
   display_name: string;
   description?: string | null;
   linear_team_key?: string | null;
+  /**
+   * Agent that runs a dispatched workflow step naming none, and therefore the
+   * agent whose controls apply to that work. Null is a real state: the
+   * dispatcher blocks the task rather than picking an agent itself.
+   */
+  default_agent_name?: string | null;
   /** Number of agents in the team. */
   member_count: number;
   created_at: string;
@@ -152,10 +158,15 @@ export type ListTeamsQueryParams = {
   limit?: number;
 };
 
+/**
+ * Omitted keys are left alone; an explicit null clears the field. Sending
+ * `default_agent_name: null` is the only way back to no default agent.
+ */
 export type PatchTeamRequest = {
   display_name?: string;
   description?: string | null;
   linear_team_key?: string | null;
+  default_agent_name?: string | null;
 };
 
 export type PatchTeamResponse = {
@@ -164,6 +175,7 @@ export type PatchTeamResponse = {
   display_name: string;
   description?: string | null;
   linear_team_key?: string | null;
+  default_agent_name?: string | null;
 };
 
 /** Agents filtered to one team. `team` is a slug, matched exactly. */
