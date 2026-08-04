@@ -14,7 +14,8 @@ export function importPreviewQueryKey(
   teamSlug: string,
   scopeRef: string,
   refs: readonly string[],
-  dryRun: boolean
+  dryRun: boolean,
+  requeueCompleted: boolean
 ) {
   // Keyed on the refs themselves rather than on their count. Two sets of the
   // same size are different sets, and a preview cached across that difference
@@ -30,6 +31,10 @@ export function importPreviewQueryKey(
     scopeRef,
     [...refs].sort().join(','),
     dryRun,
+    // Here for the same reason as dryRun, and it matters more: this flag
+    // changes which rows come back eligible, so a key without it would show a
+    // preview of one set and commit another.
+    requeueCompleted,
   ] as const;
 }
 
@@ -40,6 +45,8 @@ type PreviewArgs = {
   items: ImportTaskItem[];
   workflowKey?: string | null;
   dryRun: boolean;
+  /** Offer refs whose only task is finished. Off unless the operator asks. */
+  requeueCompleted?: boolean;
   enabled?: boolean;
 };
 
@@ -62,18 +69,26 @@ export function useImportPreview({
   items,
   workflowKey,
   dryRun,
+  requeueCompleted = false,
   enabled = true,
 }: PreviewArgs) {
   const refs = items.map((item) => item.source_ref);
 
   return useQuery<ImportAgentTasksResponse>({
-    queryKey: importPreviewQueryKey(teamSlug, scopeRef, refs, dryRun),
+    queryKey: importPreviewQueryKey(
+      teamSlug,
+      scopeRef,
+      refs,
+      dryRun,
+      requeueCompleted
+    ),
     queryFn: async () => {
       const { data, error, response } = await api.agentTasks.import({
         scope: { kind: 'items', source_kind: 'linear', items },
         team_slug: teamSlug,
         workflow_key: workflowKey ?? null,
         dry_run: dryRun,
+        requeue_completed: requeueCompleted,
         mode: 'preview',
       });
       if (error) {
@@ -100,6 +115,7 @@ type CommitArgs = {
   expectedRefsDigest: string;
   workflowKey?: string | null;
   dryRun: boolean;
+  requeueCompleted?: boolean;
 };
 
 /**
@@ -118,12 +134,19 @@ export function useCommitImport(teamSlug: string) {
   const queryClient = useQueryClient();
 
   return useMutation<ImportAgentTasksResponse, Error, CommitArgs>({
-    mutationFn: async ({ items, expectedRefsDigest, workflowKey, dryRun }) => {
+    mutationFn: async ({
+      items,
+      expectedRefsDigest,
+      workflowKey,
+      dryRun,
+      requeueCompleted = false,
+    }) => {
       const { data, error, response } = await api.agentTasks.import({
         scope: { kind: 'items', source_kind: 'linear', items },
         team_slug: teamSlug,
         workflow_key: workflowKey ?? null,
         dry_run: dryRun,
+        requeue_completed: requeueCompleted,
         mode: 'commit',
         expected_refs_digest: expectedRefsDigest,
       });

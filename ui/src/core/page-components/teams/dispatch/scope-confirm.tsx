@@ -48,6 +48,8 @@ export type ScopeConfirmProps = {
   dispatchState: DispatchStateSnapshot | null | undefined;
   dryRun: boolean;
   onDryRunChange: (value: boolean) => void;
+  requeueCompleted: boolean;
+  onRequeueCompletedChange: (value: boolean) => void;
   onCommit: () => void;
   committing: boolean;
   commitError: unknown;
@@ -167,7 +169,7 @@ function SkippedCounts({
   }
   if (preview && preview.skipped.already_worked > 0) {
     lines.push(
-      `${preview.skipped.already_worked} ${pluralize(preview.skipped.already_worked, 'has', 'have')} been worked before. Re-running finished work is a separate decision and is not offered here.`
+      `${preview.skipped.already_worked} ${pluralize(preview.skipped.already_worked, 'has', 'have')} been worked before. Turn on "Re-run finished work" below to include ${pluralize(preview.skipped.already_worked, 'it', 'them')}.`
     );
   }
   if (counts.beyond_page_cap) {
@@ -276,6 +278,8 @@ export function ScopeConfirm({
   dispatchState,
   dryRun,
   onDryRunChange,
+  requeueCompleted,
+  onRequeueCompletedChange,
   onCommit,
   committing,
   commitError,
@@ -375,6 +379,22 @@ export function ScopeConfirm({
       <BudgetSummary state={dispatchState} />
 
       <Divider />
+
+      {/* Off by default and deliberately separate from the press. A source
+          re-read on a timer would otherwise pay for the same work every pass,
+          which is why the server defaults it off; but an operator who fixed the
+          thing that made a task fail needs a way to say so, and before this the
+          only one was an API call. */}
+      <Switch
+        size="xs"
+        checked={requeueCompleted}
+        onChange={(event) =>
+          onRequeueCompletedChange(event.currentTarget.checked)
+        }
+        label="Re-run finished work"
+        description="Include issues whose last task already finished or was cancelled. Off by default, because a finished issue is normally finished."
+        data-testid="scope-requeue-completed"
+      />
 
       <Switch
         size="xs"

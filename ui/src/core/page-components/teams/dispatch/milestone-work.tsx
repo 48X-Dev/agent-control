@@ -81,6 +81,7 @@ export function MilestoneWork({
   onScopeResolved,
 }: MilestoneWorkProps) {
   const [dryRun, setDryRun] = useState(true);
+  const [requeueCompleted, setRequeueCompleted] = useState(false);
   const [committedRefs, setCommittedRefs] = useState<string[]>([]);
 
   const issuesQuery = useMilestoneIssues(teamSlug, milestoneId);
@@ -212,6 +213,7 @@ export function MilestoneWork({
         expectedRefsDigest: digest,
         workflowKey: previewQuery.data?.workflow_key ?? null,
         dryRun,
+        requeueCompleted,
       },
       {
         onSuccess: () => {
@@ -327,6 +329,8 @@ export function MilestoneWork({
         dispatchState={dispatchState}
         dryRun={dryRun}
         onDryRunChange={setDryRun}
+        requeueCompleted={requeueCompleted}
+        onRequeueCompletedChange={setRequeueCompleted}
         onCommit={onCommit}
         committing={commit.isPending}
         commitError={commit.error}
