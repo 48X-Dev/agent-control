@@ -407,7 +407,7 @@ export function ScopeConfirm({
             ? 'This namespace is paused, so nothing can be queued.'
             : halted
               ? 'Executors are halted, so nothing can be queued.'
-              : 'This creates rows in the ledger. A dispatcher outside this server picks them up.'}
+              : 'This queues the work. The dispatcher claims it within a few seconds.'}
         </Text>
         <Button
           size="sm"

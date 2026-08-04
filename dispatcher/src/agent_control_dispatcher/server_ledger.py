@@ -40,7 +40,7 @@ from collections.abc import Sequence
 from uuid import uuid4
 
 from agent_control_models.attachments import StepFilesSummary
-from agent_control_models.tasks import AgentTaskStepStatus
+from agent_control_models.tasks import AgentTaskDetail, AgentTaskStepStatus
 
 from .client import DispatchClient, DispatchHTTPError, Disposition
 from .envelope import PriorReport
@@ -121,6 +121,7 @@ class ServerTaskLedger:
         self._task_keys: dict[tuple[str, str], str] = {}
         self._step_index: dict[tuple[str, str], int] = {}
         self._agent_names: dict[tuple[str, str], str] = {}
+        self._claimed: dict[tuple[str, str], AgentTaskDetail] = {}
         self._open_steps: set[tuple[str, str]] = set()
         """Items whose step row exists. A claim alone does not put one here:
         a session that could not be opened means the turn never happened, so
@@ -166,6 +167,47 @@ class ServerTaskLedger:
                 if task.source_kind == source_kind and task.source_ref in wanted:
                     self._task_keys[(source_kind, task.source_ref)] = task.task_key
 
+    def adopt(self, *, source_kind: str, ref: str, task_key: str) -> None:
+        """Learn a task key from the queue rather than from an import.
+
+        This is what lets a poll loop use this ledger without creating
+        anything. :meth:`register` imports a set and then reads the queue to
+        find the keys; a dispatcher that only claims rows somebody else pressed
+        play on has the key already, in the page it just read, and must not
+        call the import route to get it. Section 4's authorization rule depends
+        on that: the press is what authorizes milestone scope, so nothing on a
+        scheduled path may reach ``POST /agent-tasks/import``.
+        """
+        self._task_keys[(source_kind, ref)] = task_key
+
+    def forget(self, *, source_kind: str, ref: str) -> None:
+        """Drop everything this ledger holds about one finished task.
+
+        ``once`` never needed it: the process exited and took the dicts with it.
+        A loop keeps one ledger for weeks, and every entry here is per task -
+        the claimed row includes the issue body - so without this the resident
+        set grows with the number of tasks ever run and never falls.
+
+        Safe only once the task has reached a terminal state, which is what the
+        caller's ``finally`` establishes. Forgetting a key mid-chain would make
+        the next step's writes no-ops, silently.
+        """
+        key = (source_kind, ref)
+        self._task_keys.pop(key, None)
+        self._step_index.pop(key, None)
+        self._agent_names.pop(key, None)
+        self._claimed.pop(key, None)
+        self._open_steps.discard(key)
+
+    def claimed_task(self, *, source_kind: str, ref: str) -> AgentTaskDetail | None:
+        """The row as it came back from this dispatcher's own claim.
+
+        The claim response carries the full row, ``body`` included, and a
+        caller that needs the issue text would otherwise have to re-read it.
+        Only a claim this instance won puts anything here.
+        """
+        return self._claimed.get((source_kind, ref))
+
     async def claim(
         self, *, source_kind: str, ref: str, agent_name: str, dry_run: bool
     ) -> bool:
@@ -199,6 +241,7 @@ class ServerTaskLedger:
             return False
         self._step_index[(source_kind, ref)] = claimed.resume_step_index
         self._agent_names[(source_kind, ref)] = agent_name
+        self._claimed[(source_kind, ref)] = claimed.task
         return True
 
     def resume_step_index(self, *, source_kind: str, ref: str) -> int:

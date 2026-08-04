@@ -31,15 +31,17 @@ or a second one started by somebody else meets them too. Nothing here is the
 enforcement point for any of them; what this module does is stop cleanly when
 one of them answers.
 
-What is still absent, and each one is still a prerequisite for running this
-unattended: a write-back of any kind, and a play button. Linear is a *read*: a
-source can produce items and neither source can record anything back onto it.
+What is still absent: a write-back of any kind. Linear is a *read*, and a
+source can produce items but can record nothing back onto it.
 
-Four refusals stop the whole run rather than the one task, because in each
+Five refusals stop the whole run rather than the one task, because in each
 case continuing would make things worse rather than merely repeat a failure:
 
 * ``paused_quota`` - the credential is over its ceiling. More turns is the one
   thing that cannot help.
+* an executor that is not answering - the client has spent its retries and
+  nothing reached a model, so every remaining task would be refused the same
+  way and each one keeps its slot.
 * a fleet ceiling - the namespace is paused, its executors are halted, its hour
   is spent, or the agent is already running something. Every remaining task
   would meet the same refusal, and each one keeps its slot.
@@ -191,7 +193,13 @@ a possible refusal as a finding is the failure section 9.3 cares most about."""
 class DispatchOptions:
     """Everything one ``dispatch once`` run needs."""
 
-    source_spec: str
+    source_spec: str | None
+    """Where the items came from, or ``None`` when nothing was read.
+
+    ``None`` is :mod:`agent_control_dispatcher.loop`'s case and only its case:
+    ``serve`` claims rows another process already created and reads no source
+    at all, so naming one here would be a lie that the next reader would
+    reasonably act on. :func:`dispatch_once` refuses it."""
     agent_name: str | None
     """The agent for a task with no configured workflow.
 
@@ -290,6 +298,12 @@ async def dispatch_once(options: DispatchOptions, *, out: TextIO | None = None) 
 
     stream = out if out is not None else sys.stdout
     report = RunReport()
+
+    if options.source_spec is None:
+        raise ValueError(
+            "dispatch_once needs a source to read. A run with no source is serve's "
+            "case, and serve claims rows that already exist rather than making any."
+        )
 
     async with DispatchClient(
         base_url=options.base_url,
@@ -400,7 +414,9 @@ async def dispatch_once(options: DispatchOptions, *, out: TextIO | None = None) 
     return report
 
 
-async def _report_fleet_state(client: DispatchClient, *, stream: TextIO) -> str | None:
+async def _report_fleet_state(
+    client: DispatchClient, *, stream: TextIO, strict: bool = False
+) -> str | None:
     """Print the namespace's ceilings, and say so if a switch is already thrown.
 
     An optimisation and nothing more. Every refusal it anticipates is enforced
@@ -413,11 +429,19 @@ async def _report_fleet_state(client: DispatchClient, *, stream: TextIO) -> str 
     A server that cannot answer is not treated as a stop. Refusing to run
     because a *read* failed would put an advisory call on the critical path,
     which is the shape of the mistake this whole phase exists to avoid.
+
+    ``strict`` re-raises instead, and exists because ``None`` otherwise means
+    two different things - nothing is held, and nothing is known. A one-shot run
+    can conflate them and carry on. A loop cannot: it would announce a clear
+    namespace on the strength of a read that failed, every time the server went
+    away.
     """
 
     try:
         state = await client.read_dispatch_state()
     except DispatchHTTPError as exc:
+        if strict:
+            raise
         _emit(stream, f"budget     unknown ({exc}); the server enforces it either way")
         return None
 
@@ -699,9 +723,18 @@ async def _run_one(
     """
     _emit(stream, f"\n--- {item.ref}: {item.title}")
 
-    steps, refusal = await _plan_chain(
-        client=client, ledger=ledger, source_kind=source_kind, ref=item.ref, options=options
-    )
+    try:
+        steps, refusal = await _plan_chain(
+            client=client, ledger=ledger, source_kind=source_kind, ref=item.ref, options=options
+        )
+    except DispatchHTTPError as exc:
+        # The plan read is the one call in a claimed task's path that used to
+        # let an exception past this function. Under `once` that cost one row,
+        # abandoned at `running` until its lease lapsed. Under a loop it costs a
+        # row per pass, forever, because each pass claims a fresh one and
+        # strands that too. Closing it here puts the refusal in the ledger and
+        # gives the caller a stop reason to back off on.
+        return await _fail(ledger, source_kind, item, exc, stream)
     if refusal is not None:
         return await _blocked(ledger, source_kind, item, refusal=refusal, stream=stream)
 
@@ -1118,7 +1151,13 @@ async def _unclassified(
 
 _STATUS_FOR: dict[Disposition, ClaimStatus] = {
     Disposition.FAILED: ClaimStatus.FAILED,
-    Disposition.RETRY: ClaimStatus.FAILED,
+    # Section 11.3: a 503 is "nothing reached the executor". The client has
+    # already spent its three attempts by the time one arrives here, so this is
+    # the executor being down rather than a blip - and a task nothing was
+    # attempted on is not a task that failed. It takes `paused_quota` for the
+    # same reason a fleet stop does: the slot is kept and the row is
+    # reclaimable, so an outage parks the queue instead of burning it.
+    Disposition.RETRY: ClaimStatus.PAUSED_QUOTA,
     Disposition.PAUSED_QUOTA: ClaimStatus.PAUSED_QUOTA,
     # A fleet stop leaves the task exactly where a quota refusal does:
     # ``paused_quota`` is the one non-terminal status the claim statement will
@@ -1138,6 +1177,10 @@ _STATUS_FOR_OUTPUT: dict[StepOutputCode, ClaimStatus] = {
 
 _STOP_REASON_FOR: dict[Disposition, str] = {
     Disposition.PAUSED_QUOTA: "quota exceeded; more turns cannot help",
+    Disposition.RETRY: (
+        "the executor is not answering. Every remaining task would be refused "
+        "the same way, and the tasks keep their slots"
+    ),
     Disposition.FLEET_STOPPED: (
         "the server refused this turn on a fleet ceiling. Every remaining task "
         "would be refused the same way, and the tasks keep their slots"

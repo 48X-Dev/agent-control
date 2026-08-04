@@ -105,9 +105,10 @@ type CommitArgs = {
 /**
  * Create the rows. This is the press, and it is the only call here that writes.
  *
- * It creates rows and starts no process: a dispatcher outside this server polls
- * for queued work and claims it. So a namespace that is paused refuses the
- * commit outright rather than queueing work that will not move.
+ * It creates rows and starts no process: `agent-control-dispatch serve` polls
+ * the queue and claims what it finds, within a poll interval of the press. So a
+ * namespace that is paused refuses the commit outright rather than queueing
+ * work that will not move.
  *
  * `expected_refs_digest` is required, and a 409 `SCOPE_CHANGED` means the set
  * moved between the confirm and the press. Nothing was created; the caller

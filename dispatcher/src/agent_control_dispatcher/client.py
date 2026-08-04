@@ -26,7 +26,8 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
-from collections.abc import Sequence
+from collections import deque
+from collections.abc import Iterable, Sequence
 from enum import StrEnum
 from typing import Any
 from urllib.parse import quote
@@ -164,10 +165,18 @@ class DispatchHTTPError(Exception):
 
 
 def classify(status_code: int, error_code: str | None) -> Disposition:
-    """Section 11.3, verbatim.
+    """Section 11.3, plus 401.
 
     Anything unlisted is ``FAILED``. Guessing that an unrecognised refusal is
     retryable is how a dispatcher hammers a server that has already said no.
+
+    401 is the one addition, and it is an addition rather than a reading:
+    section 11.3's table covers the turn path, where a bad credential fails at
+    the first call and the operator is watching. On a poll loop nobody is
+    watching, and ``FAILED`` there means one line at startup and then a process
+    that looks alive and polls forever while every press of play sits in the
+    queue. A key the server does not recognise is not going to start being
+    recognised, which is what ``BLOCKED`` means.
     """
 
     match (status_code, error_code):
@@ -199,12 +208,45 @@ def classify(status_code: int, error_code: str | None) -> Disposition:
             return Disposition.BLOCKED
         case (403, "AUTH_INSUFFICIENT_PRIVILEGES"):
             return Disposition.BLOCKED
+        case (401, _):
+            return Disposition.BLOCKED
         case (429, _):
             return Disposition.PAUSED_QUOTA
         case (503, _):
             return Disposition.RETRY
         case _:
             return Disposition.FAILED
+
+
+ATTRIBUTED_DENY_ID_CAP = 2048
+"""How many already-attributed deny ids one client remembers.
+
+The set only has to answer "did an earlier turn already claim this event", and
+an event is only ever offered inside its own turn's time window, so the useful
+memory is a handful of recent turns rather than the whole run. ``once`` exits
+and never noticed the difference; ``serve`` runs for weeks, and an unbounded
+set is one id per deny, forever, consulted on every deny query."""
+
+
+class _BoundedIdSet:
+    """A set that forgets its oldest entries rather than growing without end."""
+
+    def __init__(self, cap: int) -> None:
+        self._cap = cap
+        self._order: deque[str] = deque()
+        self._seen: set[str] = set()
+
+    def __contains__(self, value: object) -> bool:
+        return value in self._seen
+
+    def update(self, values: Iterable[str]) -> None:
+        for value in values:
+            if value in self._seen:
+                continue
+            self._seen.add(value)
+            self._order.append(value)
+        while len(self._order) > self._cap:
+            self._seen.discard(self._order.popleft())
 
 
 class DispatchClient:
@@ -227,7 +269,7 @@ class DispatchClient:
         self._api_root = base_url.rstrip("/") + "/api/v1"
         self._turn_timeout = turn_timeout_seconds
         self._step_timeout = DEFAULT_STEP_TIMEOUT_SECONDS
-        self._attributed_deny_ids: set[str] = set()
+        self._attributed_deny_ids: _BoundedIdSet = _BoundedIdSet(ATTRIBUTED_DENY_ID_CAP)
         self._client = httpx.AsyncClient(
             headers={"X-API-Key": api_key, "Content-Type": "application/json"},
             timeout=httpx.Timeout(30.0, read=turn_timeout_seconds),
