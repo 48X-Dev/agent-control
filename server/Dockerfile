@@ -55,6 +55,27 @@ COPY server/ server/
 # Copy the exported UI bundle that FastAPI serves for hosted deployments
 COPY --from=ui-builder /ui/out ./server/ui-dist
 
+# Document conversion, declared as optional extras on agent-control-server.
+#
+# Without any of these the server still starts and every attachment converts to
+# no_converter_installed - a stated status rather than a crash, but not a
+# feature either.
+#
+# OCR is deliberately NOT in the default, and the number is why: adding it takes
+# this image to 19.3GB, because docling pulls torch and its CUDA libraries.
+# That is not a reasonable default for a published quick start.
+#
+# It is still the main path on real corpora rather than a fallback. Measured on
+# one: five of six attachments were images with no text layer, where the
+# text-layer converter returns zero characters and OCR returns useful text. A
+# deployment whose files are images should build with:
+#
+#   --build-arg CONVERTER_EXTRAS="--extra text-extraction --extra ocr"
+#
+# and accept the size. Without it, an image attachment answers
+# ocr_converter_absent, which says what is missing rather than failing silently.
+ARG CONVERTER_EXTRAS="--extra text-extraction"
+
 # Install server + bundled runtime packages (engine/evaluators/models/telemetry)
 # We ignore the lockfile if it's missing or out of sync to ensure build succeeds during dev
 RUN uv sync \
@@ -63,6 +84,7 @@ RUN uv sync \
     --package agent-control-evaluators \
     --package agent-control-models \
     --package agent-control-telemetry \
+    ${CONVERTER_EXTRAS} \
     --no-dev \
   || uv sync \
     --package agent-control-server \
@@ -70,6 +92,7 @@ RUN uv sync \
     --package agent-control-evaluators \
     --package agent-control-models \
     --package agent-control-telemetry \
+    ${CONVERTER_EXTRAS} \
     --no-dev \
     --frozen
 
