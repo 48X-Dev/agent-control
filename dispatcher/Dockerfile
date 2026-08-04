@@ -44,8 +44,10 @@ USER dispatcher
 
 ENV PATH="/app/.venv/bin:${PATH}"
 
-# No CMD with a default subcommand. `once` claims and executes real tasks that
-# spend real model budget, so an image that runs work on `docker compose up`
-# would be a foot-gun; the subcommand is always supplied at run time.
+# `--help` rather than `serve`, and the compose file supplies `serve` itself.
+# `docker run` on this image has no way to know whether it is pointed at a
+# server anybody meant to dispatch against, and `once` in particular reads a
+# source and spends real model budget. Making the harmless thing the default
+# and the working thing explicit costs one line in compose.
 ENTRYPOINT ["agent-control-dispatch"]
 CMD ["--help"]

@@ -83,41 +83,68 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
-  # Task dispatcher. Comes up with `docker compose up`, and deliberately does
-  # NOTHING until asked:
+  # Task dispatcher. Comes up with `docker compose up` and idles until somebody
+  # presses play in the console. This is the line that used to default to
+  # `--help`, and it defaulted to that because the only subcommand was `once`,
+  # which reads a source, imports what it finds and spends real model budget on
+  # the operator's account. Starting a stack must not bill anybody.
+  #
+  # `serve` does not have that property, which is why it can be the default. It
+  # reads no source and imports nothing: it polls the queue for rows that
+  # already exist and claims those. A queued row exists because a human pressed
+  # play over a list of issues they could see, or because somebody ran `once`
+  # from cron on purpose. So an idle stack costs two small GETs every few
+  # seconds - the dispatch state, then the queue - plus a sweep for rows whose
+  # holder died once a minute. A paused namespace skips the queue read and
+  # costs one every thirty.
+  #
+  # A one-shot pass over a source is still a `run`, and still by hand:
   #
   #   docker compose run --rm agent-dispatcher once \
   #       --source linear-milestone:<id> --team operations --agent <agent-name>
-  #
-  # The default command is `--help`, so the service starts, prints usage and
-  # exits 0. That is not timidity. The only subcommand that exists is `once`,
-  # which claims tasks and spends real model budget on the operator's account,
-  # and there is no `serve` yet that could idle and wait for work. A service that
-  # dispatched on every `up` would bill somebody for restarting their stack.
-  # When `serve` lands, this is the line that changes.
   #
   # task-dispatcher.md section 4 puts this in docker-compose.dev.yml instead,
   # "following the precedent that file already sets for agent-executor". That
   # precedent does not exist - the dev file defines only postgres and a
   # database-init job - and it has no server for a dispatcher to talk to, so
-  # following the letter would ship something that cannot work. The default
-  # command above meets the same intent: nothing dispatches unless somebody
-  # asks for it by name.
+  # following the letter would ship something that cannot work.
   agent-dispatcher:
     platform: ${AGENT_CONTROL_SERVER_PLATFORM:-linux/amd64}
     image: ${AGENT_CONTROL_DISPATCHER_IMAGE:-agent-control-dispatcher:local}
     build:
       context: .
       dockerfile: dispatcher/Dockerfile
+    # No --agent, deliberately. It fills one gap - a task whose team has no
+    # default_agent_name and whose workflow pins none - and a task in that state
+    # stopping at `blocked` is the better answer than a compose default quietly
+    # choosing who runs it. Add `--agent <name>` here only if you mean it.
+    command: >-
+      serve
+      --poll-seconds ${AGENT_CONTROL_DISPATCHER_POLL_SECONDS:-5}
+      --max-tasks ${AGENT_CONTROL_DISPATCHER_MAX_TASKS:-1}
     environment:
       AGENT_CONTROL_BASE_URL: http://server:8000
-      # An ORDINARY key, not an admin one. `dispatch preflight` refuses to start
-      # when this validates as admin, because the credential that runs agents
-      # must not be the credential that approves their output.
+      # An ORDINARY key, not an admin one. The credential that runs agents must
+      # not be the credential that approves their output (task-dispatcher.md
+      # section 4), and nothing `serve` calls needs more than AUTHENTICATED.
+      #
+      # Set AGENT_CONTROL_DISPATCHER_API_KEY to ONE key. The fallback reads the
+      # server's own list, which is comma-separated: with two keys configured
+      # the dispatcher would be handed "key1,key2" as its single credential and
+      # the server would reject it. That now exits 1 rather than idling, so the
+      # container restart-loops visibly instead of silently claiming nothing.
       AGENT_CONTROL_API_KEY: ${AGENT_CONTROL_DISPATCHER_API_KEY:-${AGENT_CONTROL_API_KEYS:-}}
     depends_on:
       - server
-    restart: "no"
+    # Restarted on a crash, and it does not exit on the things that are not
+    # crashes: a paused namespace, a spent hour, a server that is briefly
+    # restarting. Those are backed off inside the loop, so the restart policy
+    # never becomes the retry loop.
+    restart: unless-stopped
+    # Longer than a turn. SIGTERM stops it claiming and lets the task in flight
+    # reach its own finish call; killing it before that leaves the row at
+    # `running` until its lease lapses, which is recoverable and still ugly.
+    stop_grace_period: 330s
 
 volumes:
   pgdata:

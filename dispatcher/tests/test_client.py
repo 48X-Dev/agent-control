@@ -21,6 +21,7 @@ from agent_control_dispatcher.client import (
     DispatchClient,
     DispatchHTTPError,
     Disposition,
+    _BoundedIdSet,
     classify,
 )
 from agent_control_models.sessions import TurnResponse
@@ -117,6 +118,11 @@ async def test_the_turn_carries_the_envelope_as_the_message() -> None:
         # linear_team_key before it ever will.
         (409, "TEAM_NOT_LINKED", Disposition.BLOCKED),
         (403, "AUTH_INSUFFICIENT_PRIVILEGES", Disposition.BLOCKED),
+        # Not in section 11.3's table, which covers the turn path. On a poll
+        # loop `FAILED` means a process that looks alive and does nothing while
+        # every queued row waits, so a key the server rejects is blocked.
+        (401, "AUTH_INVALID_KEY", Disposition.BLOCKED),
+        (401, "AUTH_MISSING_KEY", Disposition.BLOCKED),
     ],
 )
 def test_the_failure_table_row_for_row(
@@ -344,6 +350,21 @@ async def test_a_deny_already_given_to_an_earlier_turn_is_not_given_to_a_later_o
 
     assert [event.control_execution_id for event in first] == ["ce-9"]
     assert second == []
+
+
+async def test_the_attributed_deny_ids_do_not_grow_without_end() -> None:
+    """One client now outlives thousands of turns, which ``once`` never did.
+
+    An unbounded set is one id per deny for the life of the process, consulted
+    on every deny query. The oldest are the ones it is safe to forget: an event
+    is only ever offered inside its own turn's time window.
+    """
+    seen = _BoundedIdSet(3)
+    seen.update(str(index) for index in range(10))
+
+    assert "9" in seen
+    assert "0" not in seen
+    assert len(seen._seen) == 3
 
 
 async def test_the_settle_window_is_wider_than_the_sdk_flush_interval() -> None:

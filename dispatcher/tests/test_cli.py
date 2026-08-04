@@ -70,7 +70,7 @@ def test_max_tasks_below_one_is_refused_too(
     assert "at least 1" in capsys.readouterr().err
 
 
-def test_the_help_states_the_cap_and_that_nobody_is_running_this_unattended(
+def test_the_help_states_the_cap_and_which_subcommand_reads_a_source(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     with pytest.raises(SystemExit):
@@ -84,7 +84,17 @@ def test_the_help_states_the_cap_and_that_nobody_is_running_this_unattended(
 
     with pytest.raises(SystemExit):
         build_parser().parse_args(["--help"])
-    assert "it does not run unattended" in " ".join(capsys.readouterr().out.split())
+    top_help = " ".join(capsys.readouterr().out.split())
+    assert "`serve` reads no source at all" in top_help
+
+    # The absence is the security property, so it is asserted rather than
+    # assumed: a serve that could name a scope could forge the human press
+    # that authorizes milestone scope (plan section 4).
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["serve", "--help"])
+    serve_help = " ".join(capsys.readouterr().out.split())
+    assert "--source" not in serve_help
+    assert "Nothing is imported and no source is read" in serve_help
 
 
 def test_dry_run_is_the_default_and_takes_an_explicit_flag_to_turn_off(tmp_path: Path) -> None:
@@ -486,3 +496,24 @@ def test_the_help_says_the_workflow_is_where_the_agents_come_from(
     assert "--workflow" in out
     assert "PUT /agent-workflows/{key}" in out
     assert "never from here and never from the issue" in out
+
+
+def test_serve_refuses_a_max_tasks_above_the_cap(capsys: pytest.CaptureFixture[str]) -> None:
+    """The per-pass bound is refused rather than clamped, exactly as `once`'s is."""
+    assert main(["serve", "--max-tasks", "9"]) == 2
+    assert "hard cap" in capsys.readouterr().err
+
+
+def test_serve_needs_neither_an_agent_nor_a_source_to_be_a_valid_invocation() -> None:
+    """The common deployment is a bare `serve`.
+
+    Every agent comes from the workflow row the press recorded, so a dispatcher
+    that had to be told one would be a dispatcher whose flags could disagree
+    with the configuration the tasks were created under.
+    """
+    parsed = build_parser().parse_args(["serve"])
+
+    assert parsed.command == "serve"
+    assert parsed.agent is None
+    assert not hasattr(parsed, "source")
+    assert not hasattr(parsed, "dry_run")

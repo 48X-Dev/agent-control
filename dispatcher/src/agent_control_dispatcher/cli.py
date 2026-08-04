@@ -36,6 +36,17 @@ The claim now lives in ``agent_tasks``: atomic, leased, and reclaimable from a
 dispatcher that died. ``--ledger`` still exists and now means the opposite of
 what it used to - it opts *out* of that, back to a local SQLite file that
 coordinates nothing.
+
+``serve`` is the other half of the play button, and it takes no ``--source``::
+
+    agent-control-dispatch serve --team operations --poll-seconds 5
+
+It polls ``GET /agent-tasks?status=queued`` and claims what it finds, so a
+press in the console runs within seconds without anybody opening a terminal. It
+imports nothing and names no scope: section 4 makes the human press the whole
+authorization for milestone scope, so a process a scheduler can start must not
+be able to construct one. ``--dry-run`` is absent for the same shape of reason
+- each row carries the value it was created with, and this reads it.
 """
 
 from __future__ import annotations
@@ -53,6 +64,7 @@ from .dispatch import (
     DispatchOptions,
     dispatch_once,
 )
+from .loop import DEFAULT_POLL_SECONDS, ServeOptions, serve
 from .sources.file import SourceParseError
 from .sources.linear import LinearScopeError
 
@@ -65,8 +77,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="agent-control-dispatch",
         description=(
-            "Dispatch tasks from a source to one Agent Control agent, one turn each. "
-            "An operator starts this and watches it finish; it does not run unattended."
+            "Run Agent Control tasks. `once` reads a source, imports what it finds "
+            "and makes one pass. `serve` reads no source at all: it polls the queue "
+            "for rows somebody pressed play on and runs them until it is stopped."
         ),
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -187,7 +200,104 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="SECONDS",
         help="Client-side read timeout. A timeout is never retried: the invocation continues.",
     )
+
+    _add_serve(subparsers)
     return parser
+
+
+def _add_serve(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    """The long-running loop: poll the queue, claim, run, repeat.
+
+    It is the other half of the play button. The console writes a queued row;
+    this claims it within seconds and runs it, so nobody has to open a terminal
+    to make a press mean something.
+
+    **It reads no source and imports nothing.** There is no ``--source`` here
+    and there cannot be one: a milestone scope is authorized by a human
+    pressing play over the issues themselves, so a process a scheduler starts
+    must not be able to construct one. Every row this touches already existed.
+    """
+
+    serve_parser = subparsers.add_parser(
+        "serve",
+        help="Poll the queue for tasks somebody pressed play on, and run them.",
+        description=(
+            "Claim and run queued tasks until stopped. Nothing is imported and no "
+            "source is read: rows arrive from the console's play button, or from a "
+            "cron `once`, and this claims what it finds. SIGTERM and SIGINT stop it "
+            "claiming and let the task in flight finish, so a restart does not leave "
+            "a claimed task with no owner."
+        ),
+    )
+    serve_parser.add_argument(
+        "--agent",
+        default=None,
+        metavar="NAME",
+        help=(
+            "Agent for a task whose plan resolved nobody, exactly as in `once`: it "
+            "fills the implicit one-step plan and nothing else. A workflow that "
+            "names its own agents ignores it."
+        ),
+    )
+    serve_parser.add_argument(
+        "--workflow",
+        default=None,
+        metavar="KEY",
+        help=(
+            "Only claim rows carrying this workflow key. It does not choose or "
+            "override the workflow - the row carries the one it was imported under, "
+            "and the plan is read from that - it leaves other rows for somebody else."
+        ),
+    )
+    serve_parser.add_argument(
+        "--team",
+        default=None,
+        metavar="SLUG",
+        help="Only claim rows belonging to this Agent Control team. Default: any.",
+    )
+    serve_parser.add_argument(
+        "--max-tasks",
+        type=int,
+        default=1,
+        metavar="N",
+        help=(
+            f"Tasks per pass, before the queue is polled again. Hard cap "
+            f"{MAX_TASKS_CEILING}; a larger value is refused."
+        ),
+    )
+    serve_parser.add_argument(
+        "--poll-seconds",
+        type=float,
+        default=DEFAULT_POLL_SECONDS,
+        metavar="SECONDS",
+        help=(
+            f"How long an idle pass waits, jittered so two dispatchers do not "
+            f"poll in lockstep. Default {DEFAULT_POLL_SECONDS:.0f}."
+        ),
+    )
+    serve_parser.add_argument(
+        "--server",
+        default=os.environ.get(BASE_URL_ENV, DEFAULT_BASE_URL),
+        metavar="URL",
+        help=f"Agent Control base URL (env {BASE_URL_ENV}).",
+    )
+    serve_parser.add_argument(
+        "--delete-sessions",
+        action="store_true",
+        help="Delete each session when its task ends (section 6).",
+    )
+    serve_parser.add_argument(
+        "--print-envelope",
+        action="store_true",
+        help="Print the exact turn message sent for each task.",
+    )
+    serve_parser.add_argument(
+        "--turn-timeout",
+        type=float,
+        default=300.0,
+        metavar="SECONDS",
+        help="Client-side read timeout. A timeout is never retried: the loop continues.",
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -201,6 +311,9 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
+
+    if args.command == "serve":
+        return _serve(args, api_key=api_key)
 
     try:
         options = DispatchOptions(
@@ -249,6 +362,45 @@ def main(argv: list[str] | None = None) -> int:
     if report.stopped_early:
         return 1
     return 0 if all(result.status.value == "completed" for result in report.results) else 1
+
+
+def _serve(args: argparse.Namespace, *, api_key: str) -> int:
+    """Run the loop until a signal stops it.
+
+    A task that failed is not a failure of this process, so it exits 0. The
+    exit code has to mean "the dispatcher broke", because it is what a restart
+    policy reads, and a loop that exited non-zero every time an agent tripped a
+    control would restart on the system working correctly.
+    """
+
+    try:
+        options = ServeOptions(
+            base_url=args.server,
+            api_key=api_key,
+            agent_name=args.agent,
+            workflow_key=args.workflow,
+            team_slug=args.team,
+            max_tasks=args.max_tasks,
+            poll_seconds=args.poll_seconds,
+            delete_sessions=args.delete_sessions,
+            print_envelope=args.print_envelope,
+            turn_timeout_seconds=args.turn_timeout,
+        )
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
+    try:
+        return asyncio.run(serve(options))
+    except KeyboardInterrupt:
+        # Only reachable from a second interrupt: the first is caught inside the
+        # loop, which is what lets the task in flight close its own row.
+        print(
+            "\ninterrupted. Any turn already in flight is still running on the executor; "
+            "this process stopping does not stop it.",
+            file=sys.stderr,
+        )
+        return 130
 
 
 if __name__ == "__main__":
