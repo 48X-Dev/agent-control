@@ -243,10 +243,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     await teardown_auth()
 
-    # Shutdown: release the Linear HTTP client, if milestones were ever read.
+    # Shutdown: release the Linear HTTP clients, if any were ever built. Three
+    # singletons, one per module that talks to Linear: milestones, issues, and
+    # the write path.
+    from .services.linear_issues import shutdown_milestone_issues_service
     from .services.linear_milestones import shutdown_milestone_service
+    from .services.linear_writeback_runtime import shutdown_writeback_runtime
 
     await shutdown_milestone_service()
+    await shutdown_milestone_issues_service()
+    await shutdown_writeback_runtime()
 
     # Shutdown: release the executor connection pool, if a session was ever
     # opened. Built on first use, so a server that never chats never opens it.

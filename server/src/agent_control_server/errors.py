@@ -504,6 +504,30 @@ class ExecutorUnavailableAPIError(APIError):
         )
 
 
+class ServiceUnavailableError(APIError):
+    """A third-party dependency this request needs could not be reached (503).
+
+    Never a 500, for the reason ``ExecutorUnavailableAPIError`` gives: a
+    dependency failing is "try again", not "file a bug". The 5xx detail
+    sanitizer replaces the detail text with a fixed template on the wire, so
+    upstream text passed here reaches the log and not the client.
+    """
+
+    def __init__(
+        self,
+        error_code: ErrorCode = ErrorCode.LINEAR_UNAVAILABLE,
+        detail: str = "A required upstream service is unavailable.",
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(
+            status_code=503,
+            error_code=error_code,
+            reason=ErrorReason.SERVICE_UNAVAILABLE,
+            detail=detail,
+            **kwargs,
+        )
+
+
 class ExecutorRejectedAPIError(APIError):
     """The executor answered and refused (502).
 

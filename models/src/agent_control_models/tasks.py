@@ -413,6 +413,16 @@ class AgentTaskDetail(AgentTaskSummary):
         default_factory=list,
         description="Ordered by step index. The chain, and the resume rule's source.",
     )
+    writebacks: list[AgentTaskWriteback] = Field(
+        default_factory=list,
+        description=(
+            "Every write-back row this task queued, in creation order: the "
+            "step comments and the close proposal. 'The work is done' and "
+            "'the tracker was updated' are two separate facts, and this list "
+            "is the second one - a row left pending or failed is visible "
+            "here, not silently stranded."
+        ),
+    )
 
 
 class ListAgentTasksResponse(BaseModel):
@@ -845,6 +855,231 @@ class AgentTaskResponse(BaseModel):
     task: AgentTaskDetail = Field(...)
 
 
+# =============================================================================
+# Write-back: the one outbound action, and the review queue that gates it
+# =============================================================================
+
+WRITEBACK_BODY_MAX_LENGTH = 4000
+"""Plan section 5.6's cap on the agent text a comment carries. Applied to the
+agent's text before escaping, so the sanitized form can run slightly longer."""
+
+DecisionDigest = Annotated[
+    str, StringConstraints(pattern=r"^sha256:[0-9a-f]{64}$")
+]
+"""Binds an accept to ``(output_text, source_ref, target_state_id)``. Over all
+three, because a reviewer is accountable for the mutation they authorised and
+not only for the text they read: a plausible summary reads the same whether it
+closes the intended issue or an attacker's issue in the same milestone."""
+
+
+class WritebackKind(StrEnum):
+    """What one write-back row would do to the tracker.
+
+    ``comment`` posts text under an agent-attribution header, one per finished
+    step. ``status_change`` proposes closing the issue and does nothing until a
+    human accepts it. The two never share a row, because one of them needs a
+    human and the other does not.
+    """
+
+    COMMENT = "comment"
+    STATUS_CHANGE = "status_change"
+
+
+class WritebackStatus(StrEnum):
+    """Where one write-back row is.
+
+    ``pending`` and ``failed`` are the retryable comment states. ``denied``
+    is terminal: a control refused the body, and reposting the same body
+    reproduces the refusal. ``awaiting_approval`` belongs to ``status_change``
+    rows only and moves exclusively by a human pressing accept or reject.
+    Nothing expires out of it; an approval queue that times out into approval
+    is not a queue.
+    """
+
+    PENDING = "pending"
+    SENT = "sent"
+    DENIED = "denied"
+    FAILED = "failed"
+    AWAITING_APPROVAL = "awaiting_approval"
+    REJECTED = "rejected"
+
+
+class AgentTaskWriteback(BaseModel):
+    """One write-back row, as a caller may see it."""
+
+    writeback_id: int = Field(..., description="Row id, scoped to the task for requests.")
+    task_key: TaskKey = Field(...)
+    kind: WritebackKind = Field(...)
+    status: WritebackStatus = Field(...)
+    step_index: int = Field(..., ge=0)
+    body: str = Field(
+        ...,
+        description=(
+            "The sanitized text this row would post, or proposed closing on. "
+            "Untrusted agent output; nothing that renders it may treat it as "
+            "instructions."
+        ),
+    )
+    target_state_id: str | None = Field(
+        default=None,
+        description="The Linear state an accept moved the issue to. Server-resolved.",
+    )
+    decision_digest: DecisionDigest | None = Field(
+        default=None,
+        description="The digest the accepting human agreed to.",
+    )
+    approved_by_hash: str | None = Field(
+        default=None,
+        description=(
+            "Credential hash of the accepting caller. A credential, not a "
+            "person: browser callers all hash to the same value, so a console "
+            "must not render this as a name."
+        ),
+    )
+    approved_at: dt.datetime | None = Field(default=None)
+    rejected_reason: str | None = Field(default=None)
+    attempts: int = Field(default=0, ge=0)
+    last_error: str | None = Field(default=None)
+    created_at: dt.datetime = Field(...)
+    updated_at: dt.datetime = Field(...)
+
+
+# ``AgentTaskDetail.writebacks`` forward-references the model above, which is
+# defined later in the file than the detail; resolve it now that both exist.
+AgentTaskDetail.model_rebuild()
+
+
+class ReviewQueueIssue(BaseModel):
+    """The target issue, read live from Linear when the card is rendered.
+
+    The card shows the target and not only the claim. ``read_failed`` true
+    means Linear could not be read at render time; an accept in that state
+    will be refused by the digest, because the server cannot resolve the
+    state it would be binding to.
+    """
+
+    source_ref: SourceRef = Field(...)
+    identifier: str | None = Field(default=None)
+    title: str | None = Field(default=None)
+    state_name: str | None = Field(default=None)
+    state_type: str | None = Field(default=None)
+    team_key: str | None = Field(default=None)
+    milestone_id: str | None = Field(default=None)
+    read_failed: bool = Field(default=False)
+
+
+class ReviewQueueEntry(BaseModel):
+    """One completed task's proposal to close its issue.
+
+    ``decision_digest`` is computed at render time over the live target state,
+    and the accept must echo it back. ``stale`` renders age; nothing expires
+    into approval.
+    """
+
+    task_key: TaskKey = Field(...)
+    writeback_id: int = Field(...)
+    agent_name: str | None = Field(
+        default=None, description="The agent that produced the final output."
+    )
+    summary: str = Field(..., description="The task's final output. Untrusted text.")
+    source_ref: SourceRef = Field(...)
+    source_url: str | None = Field(default=None)
+    team_slug: TeamSlug | None = Field(default=None)
+    source_scope_name: str | None = Field(default=None)
+    chain_trace_id: str | None = Field(default=None)
+    created_at: dt.datetime = Field(...)
+    stale: bool = Field(
+        default=False,
+        description="Older than the deployment's review_stale_after_hours.",
+    )
+    decision_digest: DecisionDigest | None = Field(
+        default=None,
+        description="Echo this back on accept. Null when Linear could not be read.",
+    )
+    issue: ReviewQueueIssue | None = Field(default=None)
+
+
+class ListReviewQueueResponse(BaseModel):
+    """The proposals waiting for a human, oldest first.
+
+    There is no accept-all, so there is no bulk shape here: one entry, one
+    decision, one request.
+    """
+
+    entries: list[ReviewQueueEntry] = Field(default_factory=list)
+    total: int = Field(..., ge=0, description="Waiting entries in scope, beyond this page too.")
+
+
+class AcceptAgentTaskRequest(BaseModel):
+    """A human agreeing that this task's issue may be closed.
+
+    Names the row and the digest, and nothing else. There is no state field:
+    the target state is resolved server-side from the team's workflow, so a
+    request body that says "move it to Done in the ENG workflow" has nowhere
+    to say it.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    writeback_id: int = Field(..., ge=1)
+    expected_decision_digest: DecisionDigest = Field(
+        ..., description="The digest the review card showed."
+    )
+
+
+class AcceptAgentTaskResponse(BaseModel):
+    """What the accept did, and the bar it moved.
+
+    ``milestone_progress`` is carried directly because the milestone cache is
+    process-local: an invalidation clears only the replica that served the
+    accept, so the row renders this value optimistically and a refetch that
+    lands on a stale replica corrects within one TTL.
+    """
+
+    task: AgentTaskDetail = Field(...)
+    writeback: AgentTaskWriteback = Field(...)
+    note: str | None = Field(
+        default=None,
+        description=(
+            "ALREADY_COMPLETED when a human closed the issue first, which is "
+            "the system working rather than an error."
+        ),
+    )
+    milestone_progress: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description="The milestone's progress after the close, when it could be read.",
+    )
+
+
+class RejectAgentTaskRequest(BaseModel):
+    """A human declining the proposal. The task stays completed, the issue open."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    writeback_id: int = Field(..., ge=1)
+    reason: str | None = Field(default=None, max_length=FAILURE_DETAIL_MAX_LENGTH)
+
+
+class RejectAgentTaskResponse(BaseModel):
+    """The task and the row after a rejection."""
+
+    task: AgentTaskDetail = Field(...)
+    writeback: AgentTaskWriteback = Field(...)
+
+
+class DeliverAgentTaskWritebackResponse(BaseModel):
+    """One comment row after one more delivery attempt.
+
+    Comments only. A ``status_change`` row moves exclusively by a human's
+    accept or reject, and the deliver route refuses it outright - redelivery
+    must never become a second door past the review gate.
+    """
+
+    writeback: AgentTaskWriteback = Field(...)
+
+
 __all__ = [
     "DEFAULT_WORKFLOW_KEY",
     "DISPATCHER_INSTANCE_MAX_LENGTH",
@@ -863,6 +1098,9 @@ __all__ = [
     "TASK_TITLE_MAX_LENGTH",
     "TERMINAL_TASK_STATUSES",
     "WORKFLOW_KEY_MAX_LENGTH",
+    "WRITEBACK_BODY_MAX_LENGTH",
+    "AcceptAgentTaskRequest",
+    "AcceptAgentTaskResponse",
     "AgentTaskDetail",
     "AgentTaskResponse",
     "AgentTaskStatus",
@@ -870,9 +1108,12 @@ __all__ = [
     "AgentTaskStepResponse",
     "AgentTaskStepStatus",
     "AgentTaskSummary",
+    "AgentTaskWriteback",
     "CancelAgentTaskRequest",
     "ClaimAgentTaskRequest",
     "ClaimAgentTaskResponse",
+    "DecisionDigest",
+    "DeliverAgentTaskWritebackResponse",
     "DispatcherInstanceId",
     "FinishAgentTaskRequest",
     "FinishAgentTaskStepRequest",
@@ -887,12 +1128,19 @@ __all__ = [
     "ImportSkipCounts",
     "ImportTaskItem",
     "ListAgentTasksResponse",
+    "ListReviewQueueResponse",
     "RefsDigest",
+    "RejectAgentTaskRequest",
+    "RejectAgentTaskResponse",
     "ResolveAgentTaskRequest",
+    "ReviewQueueEntry",
+    "ReviewQueueIssue",
     "SourceRef",
     "StartAgentTaskStepRequest",
     "TaskKey",
     "TaskScopeKind",
     "TaskSourceKind",
     "WorkflowKey",
+    "WritebackKind",
+    "WritebackStatus",
 ]

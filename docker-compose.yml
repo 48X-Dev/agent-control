@@ -86,6 +86,11 @@ services:
       AGENT_CONTROL_LINEAR_API_KEY: ${AGENT_CONTROL_LINEAR_API_KEY:-}
       AGENT_CONTROL_LINEAR_TIMEOUT_SECONDS: ${AGENT_CONTROL_LINEAR_TIMEOUT_SECONDS:-10}
       AGENT_CONTROL_LINEAR_CACHE_TTL_SECONDS: ${AGENT_CONTROL_LINEAR_CACHE_TTL_SECONDS:-60}
+      # Write-back is off unless this deployment turns it on. With it false,
+      # comment rows queue and stay pending, and accepting a review-queue
+      # entry is refused.
+      AGENT_CONTROL_LINEAR_WRITE_ENABLED: ${AGENT_CONTROL_LINEAR_WRITE_ENABLED:-false}
+      AGENT_CONTROL_LINEAR_CONSOLE_BASE_URL: ${AGENT_CONTROL_LINEAR_CONSOLE_BASE_URL:-}
     depends_on:
       postgres:
         condition: service_healthy

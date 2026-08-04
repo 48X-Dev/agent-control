@@ -98,6 +98,22 @@ class LinearMilestoneService:
         if self._client is not None:
             await self._client.aclose()
 
+    def invalidate(self, *, namespace_key: str, linear_team_key: str) -> None:
+        """Drop one team's cached read, because this server just moved its bar.
+
+        Called by the accept path after ``issueUpdate``: without it the
+        milestone the reviewer just moved does not move on screen for up to
+        ``ttl_seconds`` and the accept reads as a failure. Best-effort by
+        design - the cache is process-local, so on more than one replica this
+        clears only the replica that served the accept, which is why the
+        accept response carries the new progress value directly.
+
+        The cooldown is deliberately left standing: it exists because Linear
+        failed or rate-limited recently, and an accept does not make Linear
+        answer sooner.
+        """
+        self._cache.pop((namespace_key, linear_team_key), None)
+
     async def get_milestones(
         self, *, namespace_key: str, linear_team_key: str | None
     ) -> MilestonesResult:

@@ -17,10 +17,11 @@ against a row it holds. Splitting them costs two enum members and means a
 future deployment can hand a scheduler a credential that runs work without one
 that can queue it.
 
-``agent_tasks.approve`` is declared and has no route here. It belongs to the
-accept path, where a human agrees that an agent's claim to have finished may
-change a tracker their team plans against, and it is separate precisely so
-nobody folds it into ``write`` later.
+``agent_tasks.approve`` is the accept path: a human agreeing that an agent's
+claim to have finished may change a tracker their team plans against. It is a
+third operation precisely so nobody folds it into ``write`` later - ``write``
+covers operator moves on rows (cancel, resolve, redelivering a stranded
+comment), and none of those may close an issue.
 
 What no route accepts, at any tier: an agent name on an import, a trace id, a
 lease length, or a deadline. Agent selection is server-side configuration, the
@@ -36,14 +37,19 @@ import logging
 
 from agent_control_models.attachments import StepFilesSummary
 from agent_control_models.errors import ErrorCode
+from agent_control_models.observability import ControlExecutionEvent
 from agent_control_models.server import PaginationInfo
 from agent_control_models.tasks import (
+    AcceptAgentTaskRequest,
+    AcceptAgentTaskResponse,
     AgentTaskResponse,
     AgentTaskStatus,
     AgentTaskStepResponse,
+    AgentTaskStepStatus,
     CancelAgentTaskRequest,
     ClaimAgentTaskRequest,
     ClaimAgentTaskResponse,
+    DeliverAgentTaskWritebackResponse,
     FinishAgentTaskRequest,
     FinishAgentTaskStepRequest,
     GetAgentTaskResponse,
@@ -52,6 +58,9 @@ from agent_control_models.tasks import (
     ImportAgentTasksRequest,
     ImportAgentTasksResponse,
     ListAgentTasksResponse,
+    ListReviewQueueResponse,
+    RejectAgentTaskRequest,
+    RejectAgentTaskResponse,
     ResolveAgentTaskRequest,
     StartAgentTaskStepRequest,
 )
@@ -60,16 +69,27 @@ from agent_control_models.workflows import (
     GetAgentTaskChainResponse,
     GetAgentTaskPlanResponse,
 )
-from fastapi import APIRouter, Depends, Path, Query
+from fastapi import APIRouter, Depends, Path, Query, Request
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth_framework import Operation, Principal, require_operation
 from ..config import dispatch_settings
 from ..db import get_async_db
 from ..errors import BadRequestError
+from ..models import AgentTaskStep as AgentTaskStepRow
+from ..services.agent_task_review import TaskReviewService
+from ..services.agent_task_writeback_queue import (
+    EventEmitter,
+    WritebackQueueService,
+    wire_writeback,
+)
 from ..services.agent_tasks import AgentTasksService
 from ..services.agent_workflows import AgentWorkflowsService
 from ..services.caller_identity import hash_caller_id
+from ..services.linear_issues import get_milestone_issues_service
+from ..services.linear_milestones import get_milestone_service
+from ..services.linear_writeback_runtime import WritebackRuntime, get_writeback_runtime
 from ..services.step_attachment_conversions import settle_step_conversions
 from ..services.step_attachments import (
     fetch_step_files,
@@ -96,6 +116,26 @@ TASK_KEY_PATH = Path(
 
 def _service(db: AsyncSession) -> AgentTasksService:
     return AgentTasksService(db, settings=dispatch_settings)
+
+
+def _queue_service(db: AsyncSession, runtime: WritebackRuntime) -> WritebackQueueService:
+    return WritebackQueueService(db, settings=dispatch_settings, runtime=runtime)
+
+
+def _review_service(db: AsyncSession, runtime: WritebackRuntime) -> TaskReviewService:
+    return TaskReviewService(db, settings=dispatch_settings, runtime=runtime)
+
+
+def _event_emitter(request: Request, namespace_key: str) -> EventEmitter | None:
+    """Bind the process ingestor, so a write-back deny lands on the chain trace."""
+    ingestor = getattr(request.app.state, "event_ingestor", None)
+    if ingestor is None:
+        return None
+
+    async def emit(events: list[ControlExecutionEvent]) -> None:
+        await ingestor.ingest(events, namespace_key=namespace_key)
+
+    return emit
 
 
 def _parse_cursor(cursor: str | None) -> int | None:
@@ -195,6 +235,51 @@ async def list_agent_tasks(
             next_cursor=str(next_cursor) if next_cursor is not None else None,
             has_more=next_cursor is not None,
         ),
+    )
+
+
+@router.get(
+    "/review",
+    response_model=ListReviewQueueResponse,
+    summary="List completed tasks waiting for a human decision",
+    response_description="One entry per proposal, oldest first, targets read live",
+)
+async def list_review_queue(
+    team: str | None = Query(
+        None,
+        min_length=1,
+        max_length=TEAM_SLUG_MAX_LENGTH,
+        description="Filter by the Agent Control team the task ran under.",
+    ),
+    milestone_id: str | None = Query(
+        None,
+        min_length=1,
+        max_length=255,
+        description="Filter by the milestone the task was imported from.",
+    ),
+    limit: int = Query(_DEFAULT_LIST_LIMIT, ge=1, le=_MAX_LIST_LIMIT),
+    db: AsyncSession = Depends(get_async_db),
+    runtime: WritebackRuntime = Depends(get_writeback_runtime),
+    principal: Principal = Depends(require_operation(Operation.AGENT_TASKS_READ)),
+) -> ListReviewQueueResponse:
+    """The review queue of 5.7: an agent's completion claim, waiting.
+
+    Each entry shows the target as well as the claim - the issue's identifier,
+    title and state are read live from Linear at render time - and carries the
+    ``decision_digest`` the accept must echo back. There is deliberately no
+    accept-all anywhere in this API: bulk-accepting N claims would be one
+    recorded decision covering work nobody read.
+
+    Entries never expire out of this list. ``stale`` starts rendering true
+    after the deployment's ``review_stale_after_hours`` so age is visible,
+    and that is all it does.
+    """
+    service = _review_service(db, runtime)
+    return await service.review_queue(
+        namespace_key=principal.namespace_key,
+        team_slug=team,
+        milestone_id=milestone_id,
+        limit=limit,
     )
 
 
@@ -477,9 +562,11 @@ async def start_agent_task_step(
 )
 async def finish_agent_task_step(
     request: FinishAgentTaskStepRequest,
+    http_request: Request,
     task_key: str = TASK_KEY_PATH,
     step_index: int = Path(..., ge=0),
     db: AsyncSession = Depends(get_async_db),
+    runtime: WritebackRuntime = Depends(get_writeback_runtime),
     principal: Principal = Depends(require_operation(Operation.AGENT_TASKS_CLAIM)),
 ) -> AgentTaskStepResponse:
     """The write order lives here so nobody has to remember it.
@@ -493,6 +580,13 @@ async def finish_agent_task_step(
     ``abandoned`` is not accepted here. It is what the server writes when it
     reclaims a step from an expired lease, and a dispatcher claiming it for
     itself would be reporting somebody else's failure as its own.
+
+    **A completed step also queues its Linear comment here**, in the same
+    transaction as the step, so the queue entry is durable before any network
+    is tried. The send happens after the commit with no transaction open,
+    exactly like the file fetch on the start route, and a Linear failure marks
+    the row and never fails the step: "the work is done" and "the ticket was
+    updated" are two facts, kept separately.
     """
     service = _service(db)
     step, task = await service.finish_step(
@@ -508,7 +602,48 @@ async def finish_agent_task_step(
         failure_code=request.failure_code,
         failure_detail=request.failure_detail,
     )
+    writebacks = _queue_service(db, runtime)
+    queued = None
+    task_row = None
+    step_row = None
+    # Re-widened before comparing: the shared base model serializes enums to
+    # their values, so ``step.status`` holds the plain string here.
+    if AgentTaskStepStatus(step.status) is AgentTaskStepStatus.COMPLETED:
+        task_row = await service.get_row(
+            namespace_key=principal.namespace_key, task_key=task_key
+        )
+        if writebacks.writeback_applies(task_row):
+            step_row = await db.scalar(
+                select(AgentTaskStepRow).where(
+                    AgentTaskStepRow.task_id == task_row.id,
+                    AgentTaskStepRow.step_index == step_index,
+                )
+            )
+            plan = await AgentWorkflowsService(db).plan_for_task(
+                namespace_key=principal.namespace_key, task=task_row
+            )
+            if step_row is not None:
+                queued = await writebacks.enqueue_step_comment(
+                    task=task_row,
+                    step=step_row,
+                    total_steps=len(plan.steps),
+                )
     await db.commit()
+
+    if queued is not None and task_row is not None and step_row is not None:
+        try:
+            await writebacks.deliver_comment(
+                row=queued,
+                task=task_row,
+                agent_name=step_row.agent_name,
+                emit_events=_event_emitter(http_request, principal.namespace_key),
+            )
+            await db.commit()
+        except Exception:
+            # The step is already committed. A write-back failure is a row in
+            # the queue, never a failed step; reaching this is a defect here.
+            await db.rollback()
+            logger.exception("Sending this step's Linear comment failed.")
     return AgentTaskStepResponse(step=step, task=task)
 
 
@@ -520,8 +655,10 @@ async def finish_agent_task_step(
 )
 async def finish_agent_task(
     request: FinishAgentTaskRequest,
+    http_request: Request,
     task_key: str = TASK_KEY_PATH,
     db: AsyncSession = Depends(get_async_db),
+    runtime: WritebackRuntime = Depends(get_writeback_runtime),
     principal: Principal = Depends(require_operation(Operation.AGENT_TASKS_CLAIM)),
 ) -> AgentTaskResponse:
     """``blocked`` and ``failed`` are not synonyms, and the ledger keeps them apart.
@@ -536,6 +673,19 @@ async def finish_agent_task(
     resumes at the same step, which is provably safe because the quota check
     runs before anything leaves the process. The second is not reclaimable by
     any machine, because nothing here can prove the invocation stopped.
+
+    **A task finishing as ``completed`` additionally leaves a proposal row in
+    the review queue**, in this same transaction. The task's status is and
+    stays ``completed``: the proposal waiting is a fact about the write-back,
+    never about the task, so a Linear outage or an unread queue cannot make
+    finished work look unfinished.
+
+    **Undelivered step comments get one more attempt here**, after the commit,
+    whatever status the task finished with. The finish-step send is otherwise
+    the only attempt a comment row ever gets, because re-finishing a completed
+    step is a 409: without this pass, a row left ``failed`` by a Linear blip
+    would be stranded for good. The marker dedupe makes the retry safe, and a
+    failure here still only marks rows, exactly like the first attempt.
     """
     service = _service(db)
     task = await service.finish_task(
@@ -546,7 +696,25 @@ async def finish_agent_task(
         failure_code=request.failure_code,
         failure_detail=request.failure_detail,
     )
+    task_row = await service.get_row(
+        namespace_key=principal.namespace_key, task_key=task_key
+    )
+    writebacks = _queue_service(db, runtime)
+    if AgentTaskStatus(task.status) is AgentTaskStatus.COMPLETED:
+        await writebacks.create_status_change_proposal(task=task_row)
     await db.commit()
+
+    try:
+        await writebacks.deliver_pending_comments(
+            task=task_row,
+            emit_events=_event_emitter(http_request, principal.namespace_key),
+        )
+        await db.commit()
+    except Exception:
+        # The finish is already committed; a redelivery defect costs the
+        # retry and nothing else.
+        await db.rollback()
+        logger.exception("Redelivering this task's Linear comments failed.")
     return AgentTaskResponse(task=task)
 
 
@@ -611,3 +779,165 @@ async def resolve_agent_task(
     )
     await db.commit()
     return AgentTaskResponse(task=task)
+
+
+@router.post(
+    "/{task_key}/accept",
+    response_model=AcceptAgentTaskResponse,
+    summary="Accept a completed task's proposal and close its issue",
+    response_description="The task, the sent write-back, and the milestone's new progress",
+)
+async def accept_agent_task(
+    request: AcceptAgentTaskRequest,
+    task_key: str = TASK_KEY_PATH,
+    db: AsyncSession = Depends(get_async_db),
+    runtime: WritebackRuntime = Depends(get_writeback_runtime),
+    principal: Principal = Depends(require_operation(Operation.AGENT_TASKS_APPROVE)),
+) -> AcceptAgentTaskResponse:
+    """A human agreeing that an agent's claim may change the tracker.
+
+    This is the only route in the server that closes an issue, and a person is
+    the only thing that can reach it. Server-side it refuses, in order: a task
+    that is not ``completed`` or a row that is not waiting; a dry-run task; the
+    credential that ran the work (409 ``SELF_APPROVAL_REFUSED`` - "may run
+    agents, may not accept their work" is this comparison, because the local
+    credential path cannot express it as a tier); an issue that changed team or
+    left its milestone (409 ``SCOPE_CHANGED``); and a digest that no longer
+    matches the text, the target and the resolved completed state together
+    (409 ``DECISION_CHANGED`` - re-read the review queue for the current one).
+
+    The target state is resolved from the team's workflow server-side. Nothing
+    in this request can name a state, and nothing in the agent's output is
+    read to find one.
+
+    The response carries the milestone's new progress read after the close,
+    because the milestone cache is per process: the invalidation this route
+    performs clears the serving replica, and any other replica corrects within
+    one TTL. ``note`` says ``ALREADY_COMPLETED`` when a human closed the issue
+    first, which is the system working rather than an error.
+    """
+    service = _review_service(db, runtime)
+    task_row, row, note, team_key = await service.accept(
+        namespace_key=principal.namespace_key,
+        task_key=task_key,
+        writeback_id=request.writeback_id,
+        expected_decision_digest=request.expected_decision_digest,
+        caller_hash=hash_caller_id(principal.caller_id),
+    )
+    await db.commit()
+
+    progress: float | None = None
+    if team_key is not None:
+        milestones = get_milestone_service()
+        milestones.invalidate(
+            namespace_key=principal.namespace_key, linear_team_key=team_key
+        )
+        get_milestone_issues_service().invalidate(
+            namespace_key=principal.namespace_key, linear_team_key=team_key
+        )
+        if task_row.source_scope_ref is not None:
+            result = await milestones.get_milestones(
+                namespace_key=principal.namespace_key, linear_team_key=team_key
+            )
+            for milestone in result.milestones:
+                if milestone.id == task_row.source_scope_ref:
+                    progress = milestone.progress
+                    break
+
+    detail = await _service(db).get_detail(
+        namespace_key=principal.namespace_key, task_key=task_key
+    )
+    return AcceptAgentTaskResponse(
+        task=detail,
+        writeback=service.wire(row, task_key=task_key),
+        note=note,
+        milestone_progress=progress,
+    )
+
+
+@router.post(
+    "/{task_key}/reject",
+    response_model=RejectAgentTaskResponse,
+    summary="Decline a completed task's proposal",
+    response_description="The task and the rejected write-back",
+)
+async def reject_agent_task(
+    request: RejectAgentTaskRequest,
+    task_key: str = TASK_KEY_PATH,
+    db: AsyncSession = Depends(get_async_db),
+    runtime: WritebackRuntime = Depends(get_writeback_runtime),
+    principal: Principal = Depends(require_operation(Operation.AGENT_TASKS_APPROVE)),
+) -> RejectAgentTaskResponse:
+    """Records a reason; the task stays ``completed`` and the issue stays open.
+
+    Rejection writes nothing to Linear, so it works with the write flag off.
+    The self-approval refusal applies here too, because a dispatcher that can
+    reject its own proposal can bury its own output before anybody reads it.
+    """
+    service = _review_service(db, runtime)
+    task_row, row = await service.reject(
+        namespace_key=principal.namespace_key,
+        task_key=task_key,
+        writeback_id=request.writeback_id,
+        reason=request.reason,
+        caller_hash=hash_caller_id(principal.caller_id),
+    )
+    del task_row
+    await db.commit()
+    detail = await _service(db).get_detail(
+        namespace_key=principal.namespace_key, task_key=task_key
+    )
+    return RejectAgentTaskResponse(
+        task=detail,
+        writeback=service.wire(row, task_key=task_key),
+    )
+
+
+@router.post(
+    "/{task_key}/writebacks/{writeback_id}/deliver",
+    response_model=DeliverAgentTaskWritebackResponse,
+    summary="Attempt one undelivered comment again",
+    response_description="The row after the attempt: sent, failed, or denied",
+)
+async def deliver_agent_task_writeback(
+    http_request: Request,
+    task_key: str = TASK_KEY_PATH,
+    writeback_id: int = Path(..., ge=1),
+    db: AsyncSession = Depends(get_async_db),
+    runtime: WritebackRuntime = Depends(get_writeback_runtime),
+    principal: Principal = Depends(require_operation(Operation.AGENT_TASKS_WRITE)),
+) -> DeliverAgentTaskWritebackResponse:
+    """An operator's retry for the long tail the automatic attempts missed.
+
+    The finish routes already retry: this exists for rows those can no longer
+    reach - a task that finished while the write flag was off, or while Linear
+    was down past the last attempt. The row's own queue entry is the evidence
+    something is undelivered, and the task detail shows it.
+
+    **Comments only, and that refusal is the review gate holding.** A
+    ``status_change`` row is refused whatever its state, because a deliver
+    route that could send one would be an accept with no digest, no
+    self-approval check and no named approver. ``denied`` rows are refused
+    too: the same body reproduces the same refusal, and the controls verdict
+    is not retried around. The body itself is re-evaluated against the
+    step agent's controls before every attempt, exactly like the first one.
+    """
+    writebacks = _queue_service(db, runtime)
+    task_row, row, agent_name = await writebacks.require_comment_row(
+        namespace_key=principal.namespace_key,
+        task_key=task_key,
+        writeback_id=writeback_id,
+    )
+    row = await writebacks.deliver_comment(
+        row=row,
+        task=task_row,
+        agent_name=agent_name,
+        emit_events=_event_emitter(http_request, principal.namespace_key),
+    )
+    # ``updated_at`` carries an ``onupdate`` and the flush expired it; read it
+    # back so serializing after the commit stays synchronous.
+    await db.refresh(row)
+    await db.commit()
+    return DeliverAgentTaskWritebackResponse(
+        writeback=wire_writeback(row, task_key=task_key)
+    )

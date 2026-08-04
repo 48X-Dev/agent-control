@@ -1644,6 +1644,85 @@ class AgentTaskStep(Base):
         return normalize_agent_name(value)
 
 
+class AgentTaskWriteback(Base):
+    """What one task proposes to write back to its tracker, and where that is.
+
+    Plan section 5.6. The queue is its own table so the write-back retries
+    independently of the task: a task reaches ``completed`` whether or not its
+    comment landed, because conflating "the work is done" with "the ticket was
+    updated" makes a Linear outage look like failed work, and the operator
+    response to those two is completely different.
+
+    ``kind`` splits the two writes this system ever makes. A ``comment`` row is
+    sent by the server on the finish path, behind the write flag, after the
+    body passes controls evaluation. A ``status_change`` row is created in
+    ``awaiting_approval`` and does nothing until a human presses accept - it is
+    5.7's review queue, and it never moves by timer, retry, or dispatcher.
+
+    ``ux_agent_task_writebacks_step_kind`` makes the enqueue idempotent: a
+    reclaimed step that re-runs re-enqueues into the same row rather than
+    queueing a second comment. The residual duplicate the plan accepts is two
+    *processes* passing the marker check concurrently, not two rows.
+
+    ``approved_by_hash`` identifies a credential, not a person, the same caveat
+    ``caller_identity.py`` documents, and a console must not render it as a
+    name. It is written on accept; a rejection records only its reason, which
+    is what the plan asks and no more.
+    """
+
+    __tablename__ = "agent_task_writebacks"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["namespace_key", "task_id"],
+            ["agent_tasks.namespace_key", "agent_tasks.id"],
+            name="agent_task_writebacks_task_fkey",
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint(
+            "task_id", "step_index", "kind", name="ux_agent_task_writebacks_step_kind"
+        ),
+        # The review queue read: awaiting rows in a namespace, oldest first.
+        Index("ix_agent_task_writebacks_review", "namespace_key", "status", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    namespace_key: Mapped[str] = mapped_column(
+        String(255), nullable=False, server_default=_NAMESPACE_SERVER_DEFAULT
+    )
+    task_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    step_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    kind: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default=text("'comment'")
+    )
+    status: Mapped[str] = mapped_column(String(24), nullable=False)
+    # The full composed comment for a comment row; the task's final output for
+    # a status_change row. Sanitized before it lands here, so what was shown to
+    # the reviewer is byte-for-byte what the digest was computed over.
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    target_state_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    decision_digest: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    approved_by_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    approved_at: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    rejected_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        onupdate=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
+
+
 class AgentDispatchState(Base):
     """One namespace's dispatch ceilings, and the two switches that stop it.
 
