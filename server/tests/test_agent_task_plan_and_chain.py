@@ -30,10 +30,9 @@ import uuid
 from typing import Any
 
 import pytest
+from agent_control_server.auth_framework import Operation, Principal, set_authorizer
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
-
-from agent_control_server.auth_framework import Operation, Principal, set_authorizer
 
 TASKS_URL = "/api/v1/agent-tasks"
 WORKFLOWS_URL = "/api/v1/agent-workflows"
@@ -218,7 +217,8 @@ def test_a_step_that_pins_nobody_takes_the_teams_default(client: TestClient) -> 
     """Section 8's second source, and the last one. Without it a step with a
     null agent could only ever refuse, so the null would be decorative."""
     pinned, fallback = _agent(client), _agent(client)
-    slug = _team(client, members=[fallback])
+    # The pinned agent joins too: a team-scoped workflow may only pin members.
+    slug = _team(client, members=[pinned, fallback])
     assert _set_default_agent(client, slug, fallback).status_code == 200
     key = _workflow(
         client,
@@ -298,7 +298,8 @@ def test_the_plan_reports_an_unresolved_step_rather_than_choosing_one(
     """A plan that silently filled the gap would be agent selection happening
     somewhere nobody reviewed."""
     pinned, fallback = _agent(client), _agent(client)
-    slug = _team(client, members=[fallback])
+    # The pinned agent joins too: a team-scoped workflow may only pin members.
+    slug = _team(client, members=[pinned, fallback])
     assert _set_default_agent(client, slug, fallback).status_code == 200
     key = _workflow(
         client,
@@ -410,11 +411,14 @@ def test_the_refusal_names_the_steps_that_could_not_be_resolved(
     unreachable field would pass the day somebody made it reachable and say
     nothing until then.
     """
-    slug = _team(client)
+    member = _agent(client)
+    # A member, because a team-scoped workflow may only pin members and this
+    # test is about the *other* refusal: the steps that resolve to nobody.
+    slug = _team(client, members=[member])
     key = _workflow(
         client,
         [
-            {"agent_name": _agent(client), "brief": "a"},
+            {"agent_name": member, "brief": "a"},
             {"agent_name": None, "brief": "b"},
             {"agent_name": None, "brief": "c"},
         ],

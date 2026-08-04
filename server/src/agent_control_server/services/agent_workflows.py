@@ -16,7 +16,10 @@ issue in a tracker can label it**, so a label that chose the agent would let an
 attacker choose the executor and therefore the blast radius: agents differ in
 system prompt, in bound controls and in tools. A step neither source can answer
 comes back with ``agent_name`` null, and the dispatcher blocks the task rather
-than picking one.
+than picking one. A step pinning an agent that has since left the workflow's
+team is reported the same way: membership is enforced when the workflow is
+written and re-checked when it is resolved, because an invariant checked only
+on the way in is one that quietly stops holding.
 
 **Assemble the chain.** :meth:`AgentWorkflowsService.chain_for_task` merges the
 plan with the rows in ``agent_task_steps``. Not with a trace: the rollup at
@@ -38,6 +41,7 @@ import datetime as dt
 from collections.abc import Sequence
 from typing import Any, cast
 
+from agent_control_models.agent import normalize_agent_name
 from agent_control_models.errors import ErrorCode
 from agent_control_models.tasks import (
     DEFAULT_WORKFLOW_KEY,
@@ -60,7 +64,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..errors import ConflictError, NotFoundError
-from ..models import AgentTask, Team
+from ..models import AgentTask, Team, TeamMember
 from ..models import AgentTaskStep as AgentTaskStepRow
 from ..models import AgentWorkflow as AgentWorkflowRow
 
@@ -116,9 +120,24 @@ class AgentWorkflowsService:
         The team is verified to exist when one is named. A workflow scoped to a
         team that is not there would resolve no default agent and refuse every
         step that relies on one, at claim time, on somebody else's shift.
+
+        Every step that pins an agent has to pin a member of that team - the
+        invariant ``default_agent_name`` already holds on ``/teams``, refused
+        with the same ``AGENT_NOT_IN_TEAM``. A pinned outsider would run the
+        task under the wrong persona and, because controls are bound per agent,
+        under the wrong control surface. No ``team_slug`` means no boundary is
+        claimed, and a step may pin any agent in the namespace. Membership that
+        rots *after* the write is :meth:`plan_for_task`'s problem: re-checked
+        there, and reported rather than run.
         """
         if team_slug is not None:
             await self._require_team(namespace_key=namespace_key, team_slug=team_slug)
+            await self._require_steps_within_team(
+                namespace_key=namespace_key,
+                team_slug=team_slug,
+                workflow_key=workflow_key,
+                steps=steps,
+            )
 
         payload = [step.model_dump(mode="json") for step in steps]
         existing = await self._find_row(
@@ -199,6 +218,18 @@ class AgentWorkflowsService:
         reported rather than filled in, because a plan that silently picked an
         agent would be agent selection happening somewhere nobody reviewed.
 
+        The write-time membership invariant is re-checked here, because
+        membership changes after workflows are written. A step pinning an agent
+        that is no longer on the workflow's own ``team_slug`` comes back
+        unresolved exactly like a step nobody answered - reported, never run
+        under the wrong persona and the wrong controls, and never an error on
+        this read. It is not filled from the team's default either: the step
+        named its agent, and substituting a different one would be the silent
+        selection this method exists to refuse. The check runs against the
+        workflow's team, not the task's - the task's team picks the *default*
+        for steps that pin nobody, and a workflow with no ``team_slug`` claims
+        no boundary to check.
+
         A ``workflow_key`` naming a row that no longer exists resolves to the
         implicit one-step plan rather than raising. The task is a row that
         already exists and an operator reading it needs to see what is wrong
@@ -226,15 +257,34 @@ class AgentWorkflowsService:
             namespace_key=namespace_key, team_slug=team_slug
         )
 
+        outside = set(
+            await self._non_member_step_indexes(
+                namespace_key=namespace_key,
+                team_slug=row.team_slug if row is not None else None,
+                steps=steps,
+            )
+        )
+
         resolved: list[ResolvedWorkflowStep] = []
         unresolved: list[int] = []
         for index, step in enumerate(steps):
-            agent_name = step.agent_name or default_agent
-            if step.agent_name:
+            agent_name: str | None
+            if step.agent_name and index not in outside:
+                agent_name = step.agent_name
                 source = AGENT_SOURCE_STEP
+            elif step.agent_name:
+                # Pinned to an agent no longer on the workflow's team, so the
+                # write-time invariant stopped holding. Not filled from the
+                # team default: the step named its agent, and substituting
+                # another here would be selection nobody reviewed.
+                agent_name = None
+                source = AGENT_SOURCE_UNRESOLVED
+                unresolved.append(index)
             elif default_agent:
+                agent_name = default_agent
                 source = AGENT_SOURCE_TEAM_DEFAULT
             else:
+                agent_name = None
                 source = AGENT_SOURCE_UNRESOLVED
                 unresolved.append(index)
             resolved.append(
@@ -276,6 +326,12 @@ class AgentWorkflowsService:
         which nothing here should break. An *explicit* workflow is server-side
         configuration, so it has to be complete before work is queued against
         it.
+
+        A step pinning an agent that has since left the workflow's team is
+        refused here too, with the ``AGENT_NOT_IN_TEAM`` the write would have
+        raised. The plan for such a task would only come back unresolved at
+        claim time, which is the four-blocked-tasks failure again with a
+        different cause.
         """
         if workflow_key == DEFAULT_WORKFLOW_KEY:
             return
@@ -319,6 +375,13 @@ class AgentWorkflowsService:
                     "Nothing on the task can choose one."
                 ),
                 extra_details={"unresolved_step_indexes": missing},
+            )
+        if row.team_slug is not None:
+            await self._require_steps_within_team(
+                namespace_key=namespace_key,
+                team_slug=row.team_slug,
+                workflow_key=workflow_key,
+                steps=steps,
             )
 
     # -- the chain ---------------------------------------------------------
@@ -435,6 +498,95 @@ class AgentWorkflowsService:
                 resource_id=team_slug,
                 hint="A workflow scoped to a missing team resolves no default agent.",
             )
+
+    async def _require_steps_within_team(
+        self,
+        *,
+        namespace_key: str,
+        team_slug: str,
+        workflow_key: str,
+        steps: Sequence[AgentWorkflowStep],
+    ) -> None:
+        """Refuse steps pinning agents that are not members of the team.
+
+        The mirror of ``TeamsService._require_member_or_none``, for the other
+        field that names an agent. A workflow scoped to a team is a claim that
+        its steps run on that team's members, and a step pinning an outsider
+        breaks the claim twice over: the agent's system prompt is the wrong
+        persona for the work, and controls are bound per agent, so the wrong
+        control surface runs the task.
+        """
+        outside = await self._non_member_step_indexes(
+            namespace_key=namespace_key, team_slug=team_slug, steps=steps
+        )
+        if not outside:
+            return
+        named = ", ".join(
+            f"'{steps[index].agent_name}' (step {index})" for index in outside
+        )
+        raise ConflictError(
+            error_code=ErrorCode.AGENT_NOT_IN_TEAM,
+            detail=(
+                f"Workflow '{workflow_key}' is scoped to team '{team_slug}', "
+                f"and {named} "
+                + ("are not members" if len(outside) > 1 else "is not a member")
+                + " of it."
+            ),
+            resource="AgentWorkflow",
+            resource_id=workflow_key,
+            hint=(
+                "Add the agent to the team first, pin a member instead, or "
+                "scope the workflow to no team."
+            ),
+            extra_details={"step_indexes": outside},
+        )
+
+    async def _non_member_step_indexes(
+        self,
+        *,
+        namespace_key: str,
+        team_slug: str | None,
+        steps: Sequence[AgentWorkflowStep],
+    ) -> list[int]:
+        """Indexes of steps pinning an agent that is not on ``team_slug``.
+
+        ``None`` claims no team boundary, so nothing is checked and nothing
+        can be outside it. A slug whose team has since been deleted fails
+        every pinned step: the boundary was claimed and can no longer be
+        verified, so the steps block rather than run outside it.
+        """
+        if team_slug is None:
+            return []
+        pinned = {
+            normalize_agent_name(step.agent_name)
+            for step in steps
+            if step.agent_name
+        }
+        if not pinned:
+            return []
+        team_id = await self._db.scalar(
+            select(Team.id).where(
+                Team.namespace_key == namespace_key, Team.slug == team_slug
+            )
+        )
+        members: set[str] = set()
+        if team_id is not None:
+            found = (
+                await self._db.execute(
+                    select(TeamMember.agent_name).where(
+                        TeamMember.namespace_key == namespace_key,
+                        TeamMember.team_id == team_id,
+                        TeamMember.agent_name.in_(pinned),
+                    )
+                )
+            ).scalars()
+            members = {str(name) for name in found}
+        return [
+            index
+            for index, step in enumerate(steps)
+            if step.agent_name
+            and normalize_agent_name(step.agent_name) not in members
+        ]
 
     async def _find_row(
         self, *, namespace_key: str, workflow_key: str
