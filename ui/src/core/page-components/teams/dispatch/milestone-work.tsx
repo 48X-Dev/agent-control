@@ -82,6 +82,10 @@ export function MilestoneWork({
 }: MilestoneWorkProps) {
   const [dryRun, setDryRun] = useState(true);
   const [requeueCompleted, setRequeueCompleted] = useState(false);
+  // null is the implicit one-step plan run by the team's default agent. A real
+  // key names a configured workflow, whose steps and agents an admin wrote;
+  // the press chooses among reviewed configurations, never composes one.
+  const [workflowKey, setWorkflowKey] = useState<string | null>(null);
   const [committedRefs, setCommittedRefs] = useState<string[]>([]);
 
   const issuesQuery = useMilestoneIssues(teamSlug, milestoneId);
@@ -120,7 +124,13 @@ export function MilestoneWork({
     teamSlug,
     scopeRef: milestoneId,
     items,
+    workflowKey,
     dryRun,
+    // Both flags belong to the preview as much as to the commit. A preview
+    // requested without them shows one eligible set and one price while the
+    // press commits another, which the digest then correctly refuses as
+    // SCOPE_CHANGED - a refusal the operator cannot act on.
+    requeueCompleted,
     enabled: issuesQuery.data?.status === 'ok',
   });
 
@@ -326,6 +336,12 @@ export function MilestoneWork({
         previewLoading={previewQuery.isLoading}
         previewError={previewQuery.error}
         workflow={workflow}
+        workflowKey={workflowKey}
+        onWorkflowKeyChange={setWorkflowKey}
+        workflowChoices={(workflowsQuery.data?.workflows ?? []).filter(
+          (candidate) =>
+            candidate.team_slug === teamSlug || candidate.team_slug == null
+        )}
         dispatchState={dispatchState}
         dryRun={dryRun}
         onDryRunChange={setDryRun}

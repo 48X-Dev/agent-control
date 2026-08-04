@@ -15,7 +15,8 @@ export function importPreviewQueryKey(
   scopeRef: string,
   refs: readonly string[],
   dryRun: boolean,
-  requeueCompleted: boolean
+  requeueCompleted: boolean,
+  workflowKey: string | null
 ) {
   // Keyed on the refs themselves rather than on their count. Two sets of the
   // same size are different sets, and a preview cached across that difference
@@ -35,6 +36,10 @@ export function importPreviewQueryKey(
     // changes which rows come back eligible, so a key without it would show a
     // preview of one set and commit another.
     requeueCompleted,
+    // The workflow decides the step count and therefore the turn ceiling the
+    // operator is agreeing to. A preview cached across a workflow change would
+    // display one price and commit another.
+    workflowKey ?? '',
   ] as const;
 }
 
@@ -80,7 +85,8 @@ export function useImportPreview({
       scopeRef,
       refs,
       dryRun,
-      requeueCompleted
+      requeueCompleted,
+      workflowKey ?? null
     ),
     queryFn: async () => {
       const { data, error, response } = await api.agentTasks.import({
