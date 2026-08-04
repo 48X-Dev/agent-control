@@ -2,6 +2,8 @@ import createClient from 'openapi-fetch';
 
 import type { paths } from './generated/api-types';
 import type {
+  AcceptAgentTaskRequest,
+  AcceptAgentTaskResponse,
   AgentTaskStatus,
   CancelNudgeResponse,
   ClearAgentConfigFieldRequest,
@@ -39,6 +41,7 @@ import type {
   ListHaltsResponse,
   ListMilestoneIssuesResponse,
   ListNudgesResponse,
+  ListReviewQueueResponse,
   ListSessionMessagesQueryParams,
   ListSessionMessagesResponse,
   ListTeamAgentsQueryParams,
@@ -49,6 +52,8 @@ import type {
   PatchTeamRequest,
   PatchTeamResponse,
   PlanResponse,
+  RejectAgentTaskRequest,
+  RejectAgentTaskResponse,
   RenderControlTemplateRequest,
   RenderControlTemplateResponse,
   RestoreAgentConfigVersionRequest,
@@ -737,6 +742,29 @@ export const api = {
       ),
     import: (body: ImportAgentTasksRequest) =>
       postJson<ImportAgentTasksResponse>('/api/v1/agent-tasks/import', body),
+    // The proposals waiting for a human, with the digest each accept must
+    // echo. Reading it holds nothing and decides nothing.
+    review: (params?: {
+      team?: string;
+      milestone_id?: string;
+      limit?: number;
+    }) =>
+      getJson<ListReviewQueueResponse>(
+        `/api/v1/agent-tasks/review${toQueryString(params)}`
+      ),
+    // The one call in this client that closes an issue, and it carries the
+    // digest of the exact card a person read. There is deliberately no bulk
+    // form of it anywhere: eight results means eight of these.
+    accept: (taskKey: string, body: AcceptAgentTaskRequest) =>
+      postJson<AcceptAgentTaskResponse>(
+        `/api/v1/agent-tasks/${encodeURIComponent(taskKey)}/accept`,
+        body
+      ),
+    reject: (taskKey: string, body: RejectAgentTaskRequest) =>
+      postJson<RejectAgentTaskResponse>(
+        `/api/v1/agent-tasks/${encodeURIComponent(taskKey)}/reject`,
+        body
+      ),
   },
   agentWorkflows: {
     list: () => getJson<ListAgentWorkflowsResponse>('/api/v1/agent-workflows'),

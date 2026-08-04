@@ -1,10 +1,13 @@
 import type { Page, Route } from '@playwright/test';
 
 import type {
+  AcceptAgentTaskRequest,
+  AcceptAgentTaskResponse,
   AgentTaskChain,
   AgentTaskChainHop,
   AgentTaskStatus,
   AgentTaskSummary,
+  AgentTaskWriteback,
   AgentWorkflow,
   DispatchStateSnapshot,
   ImportAgentTasksRequest,
@@ -14,8 +17,12 @@ import type {
   ListAgentTasksResponse,
   ListAgentWorkflowsResponse,
   ListMilestoneIssuesResponse,
+  ListReviewQueueResponse,
   MilestoneIssue,
   MilestoneIssueCounts,
+  RejectAgentTaskRequest,
+  RejectAgentTaskResponse,
+  ReviewQueueEntry,
 } from '@/core/api/types';
 
 /**
@@ -512,6 +519,327 @@ export const workflows: AgentWorkflow[] = [
 ];
 
 // =============================================================================
+// The review queue: proposals, the digest echo, and the two decisions
+// =============================================================================
+
+/**
+ * Stands in for the server's sha256 over (output_text, source_ref, state_id).
+ *
+ * Deterministic over exactly the fields the real digest binds, which is the
+ * only property the console depends on: the accept must echo the digest of
+ * the card that was read, and a card whose text or target moved must not
+ * match. Legible in a failure message, unlike a hash.
+ */
+export function decisionDigestOf(
+  summary: string,
+  sourceRef: string,
+  stateId = 'state-done'
+): string {
+  return `sha256:${sourceRef}|${stateId}|${summary.length}`;
+}
+
+export function reviewEntry(
+  overrides: Partial<ReviewQueueEntry> & {
+    task_key: string;
+    writeback_id: number;
+  }
+): ReviewQueueEntry {
+  const sourceRef = overrides.source_ref ?? issueSeeds[0].ref;
+  const seed = issueSeeds.find((candidate) => candidate.ref === sourceRef);
+  const summary =
+    overrides.summary ??
+    'Rewrote the guide for 2.4. Every install step was checked on a clean machine.';
+  return {
+    agent_name: 'marketing-writer',
+    summary,
+    source_ref: sourceRef,
+    source_url: seed?.url ?? `https://linear.app/acme/issue/${sourceRef}`,
+    team_slug: 'engineering',
+    source_scope_name: null,
+    chain_trace_id: 'trace-chain-1',
+    created_at: isoMinutesAgo(30),
+    stale: false,
+    decision_digest: decisionDigestOf(summary, sourceRef),
+    issue: {
+      source_ref: sourceRef,
+      identifier: seed?.identifier ?? 'ENG-101',
+      title:
+        seed?.title ?? 'Rewrite the onboarding guide for the new install flow',
+      state_name: 'In Progress',
+      state_type: 'started',
+      team_key: 'ENG',
+      milestone_id: null,
+      read_failed: false,
+    },
+    ...overrides,
+  };
+}
+
+function decidedWriteback(
+  entry: ReviewQueueEntry,
+  status: 'sent' | 'rejected',
+  reason?: string | null
+): AgentTaskWriteback {
+  return {
+    writeback_id: entry.writeback_id,
+    task_key: entry.task_key,
+    kind: 'status_change',
+    status,
+    step_index: 1,
+    body: entry.summary,
+    target_state_id: status === 'sent' ? 'state-done' : null,
+    decision_digest: entry.decision_digest ?? null,
+    approved_by_hash: status === 'sent' ? 'console-hash' : null,
+    approved_at: status === 'sent' ? isoMinutesAgo(0) : null,
+    rejected_reason: reason ?? null,
+    attempts: status === 'sent' ? 1 : 0,
+    last_error: null,
+    created_at: entry.created_at,
+    updated_at: isoMinutesAgo(0),
+  };
+}
+
+function problemJson(
+  status: number,
+  errorCode: string,
+  detail: string,
+  hint?: string
+): string {
+  return JSON.stringify({
+    type: 'about:blank',
+    title: 'Conflict',
+    status,
+    detail,
+    error_code: errorCode,
+    reason: errorCode,
+    ...(hint ? { hint } : {}),
+  });
+}
+
+type ReviewErrorOptions = {
+  status: number;
+  errorCode: string;
+  detail: string;
+  hint?: string;
+};
+
+export type ReviewMockOptions = {
+  entries?: ReviewQueueEntry[];
+  /** Fails every queue read with this error instead of listing anything. */
+  queueError?: ReviewErrorOptions;
+  /** Fails every accept with this error instead of deciding anything. */
+  acceptError?: ReviewErrorOptions;
+  rejectError?: ReviewErrorOptions;
+  /** `ALREADY_COMPLETED` when a person beat the accept to the close. */
+  note?: string | null;
+  /** The milestone's progress the accept response reports after the close. */
+  milestoneProgress?: number | null;
+  /**
+   * What the accept records as the approver. `null` is a NoAuthProvider
+   * deployment, where no caller has an identity: the server skips the
+   * self-approval comparison there rather than refusing every accept, so the
+   * close lands and no credential is recorded against it.
+   */
+  approvedByHash?: string | null;
+};
+
+export type ReviewMock = {
+  /** Every accept the browser sent, with the digest it echoed. */
+  accepts: Array<{ taskKey: string; body: AcceptAgentTaskRequest }>;
+  rejects: Array<{ taskKey: string; body: RejectAgentTaskRequest }>;
+  /** How many times the queue was read, so a refetch can be asserted. */
+  queueReads: () => number;
+};
+
+/**
+ * The review routes, behaving like the server on the one thing the console's
+ * safety story rests on here: an accept is refused unless the digest it
+ * carries matches the card the queue served. A mock that accepted any digest
+ * would let a broken console pass the test that exists to prove an accept is
+ * an authorization of what was read, not a gesture at a row id.
+ *
+ * A successful decision removes the entry from later queue reads, exactly as
+ * the server's queue query does: decided rows are no longer awaiting approval.
+ */
+export async function mockReviewRoutes(
+  page: Page,
+  options: ReviewMockOptions = {}
+): Promise<ReviewMock> {
+  let entries = [...(options.entries ?? [])];
+  const accepts: Array<{ taskKey: string; body: AcceptAgentTaskRequest }> = [];
+  const rejects: Array<{ taskKey: string; body: RejectAgentTaskRequest }> = [];
+  let reads = 0;
+
+  await page.route(/\/api\/v1\/agent-tasks\/review(\?.*)?$/, async (route) => {
+    reads += 1;
+    if (options.queueError) {
+      await route.fulfill({
+        status: options.queueError.status,
+        contentType: 'application/json',
+        body: problemJson(
+          options.queueError.status,
+          options.queueError.errorCode,
+          options.queueError.detail,
+          options.queueError.hint
+        ),
+      });
+      return;
+    }
+    const body: ListReviewQueueResponse = {
+      entries,
+      total: entries.length,
+    };
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(body),
+    });
+  });
+
+  await page.route('**/api/v1/agent-tasks/*/accept', async (route: Route) => {
+    const taskKey = decodeURIComponent(
+      new URL(route.request().url()).pathname.split('/').slice(-2)[0] ?? ''
+    );
+    const body = route.request().postDataJSON() as AcceptAgentTaskRequest;
+    accepts.push({ taskKey, body });
+
+    if (options.acceptError) {
+      await route.fulfill({
+        status: options.acceptError.status,
+        contentType: 'application/json',
+        body: problemJson(
+          options.acceptError.status,
+          options.acceptError.errorCode,
+          options.acceptError.detail,
+          options.acceptError.hint
+        ),
+      });
+      return;
+    }
+
+    const entry = entries.find(
+      (candidate) =>
+        candidate.task_key === taskKey &&
+        candidate.writeback_id === body.writeback_id
+    );
+    if (!entry) {
+      await route.fulfill({
+        status: 404,
+        contentType: 'application/json',
+        body: problemJson(
+          404,
+          'AGENT_TASK_WRITEBACK_NOT_FOUND',
+          'No such write-back on this task.'
+        ),
+      });
+      return;
+    }
+    if (body.expected_decision_digest !== entry.decision_digest) {
+      await route.fulfill({
+        status: 409,
+        contentType: 'application/json',
+        body: problemJson(
+          409,
+          'DECISION_CHANGED',
+          'The output, the target issue, or the completed state moved between ' +
+            'the card you read and this accept. Nothing was changed.'
+        ),
+      });
+      return;
+    }
+
+    entries = entries.filter(
+      (candidate) => candidate.writeback_id !== entry.writeback_id
+    );
+    const response: AcceptAgentTaskResponse = {
+      task: taskSummary({
+        task_key: taskKey,
+        source_ref: entry.source_ref,
+        status: 'completed',
+        dry_run: false,
+      }),
+      writeback: {
+        ...decidedWriteback(entry, 'sent'),
+        ...(options.approvedByHash !== undefined
+          ? { approved_by_hash: options.approvedByHash }
+          : {}),
+      },
+      note: options.note ?? null,
+      milestone_progress: options.milestoneProgress ?? null,
+    };
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(response),
+    });
+  });
+
+  await page.route('**/api/v1/agent-tasks/*/reject', async (route: Route) => {
+    const taskKey = decodeURIComponent(
+      new URL(route.request().url()).pathname.split('/').slice(-2)[0] ?? ''
+    );
+    const body = route.request().postDataJSON() as RejectAgentTaskRequest;
+    rejects.push({ taskKey, body });
+
+    if (options.rejectError) {
+      await route.fulfill({
+        status: options.rejectError.status,
+        contentType: 'application/json',
+        body: problemJson(
+          options.rejectError.status,
+          options.rejectError.errorCode,
+          options.rejectError.detail,
+          options.rejectError.hint
+        ),
+      });
+      return;
+    }
+
+    const entry = entries.find(
+      (candidate) =>
+        candidate.task_key === taskKey &&
+        candidate.writeback_id === body.writeback_id
+    );
+    if (!entry) {
+      await route.fulfill({
+        status: 404,
+        contentType: 'application/json',
+        body: problemJson(
+          404,
+          'AGENT_TASK_WRITEBACK_NOT_FOUND',
+          'No such write-back on this task.'
+        ),
+      });
+      return;
+    }
+
+    entries = entries.filter(
+      (candidate) => candidate.writeback_id !== entry.writeback_id
+    );
+    const response: RejectAgentTaskResponse = {
+      task: taskSummary({
+        task_key: taskKey,
+        source_ref: entry.source_ref,
+        status: 'completed',
+        dry_run: false,
+      }),
+      writeback: decidedWriteback(entry, 'rejected', body.reason ?? null),
+    };
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(response),
+    });
+  });
+
+  return {
+    accepts,
+    rejects,
+    queueReads: () => reads,
+  };
+}
+
+// =============================================================================
 // Route installation
 // =============================================================================
 
@@ -522,10 +850,12 @@ export type DispatchRouteOptions = {
   state?: DispatchStateSnapshot;
   workflowList?: AgentWorkflow[];
   import?: ImportMockOptions;
+  review?: ReviewMockOptions;
 };
 
 export type DispatchMocks = {
   import: ImportMock;
+  review: ReviewMock;
   /** Every request path the browser asked for, so absence can be asserted. */
   requests: Array<{ method: string; url: string }>;
 };
@@ -637,8 +967,9 @@ export async function mockDispatchRoutes(
   );
 
   const importMock = await mockAgentTaskImport(page, options.import ?? {});
+  const reviewMock = await mockReviewRoutes(page, options.review ?? {});
 
-  return { import: importMock, requests };
+  return { import: importMock, review: reviewMock, requests };
 }
 
 /** Requests that create or move work, which this console must never make. */
