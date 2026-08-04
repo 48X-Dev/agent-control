@@ -1,5 +1,6 @@
 import { Alert, Group, Loader, Stack, Text } from '@mantine/core';
-import { useEffect, useMemo, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import type {
   AgentTaskSummary,
@@ -12,6 +13,10 @@ import {
 } from '@/core/hooks/query-hooks/use-agent-task-import';
 import { useAgentWorkflows } from '@/core/hooks/query-hooks/use-agent-workflows';
 import { useMilestoneIssues } from '@/core/hooks/query-hooks/use-milestone-issues';
+import {
+  reviewQueueQueryKey,
+  useReviewQueue,
+} from '@/core/hooks/query-hooks/use-task-review';
 
 import { DispatchBanners } from './dispatch-banners';
 import { safeHttpUrl, truncateWithMarker } from './formatting';
@@ -203,6 +208,25 @@ export function MilestoneWork({
     SETTLED_STATUSES.has(task.status)
   );
 
+  const reviewQuery = useReviewQueue({ team: teamSlug, milestoneId });
+
+  // The queue gains its entry in the same transaction that completes a task,
+  // but this panel learns of the completion from the ledger poll. Re-read the
+  // queue when the finished set grows, so a result does not sit invisible
+  // until the next remount. Only on growth: the mount already fetched fresh,
+  // and every queue read costs the server a Linear read per entry.
+  const queryClient = useQueryClient();
+  const finishedCount = finishedTasks.length;
+  const seenFinishedCount = useRef<number | null>(null);
+  useEffect(() => {
+    const previous = seenFinishedCount.current;
+    seenFinishedCount.current = finishedCount;
+    if (previous === null || finishedCount <= previous) return;
+    queryClient.invalidateQueries({
+      queryKey: reviewQueueQueryKey(teamSlug, milestoneId),
+    });
+  }, [finishedCount, teamSlug, milestoneId, queryClient]);
+
   const onCommit = () => {
     const digest = previewQuery.data?.refs_digest;
     const eligible = previewQuery.data?.eligible ?? [];
@@ -319,7 +343,12 @@ export function MilestoneWork({
       ) : null}
 
       <ResultsForReview
+        teamSlug={teamSlug}
+        milestoneId={milestoneId}
         tasks={finishedTasks}
+        entries={reviewQuery.data?.entries ?? []}
+        queueLoading={reviewQuery.isLoading}
+        queueError={reviewQuery.error}
         identifiersByRef={identifiersByRef}
         urlsByRef={urlsByRef}
         now={now}

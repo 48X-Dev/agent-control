@@ -16,6 +16,7 @@ import {
   mockDispatchRoutes,
   MUTATING_DISPATCH_PATHS,
   pausedState,
+  reviewEntry,
   taskSummary,
   workflows,
   xssFireCount,
@@ -806,6 +807,10 @@ test.describe('Results waiting for a person', () => {
           source_ref: issueSeeds[0].ref,
           status: 'completed',
           current_step: 2,
+          // Explicit although it is the fixture default: a dry run is
+          // excluded from write-back server-side, so the queue stays empty
+          // and everything in this block is the no-proposal path.
+          dry_run: true,
           updated_at: new Date(Date.now() - 20 * 60_000).toISOString(),
         }),
       ],
@@ -814,7 +819,7 @@ test.describe('Results waiting for a person', () => {
     return page.getByTestId('task-review-queue');
   }
 
-  test('says the tracker is untouched and offers no accept control', async ({
+  test('a dry run says the tracker is untouched and offers no accept control', async ({
     page,
   }) => {
     const queue = await openWithCompletedWork(page);
@@ -824,8 +829,9 @@ test.describe('Results waiting for a person', () => {
       'Nothing has been written to the tracker and no issue has been closed.'
     );
 
-    // The absence is the assertion. There is no accept endpoint on the server,
-    // and a button that pretended to write would be worse than no button.
+    // The absence is the assertion. A dry run is excluded from write-back on
+    // the server and proposes nothing, so no accept control may appear for
+    // one: a button that pretended to write would be worse than no button.
     for (const name of [
       /accept/i,
       /approve/i,
@@ -847,7 +853,7 @@ test.describe('Results waiting for a person', () => {
     await expect(queue.locator('input, select, textarea')).toHaveCount(0);
   });
 
-  test('the only path forward is a link a person clicks in Linear', async ({
+  test("a dry run's only path forward is a link a person clicks in Linear", async ({
     page,
   }) => {
     const queue = await openWithCompletedWork(page);
@@ -907,6 +913,308 @@ test.describe('Results waiting for a person', () => {
         mocks.requests.filter((request) => request.url.includes(path))
       ).toEqual([]);
     }
+  });
+});
+
+// =============================================================================
+// The review queue: a real run's proposal, and the human decision over it
+// =============================================================================
+
+test.describe('Deciding a proposal', () => {
+  const ENTRY_TASK = 'task_real';
+
+  function realRunTask() {
+    return taskSummary({
+      task_key: ENTRY_TASK,
+      source_ref: issueSeeds[0].ref,
+      status: 'completed',
+      current_step: 2,
+      dry_run: false,
+      updated_at: new Date(Date.now() - 20 * 60_000).toISOString(),
+    });
+  }
+
+  test('a proposal renders the claim, the live target, and no accept-all', async ({
+    page,
+  }) => {
+    const entry = reviewEntry({ task_key: ENTRY_TASK, writeback_id: 12 });
+    await openTeamPage(page, {
+      tasks: [realRunTask()],
+      review: { entries: [entry] },
+    });
+    await openScope(page);
+    const queue = page.getByTestId('task-review-queue');
+
+    await expect(queue).toContainText('1 result waiting for you');
+    const card = queue.getByTestId('review-card');
+    await expect(card).toHaveCount(1);
+
+    // The claim: who, and what they said, rendered as text.
+    await expect(card).toContainText(
+      'Agent marketing-writer proposes closing this issue'
+    );
+    await expect(card.getByTestId('review-card-summary')).toContainText(
+      'Rewrote the guide for 2.4.'
+    );
+
+    // The target, read live: the card shows what the issue is, not only what
+    // the agent claims about it.
+    await expect(card).toContainText('ENG-101');
+    await expect(card.getByTestId('review-card-title')).toContainText(
+      'Rewrite the onboarding guide'
+    );
+    await expect(card).toContainText('In Linear it is "In Progress"');
+
+    // One decision per issue. Eight issues means eight of these buttons, and
+    // nothing on this screen decides more than one.
+    await expect(card.getByTestId('review-accept')).toHaveText(
+      /Accept and close ENG-101/
+    );
+    await expect(card.getByTestId('review-reject')).toBeVisible();
+    await expect(
+      queue.getByRole('button', { name: /accept all/i })
+    ).toHaveCount(0);
+    await expect(queue.getByTestId('review-accept')).toHaveCount(1);
+  });
+
+  test('accepting echoes the digest the card showed, and the bar moves', async ({
+    page,
+  }) => {
+    const entry = reviewEntry({ task_key: ENTRY_TASK, writeback_id: 12 });
+    const mocks = await openTeamPage(page, {
+      tasks: [realRunTask()],
+      review: { entries: [entry], milestoneProgress: 0.5 },
+    });
+    await openScope(page);
+
+    const progress = milestoneRow(page, 0).getByTestId('milestone-progress');
+    await expect(progress).toHaveText('25%');
+
+    await page.getByTestId('review-accept').click();
+
+    const decided = page.getByTestId('review-decided');
+    await expect(decided).toContainText('ENG-101 is now closed in Linear.');
+    await expect(decided).toContainText(
+      'Milestone issue completion is now 50%.'
+    );
+
+    // The accept carried exactly the digest of the card that was read. The
+    // mock refuses anything else, so reaching the confirmation proves it,
+    // and the recorded body pins it.
+    expect(mocks.review.accepts).toEqual([
+      {
+        taskKey: ENTRY_TASK,
+        body: {
+          writeback_id: 12,
+          expected_decision_digest: entry.decision_digest,
+        },
+      },
+    ]);
+
+    // The bar the reviewer just moved moves on screen, from the value the
+    // accept response carried rather than from a refetch that could land on
+    // a stale replica.
+    await expect(progress).toHaveText('50%');
+
+    // The decided card offers no second decision.
+    await expect(page.getByTestId('review-accept')).toHaveCount(0);
+
+    // The posted comment lives on the issue, and the confirmation links to
+    // it through the same sanitizer every tracker link on this screen uses.
+    const link = decided.getByTestId('review-accepted-link');
+    await expect(link).toHaveAttribute(
+      'href',
+      'https://linear.app/acme/issue/ENG-101'
+    );
+    await expect(link).toHaveAttribute('target', '_blank');
+    await expect(link).toHaveAttribute('rel', /noopener/);
+  });
+
+  test('an accept over a moved card is refused, and the queue is re-read', async ({
+    page,
+  }) => {
+    const entry = reviewEntry({ task_key: ENTRY_TASK, writeback_id: 12 });
+    const mocks = await openTeamPage(page, {
+      tasks: [realRunTask()],
+      review: {
+        entries: [entry],
+        acceptError: {
+          status: 409,
+          errorCode: 'DECISION_CHANGED',
+          detail:
+            'The output, the target issue, or the completed state moved ' +
+            'between the card you read and this accept. Nothing was changed.',
+        },
+      },
+    });
+    await openScope(page);
+
+    const readsBefore = mocks.review.queueReads();
+    await page.getByTestId('review-accept').click();
+
+    await expect(page.getByTestId('review-card-error')).toContainText(
+      'Nothing was changed.'
+    );
+    // Refused, not decided: the card stays, and the queue is re-read so the
+    // next press is bound to what is now true.
+    await expect(page.getByTestId('review-card')).toHaveCount(1);
+    await expect
+      .poll(() => mocks.review.queueReads())
+      .toBeGreaterThan(readsBefore);
+  });
+
+  test('the credential that ran the work is refused as its approver', async ({
+    page,
+  }) => {
+    await openTeamPage(page, {
+      tasks: [realRunTask()],
+      review: {
+        entries: [reviewEntry({ task_key: ENTRY_TASK, writeback_id: 12 })],
+        acceptError: {
+          status: 409,
+          errorCode: 'SELF_APPROVAL_REFUSED',
+          detail:
+            'The approving credential is the one that ran this task, and it ' +
+            'may not accept its own work.',
+        },
+      },
+    });
+    await openScope(page);
+
+    await page.getByTestId('review-accept').click();
+
+    await expect(page.getByTestId('review-card-error')).toContainText(
+      'may not accept its own work'
+    );
+    await expect(page.getByTestId('review-card')).toHaveCount(1);
+  });
+
+  test('a write-disabled deployment refuses the accept legibly', async ({
+    page,
+  }) => {
+    // The shipped default: a Linear key, the write flag off. The queue still
+    // serves the card and its digest; what refuses is the press, server-side,
+    // and the refusal must read as configuration rather than as a crash.
+    await openTeamPage(page, {
+      tasks: [realRunTask()],
+      review: {
+        entries: [reviewEntry({ task_key: ENTRY_TASK, writeback_id: 12 })],
+        acceptError: {
+          status: 409,
+          errorCode: 'LINEAR_WRITE_DISABLED',
+          detail: 'Write-back to Linear is disabled on this deployment.',
+          hint: 'Set AGENT_CONTROL_LINEAR_WRITE_ENABLED=true and restart.',
+        },
+      },
+    });
+    await openScope(page);
+
+    await page.getByTestId('review-accept').click();
+
+    const error = page.getByTestId('review-card-error');
+    await expect(error).toContainText(
+      'Write-back to Linear is disabled on this deployment.'
+    );
+    // The server's own hint rides along, so the operator knows what to change.
+    await expect(error).toContainText(
+      'Set AGENT_CONTROL_LINEAR_WRITE_ENABLED=true and restart.'
+    );
+    // Refused, not decided: the card stays and nothing claims a close happened.
+    await expect(page.getByTestId('review-card')).toHaveCount(1);
+    await expect(page.getByTestId('review-decided')).toHaveCount(0);
+  });
+
+  test('rejecting needs a reason, records it, and closes nothing', async ({
+    page,
+  }) => {
+    const mocks = await openTeamPage(page, {
+      tasks: [realRunTask()],
+      review: {
+        entries: [reviewEntry({ task_key: ENTRY_TASK, writeback_id: 12 })],
+      },
+    });
+    await openScope(page);
+
+    await page.getByTestId('review-reject').click();
+
+    // No reason, no rejection: "records why" is the point of the path.
+    const confirm = page.getByTestId('review-reject-confirm');
+    await expect(confirm).toBeDisabled();
+
+    await page
+      .getByTestId('review-reject-reason')
+      .fill('The install steps for 2.4 are still wrong in section 3.');
+    await confirm.click();
+
+    const decided = page.getByTestId('review-decided');
+    await expect(decided).toContainText(
+      'ENG-101 stays open and the task stays completed.'
+    );
+    await expect(decided).toContainText(
+      'The install steps for 2.4 are still wrong in section 3.'
+    );
+
+    expect(mocks.review.rejects).toEqual([
+      {
+        taskKey: ENTRY_TASK,
+        body: {
+          writeback_id: 12,
+          reason: 'The install steps for 2.4 are still wrong in section 3.',
+        },
+      },
+    ]);
+    // Nothing was accepted and nothing reached an accept route.
+    expect(mocks.review.accepts).toEqual([]);
+    expect(
+      mocks.requests.filter((request) => request.url.includes('/accept'))
+    ).toEqual([]);
+  });
+
+  test('a hostile summary renders as text and nothing executes', async ({
+    page,
+  }) => {
+    await openTeamPage(page, {
+      tasks: [realRunTask()],
+      review: {
+        entries: [
+          reviewEntry({
+            task_key: ENTRY_TASK,
+            writeback_id: 12,
+            summary: hostileAgentOutput,
+          }),
+        ],
+      },
+    });
+    await openScope(page);
+
+    const summary = page.getByTestId('review-card-summary');
+    await expect(summary).toContainText('# not a heading');
+    await expect(summary).toContainText('<b>not bold</b>');
+    expect(await xssFireCount(page)).toBe(0);
+  });
+
+  test('a card Linear could not be read for cannot be accepted', async ({
+    page,
+  }) => {
+    await openTeamPage(page, {
+      tasks: [realRunTask()],
+      review: {
+        entries: [
+          reviewEntry({
+            task_key: ENTRY_TASK,
+            writeback_id: 12,
+            decision_digest: null,
+            issue: { source_ref: issueSeeds[0].ref, read_failed: true },
+          }),
+        ],
+      },
+    });
+    await openScope(page);
+
+    await expect(page.getByTestId('review-card-unreadable')).toContainText(
+      'could not be read from Linear'
+    );
+    await expect(page.getByTestId('review-accept')).toBeDisabled();
   });
 });
 

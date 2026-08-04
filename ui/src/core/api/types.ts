@@ -1119,3 +1119,111 @@ export type AgentWorkflow = {
 };
 
 export type ListAgentWorkflowsResponse = { workflows: AgentWorkflow[] };
+
+// =============================================================================
+// Write-back and the review queue (manual until API types are regenerated)
+//
+// Mirrors agent_control_models.tasks. The summary text and the write-back body
+// are agent output and therefore untrusted: they render as text nodes only,
+// like everything else on this surface.
+// =============================================================================
+
+export type WritebackKind = 'comment' | 'status_change';
+
+export type WritebackStatus =
+  | 'pending'
+  | 'sent'
+  | 'denied'
+  | 'failed'
+  | 'awaiting_approval'
+  | 'rejected';
+
+export type AgentTaskWriteback = {
+  writeback_id: number;
+  task_key: string;
+  kind: WritebackKind;
+  status: WritebackStatus;
+  step_index: number;
+  /** Untrusted agent output, sanitized server-side. Still rendered as text. */
+  body: string;
+  target_state_id?: string | null;
+  decision_digest?: string | null;
+  /**
+   * A credential, not a person: every browser caller hashes to the same
+   * value, so this must never be rendered as somebody's name.
+   */
+  approved_by_hash?: string | null;
+  approved_at?: string | null;
+  rejected_reason?: string | null;
+  attempts: number;
+  last_error?: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+/** The target issue, read live from Linear when the review card was built. */
+export type ReviewQueueIssue = {
+  source_ref: string;
+  identifier?: string | null;
+  title?: string | null;
+  state_name?: string | null;
+  state_type?: string | null;
+  team_key?: string | null;
+  milestone_id?: string | null;
+  /** True when Linear could not be read; such a card cannot be accepted. */
+  read_failed: boolean;
+};
+
+/** One completed task's proposal to close its issue, waiting on a person. */
+export type ReviewQueueEntry = {
+  task_key: string;
+  writeback_id: number;
+  agent_name?: string | null;
+  /** The task's final output. Untrusted text. */
+  summary: string;
+  source_ref: string;
+  source_url?: string | null;
+  team_slug?: string | null;
+  source_scope_name?: string | null;
+  chain_trace_id?: string | null;
+  created_at: string;
+  stale: boolean;
+  /** Echo this back on accept. Null when Linear could not be read. */
+  decision_digest?: string | null;
+  issue?: ReviewQueueIssue | null;
+};
+
+export type ListReviewQueueResponse = {
+  entries: ReviewQueueEntry[];
+  /** Waiting entries in scope, beyond this page too. */
+  total: number;
+};
+
+export type AcceptAgentTaskRequest = {
+  writeback_id: number;
+  /** The digest the review card showed, over (text, target, state) together. */
+  expected_decision_digest: string;
+};
+
+/**
+ * The server answers with the full task detail; this console reads only the
+ * summary fields plus the row it decided, so that is all these types name.
+ */
+export type AcceptAgentTaskResponse = {
+  task: AgentTaskSummary;
+  writeback: AgentTaskWriteback;
+  /** 'ALREADY_COMPLETED' when a person closed the issue first. Not an error. */
+  note?: string | null;
+  /** The milestone's progress after the close, rendered optimistically. */
+  milestone_progress?: number | null;
+};
+
+export type RejectAgentTaskRequest = {
+  writeback_id: number;
+  reason?: string | null;
+};
+
+export type RejectAgentTaskResponse = {
+  task: AgentTaskSummary;
+  writeback: AgentTaskWriteback;
+};
