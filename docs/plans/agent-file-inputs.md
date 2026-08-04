@@ -1159,15 +1159,33 @@ a 25s per-step budget. Conversion is therefore out of band, keyed and cached by 
 miss yields a stated "not yet converted" descriptor, never a blocking wait. This is a
 structural requirement, not a timeout to tune.
 
-**OCR is the only route that works on this deployment's endpoint.** Verified against the
+**No route that carries bytes works on this deployment's endpoint.** Verified against the
 configured proxy (`http://127.0.0.1:10531/v1`, `gpt-5.6-sol`): `POST /v1/files` returns
 404, an inline `{"type":"file","file_data":"data:..."}` block returns **HTTP 200 with the
 file silently dropped** (reproduced with a valid PDF and a real 1.3 MB `.pptx`; the model
 answers "I don't see a PDF attached"), and an image `data:` URI returns 500 `"URL scheme
-must be http or https"`. The same content as plain text answers correctly. So a
-vision-capable model would not help through this endpoint either. Text is the only
-transport it accepts, which makes server-side conversion mandatory rather than an
-optimisation.
+must be http or https"`. The same content as plain text answers correctly, which makes
+server-side conversion mandatory rather than an optimisation.
+
+**Correction: an earlier revision of this section said a vision-capable model "would not
+help through this endpoint either". That was wrong, concluded from the `data:` rejection
+without testing the other form.** The model has vision and it reaches it: an `image_url`
+block carrying an **`https://` URL** works, because the proxy hands the URL to an upstream
+that downloads the image itself. Measured: a photo described correctly, and text read out
+of a rendered image.
+
+That does not make it usable here, and the reason is worth stating rather than
+rediscovering. **The upstream fetches the URL, so the file must be publicly reachable
+without credentials.** `uploads.linear.app` is behind a 401, the fetcher cannot reach
+`localhost`, and it refused two of four public hosts outright (a 400 and a timeout). Using
+native vision on a tracker attachment therefore means publishing that attachment at an
+unauthenticated public URL so a third party can pull it, on every file, permanently. A URL
+is not a secret.
+
+So the trade is: OCR reads the words on a chart and never lets the bytes leave; vision
+reads the chart and requires giving the bytes away. This plan takes OCR, and records that
+the other door is open rather than shut, because the reason to keep it closed is a data
+boundary and not a capability gap.
 
 That 200-with-content-dropped is the failure mode to design against, and it is why
 `text_layer_extracted` must never be reported as `ok`: an agent is told a spec is
