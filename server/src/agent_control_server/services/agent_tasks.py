@@ -486,6 +486,22 @@ class AgentTasksService:
                 hint="A workflow is capped so it cannot loop.",
             )
 
+        # A step opening is the proof the streak was about: something reached
+        # this far because a claim went through and the chain is moving, so an
+        # unreachable-executor streak ends here. Ending it on the turn's
+        # *success* instead would let one flaky turn per lease keep an
+        # otherwise-healthy task climbing toward blocked.
+        #
+        # Guarded, not unconditional: writing the column dirties the row, the
+        # flush below then bumps the server-side ``updated_at`` and expires it
+        # on this instance, and ``_summary`` at the bottom reads it
+        # synchronously - a lazy load there is a MissingGreenlet, not a query.
+        # The happy path is already zero and pays nothing.
+        if row.repeat_park_count:
+            row.repeat_park_count = 0
+            await self._db.flush()
+            await self._db.refresh(row)
+
         existing = await self._db.scalar(
             select(AgentTaskStepRow).where(
                 AgentTaskStepRow.task_id == row.id,
@@ -649,6 +665,37 @@ class AgentTasksService:
                 resource_id=task_key,
                 hint="A human clears this one, with resolve, after reading the transcript.",
             )
+        # ``paused_quota`` is one status wearing two causes, and they must age
+        # differently. A spent budget refills on the hour, so retrying forever
+        # is its design. An executor that is still unreachable a full lease
+        # later is infrastructure down, and retrying that on a timer reproduces
+        # the failure forever while the console reads "running". The streak
+        # below converts the second cause, and only the second, into the status
+        # that already means "a human changes something first" - and blocked is
+        # operator-clearable with cancel, so the conversion is an exit, not a
+        # trap.
+        if (
+            task_status is AgentTaskStatus.PAUSED_QUOTA
+            and failure_code == ErrorCode.EXECUTOR_UNAVAILABLE.value
+        ):
+            # The counter is the streak's whole memory. ``row.failure_code``
+            # cannot corroborate it: the claim statement nulls that column on
+            # every reclaim (task_claims.py), so by park time the previous
+            # cause is gone. The invariant holds anyway, because every other
+            # park code and every started step writes zero below.
+            streak = row.repeat_park_count + 1
+            row.repeat_park_count = streak
+            if streak >= self._settings.unreachable_park_ceiling:
+                task_status = AgentTaskStatus.BLOCKED
+                failure_detail = (
+                    f"The executor stayed unreachable across {streak} claim "
+                    "cycles, a full lease apart each. Retrying on a timer would "
+                    "fail the same way forever. Start the agent's process (or "
+                    "fix its runtime row), then cancel this task and press play "
+                    f"again. Last error: {failure_detail or failure_code}"
+                )
+        else:
+            row.repeat_park_count = 0
         row.status = task_status.value
         row.failure_code = failure_code
         row.failure_detail = failure_detail

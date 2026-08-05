@@ -290,7 +290,9 @@ class TaskReviewService:
 
         # The digest binds text, target and state together. Any of the three
         # moving between render and press is a refusal; the card re-reads the
-        # queue, which recomputes the digest over what is now true.
+        # queue, which recomputes the digest over what is now true. The fresh
+        # digest deliberately stays out of the refusal: handing it back would
+        # invite a blind retry over content nobody re-read.
         current = decision_digest(row.body, task.source_ref, target_state_id)
         if expected_decision_digest != current:
             raise ConflictError(
@@ -299,7 +301,6 @@ class TaskReviewService:
                 "between the card you read and this accept. Nothing was changed.",
                 resource="AgentTaskWriteback",
                 resource_id=str(writeback_id),
-                extra_details={"decision_digest": current},
             )
 
         # Steps 5 and 7: write, or record that a human beat us to it.
@@ -385,12 +386,19 @@ class TaskReviewService:
                 resource="AgentTask",
                 resource_id=task_key,
             )
+        # Both decisions are check-then-act, and accept's window spans a live
+        # Linear round trip. The row lock holds until the deciding transaction
+        # commits, so a concurrent decision waits here, re-reads, and refuses
+        # on status instead of committing a record that contradicts the
+        # mutation (an issue closed in Linear under a row marked rejected).
         row = await self._db.scalar(
-            select(WritebackRow).where(
+            select(WritebackRow)
+            .where(
                 WritebackRow.id == writeback_id,
                 WritebackRow.task_id == task.id,
                 WritebackRow.namespace_key == namespace_key,
             )
+            .with_for_update()
         )
         if row is None:
             raise NotFoundError(
