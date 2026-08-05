@@ -187,6 +187,21 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # suppresses is the one thing that changes a running agent.
     check_agent_config_startup_requirements(auth=auth_settings)
 
+    # One feature, two switches, and the half-on state is silent by design
+    # downstream: a dispatched step on a Linear task simply writes no files
+    # summary, so the agent is told nothing about files sitting on its issue.
+    # Say it once here, where an operator reading "why are files not arriving"
+    # will actually look. Not a refusal to boot - uploads-without-tracker-
+    # ingress is a legitimate deployment - just no longer a silent one.
+    from .config import linear_settings
+
+    if executor_settings.attachments_enabled and not linear_settings.attachments_enabled:
+        logger.warning(
+            "Attachments are enabled but Linear file ingress is not: dispatched "
+            "steps will not fetch files from their issues. Set "
+            "AGENT_CONTROL_LINEAR_ATTACHMENTS_ENABLED=true if they should."
+        )
+
     # Install the request-auth provider selected by environment variables.
     from .auth_framework.config import configure_auth_from_env
 

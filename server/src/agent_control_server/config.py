@@ -697,6 +697,13 @@ class DispatchSettings(BaseSettings):
     # dispatcher does not get to pick its own lease.
     task_lease_seconds: int = Field(default=1800, ge=60)
 
+    # How many consecutive executor-unreachable parks a task survives before it
+    # is blocked instead. Each cycle is a full lease apart, so the default is
+    # roughly ninety minutes of provably-down infrastructure - past the point
+    # where "transient" is an honest word for it. A spent budget never counts
+    # toward this: budgets refill and must retry forever.
+    unreachable_park_ceiling: int = Field(default=3, ge=1)
+
     # Set on the row at claim time and checked before each step starts, so a
     # dispatcher that hangs cannot outlive its own budget.
     task_deadline_seconds: int = Field(default=3600, ge=60)

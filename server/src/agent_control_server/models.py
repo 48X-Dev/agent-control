@@ -1548,6 +1548,12 @@ class AgentTask(Base):
     )
     failure_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     failure_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Consecutive parks with the same failure code, reset by any step that
+    # actually starts. What turns "retry every lease, forever" into a bounded
+    # number of tries when the cause is a dead executor rather than a budget.
+    repeat_park_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
     created_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=text("CURRENT_TIMESTAMP"),
