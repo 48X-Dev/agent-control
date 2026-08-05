@@ -219,6 +219,26 @@ def reset_backend_caches() -> None:
         _docling_build_failure = None
 
 
+_MARKITDOWN_FORMAT_MODULES = ("mammoth", "openpyxl", "pandas", "pdfminer", "pptx")
+"""The libraries that decide which formats an *installed* MarkItDown can open.
+
+``available()`` answers for the package and says nothing about its per-format
+extras: MarkItDown without ``pptx`` imports cleanly and then raises on the
+first deck, which leaves this module as ``format_support_missing``. Anything
+deciding whether a stored capability-absent failure still holds has to see
+these modules too, or a rebuild that adds a parser inside an already-installed
+converter changes nothing it can observe. The names are markitdown 0.1.7's own
+lazy imports for the formats this server accepts - ``mammoth`` for docx,
+``pandas`` for xlsx, ``pdfminer`` for pdf, ``pptx`` for pptx - plus
+``openpyxl``, which ships in the same xlsx extra and breaks the same format one
+import later."""
+
+
+def installed_format_support() -> tuple[str, ...]:
+    """The format-support modules present right now. Spec lookups, importing nothing."""
+    return tuple(module for module in _MARKITDOWN_FORMAT_MODULES if _module_installed(module))
+
+
 def default_backends() -> tuple[ConverterBackend, ...]:
     """The shipped pair, text layer first."""
     return (MarkItDownBackend(), DoclingBackend())
