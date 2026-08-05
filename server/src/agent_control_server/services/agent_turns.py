@@ -298,7 +298,9 @@ async def _prepare_attachments(
             attachment_keys=attachment_keys,
             settings=settings,
         )
-        delivery = build_turn_message(message, deliverables)
+        delivery = build_turn_message(
+            message, deliverables, ceiling=settings.attachment_delivery_max_chars
+        )
         # Only a genuine overflow refuses. ``render_failed`` is a bug in this
         # server, and answering it with "shorten your message" would send the
         # operator round a loop that cannot end: the turn runs instead, with
