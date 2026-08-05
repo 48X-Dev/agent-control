@@ -43,14 +43,20 @@ c = ["psycopg[c]>=3.1"]
 # `converter_unavailable` and names the missing one, and the server starts.
 #
 # text-extraction: MarkItDown 0.1.7 (MIT), ~253MB / 38 packages. Reads a
-#   document's text layer. Only the `pdf` extra is taken: the office extras add
-#   parsers for formats `attachment_accepted_mimes` refuses, which is parser
-#   surface bought for nothing.
+#   document's text layer. The extras here are the THIRD copy of one policy:
+#   `attachment_accepted_mimes` (config.py) admits a type, `_EXTENSION_BY_MIME`
+#   (attachment_converter_backends.py) routes it, and this line installs its
+#   parser - change one without the others and a file is stored and then
+#   reported unreadable. That is not hypothetical: pdf-only was correct when
+#   written, the OOXML types were admitted later, and the first real .pptx
+#   died as `ocr_converter_absent` - markitdown raising on the missing pptx
+#   dependency, the pipeline escalating to an OCR layer that was not installed
+#   either, and the stored code naming the last failure instead of the first.
 # ocr: Docling (MIT), ~1.0GB / 103 packages, torch on CPU. Measured at 47.5s on
 #   a one-line PDF and 0.5s on a small PNG in this workspace on 2026-08-03.
 #   Not a rare escalation: five of this workspace's six real attachments carry
 #   no text layer at all, so on this corpus it is the main path.
-text-extraction = ["markitdown[pdf]>=0.1.7"]
+text-extraction = ["markitdown[pdf,pptx,docx,xlsx]>=0.1.7"]
 ocr = ["docling>=2.0"]
 
 [dependency-groups]
