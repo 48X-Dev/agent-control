@@ -178,12 +178,26 @@ class DeliveredTurn:
     tells the deployment its own code is the reason."""
 
 
-def build_turn_message(message: str, attachments: list[DeliverableAttachment]) -> DeliveredTurn:
+def build_turn_message(
+    message: str,
+    attachments: list[DeliverableAttachment],
+    *,
+    ceiling: int = TURN_MESSAGE_MAX_LENGTH,
+) -> DeliveredTurn:
     """Render the operator's message plus everything about its files.
 
     Never raises. A fault while rendering degrades to the operator's message
     with the count line, and if even that will not fit, to the message alone
     with ``overflowed`` set.
+
+    ``ceiling`` bounds the COMPOSED message - operator text plus file bodies -
+    and defaults to the chat cap so nothing changes for a caller that does not
+    choose. The dispatcher path passes the larger delivery ceiling: 16000 was
+    sized for a person typing, and a single real slide deck extracts to
+    13,679 characters, so under the chat cap two files on one issue can never
+    both arrive un-truncated. Raising the chat cap instead would let a person
+    paste four times as much into every session; this keeps the two surfaces
+    separately sized.
     """
     if not attachments:
         return DeliveredTurn(
@@ -194,7 +208,7 @@ def build_turn_message(message: str, attachments: list[DeliverableAttachment]) -
             render_failed=False,
         )
     try:
-        return _render(message, attachments)
+        return _render(message, attachments, ceiling=ceiling)
     except Exception:
         _logger.warning(
             "Rendering the attachment section failed; sending the count line alone",
@@ -237,7 +251,12 @@ def _degraded(message: str, attachments: list[DeliverableAttachment]) -> Deliver
     )
 
 
-def _render(message: str, attachments: list[DeliverableAttachment]) -> DeliveredTurn:
+def _render(
+    message: str,
+    attachments: list[DeliverableAttachment],
+    *,
+    ceiling: int = TURN_MESSAGE_MAX_LENGTH,
+) -> DeliveredTurn:
     texts = {item.attachment_key: _usable_text(item) for item in attachments}
     included = [item for item in attachments if texts[item.attachment_key]]
 
@@ -272,7 +291,7 @@ def _render(message: str, attachments: list[DeliverableAttachment]) -> Delivered
     widest_head = max(
         len(_head(message, count, len(attachments))) for count in range(len(attachments) + 1)
     )
-    if widest_head > TURN_MESSAGE_MAX_LENGTH:
+    if widest_head > ceiling:
         return DeliveredTurn(
             message=message,
             included_keys=(),
@@ -280,11 +299,11 @@ def _render(message: str, attachments: list[DeliverableAttachment]) -> Delivered
             overflowed=True,
             render_failed=False,
         )
-    if show_section and widest_head + widest_section > TURN_MESSAGE_MAX_LENGTH:
+    if show_section and widest_head + widest_section > ceiling:
         show_section = False
     reserved = widest_head + (widest_section if show_section else 0)
 
-    body, fitted = _render_bodies(included, texts, budget=TURN_MESSAGE_MAX_LENGTH - reserved)
+    body, fitted = _render_bodies(included, texts, budget=ceiling - reserved)
     included_keys = tuple(item.attachment_key for item in included[:fitted])
 
     section = ""

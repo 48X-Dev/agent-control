@@ -584,6 +584,14 @@ class ExecutorSettings(BaseSettings):
     # same number. ``StartTurnRequest.attachment_keys`` validates its length
     # against that constant, so an operator who raised this setting alone would
     # get a 422 naming no setting and offering no remedy.
+    # The composed-turn ceiling when files ride along: operator text plus
+    # delivered file bodies. Separate from the 16000-character chat cap on
+    # purpose - that number was sized for a person typing, and one real slide
+    # deck extracts to 13,679 characters, so under the chat cap two files on
+    # one issue can never both arrive whole. Roughly 12k tokens per model call
+    # at the default; each step of a chain re-sends it, which is the cost being
+    # bounded here.
+    attachment_delivery_max_chars: int = Field(default=48000, ge=16000)
     attachment_max_per_turn: int = Field(
         default=ATTACHMENT_MAX_PER_TURN, ge=1, le=ATTACHMENT_MAX_PER_TURN
     )

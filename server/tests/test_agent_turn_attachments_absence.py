@@ -253,7 +253,7 @@ def test_files_over_the_per_turn_ceiling_refuse_before_anything_is_read(
 
 
 def test_a_message_leaving_no_room_refuses_rather_than_dropping_the_files(
-    client: TestClient, fake_executor: Any
+    client: TestClient, fake_executor: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The one rendering outcome that cannot be rendered away.
 
@@ -261,7 +261,15 @@ def test_a_message_leaving_no_room_refuses_rather_than_dropping_the_files(
     wrong one: the operator attached them deliberately and is watching the
     composer. This asserts the turn did not run at all, which is what
     distinguishes the refusal from a quiet drop that would have answered 200.
+
+    Pinned at the delivery ceiling's floor. At the shipped default of 48000 a
+    maximum-length chat message still leaves room, so the overflow is only
+    reachable on a deployment that configured the ceiling down to the 16000
+    minimum - which is therefore the deployment this test runs as.
     """
+    from agent_control_server.config import executor_settings
+
+    monkeypatch.setattr(executor_settings, "attachment_delivery_max_chars", 16000)
     session = _bound_session(client)
     created = upload(client, session["session_key"]).json()["attachment"]
     _seed_conversion(created["source_sha256"], SECRET_TEXT)
