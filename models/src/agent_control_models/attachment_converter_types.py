@@ -10,7 +10,11 @@ import re
 from dataclasses import dataclass
 from enum import StrEnum
 
-from .attachment_converter_backends import ConverterKind
+from .attachment_converter_backends import (
+    FAILURE_CONVERTER_ABSENT,
+    FAILURE_FORMAT_SUPPORT_MISSING,
+    ConverterKind,
+)
 
 LOW_TEXT_THRESHOLD_CHARS = 40
 """Below this many meaningful characters, a converter's read triggers the next one.
@@ -46,6 +50,25 @@ FAILURE_EMPTY_INPUT = "empty_input"
 FAILURE_NO_CONVERTER_INSTALLED = "no_converter_installed"
 FAILURE_OCR_CONVERTER_ABSENT = "ocr_converter_absent"
 FAILURE_SOURCE_ECHOED = "source_echoed"
+
+CAPABILITY_ABSENT_FAILURE_CODES = frozenset(
+    {
+        FAILURE_NO_CONVERTER_INSTALLED,
+        FAILURE_OCR_CONVERTER_ABSENT,
+        FAILURE_CONVERTER_ABSENT,
+        FAILURE_FORMAT_SUPPORT_MISSING,
+    }
+)
+"""The failure codes that say "a capability was absent" rather than "this file
+cannot be read".
+
+A verdict carrying one of these describes the deployment on the day it ran,
+not the document: install the missing converter or format extra and the same
+bytes may convert cleanly. Every other code - a parser that broke, an
+encrypted file, an echoed source - describes the document, and re-running one
+of those because the environment changed would pay for a conversion to learn
+the same thing. ``services.attachment_conversions`` reads this set to decide
+which stored failures a changed capability fingerprint retires."""
 
 _HTML_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
 _WHITESPACE = re.compile(r"\s+")

@@ -28,6 +28,17 @@ an operator can do about it. So the row a worker inserts to say "mine" expires
 out. Both exist because the key is derived from the content: a stuck claim
 cannot be cleared by re-uploading the file.
 
+**A failure cites the toolbox that produced it.** ``failed`` is permanent only
+when it describes the file. A verdict like ``ocr_converter_absent`` describes
+the deployment, and deployments change: every stored verdict carries
+:func:`installed_capability_fingerprint` from the moment it was written,
+:func:`read_cached` answers a capability-absent failure as a miss once the
+stamp no longer matches, and :meth:`ConversionScheduler._claim` takes the row
+over so the retry runs once rather than per poll. The incident this pays for:
+a real deck failed as ``ocr_converter_absent``, the image was rebuilt with the
+pptx extra (a change invisible to the cache key, which reads whole
+converters), and the cached refusal had to be deleted by hand.
+
 **Two things this deliberately does not do.**
 
 It does not run in a sidecar. The plan's isolated converter process is a later,
@@ -54,12 +65,13 @@ import time
 from dataclasses import dataclass
 
 from agent_control_models.attachment_converter import (
+    CAPABILITY_ABSENT_FAILURE_CODES,
     ConversionResult,
     ConversionStatus,
     convert_attachment_async,
 )
 from agent_control_models.attachments import AttachmentVariant
-from sqlalchemy import and_, delete, func, select, update
+from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -68,7 +80,10 @@ from sqlalchemy.orm import undefer
 from ..db import AsyncSessionLocal
 from ..models import AgentAttachmentConversion
 from .attachment_blobs import AttachmentBlobStore, get_attachment_blob_store
-from .attachment_converter_cache import conversion_cache_key
+from .attachment_converter_cache import (
+    conversion_cache_key,
+    installed_capability_fingerprint,
+)
 from .executor_metrics import (
     ATTACHMENT_CONVERSION_DROPPED,
     ATTACHMENT_CONVERSION_DURATION,
@@ -168,6 +183,13 @@ async def read_cached(
     waits and never raises for a missing converter: the caller decides what a
     miss is worth, and for a turn the answer is always a printed line rather
     than a delay.
+
+    One class of stored answer is refused here: a ``failed`` entry whose
+    ``failure_code`` names an absent capability, once the installed set no
+    longer matches the fingerprint stamped on it. That verdict was about the
+    deployment rather than the file, so it is answered as a miss - the caller
+    schedules a conversion exactly as it would for content nobody has tried,
+    and :meth:`ConversionScheduler._claim` keeps the retry single.
     """
     key = conversion_cache_key(source_sha256)
     stmt = (
@@ -180,6 +202,12 @@ async def read_cached(
     )
     row = (await db.execute(stmt)).scalars().first()
     if row is None:
+        return None
+    if (
+        row.state == STATE_FAILED
+        and row.failure_code in CAPABILITY_ABSENT_FAILURE_CODES
+        and row.capability_fingerprint != installed_capability_fingerprint()
+    ):
         return None
     return CachedConversion(
         state=row.state,
@@ -339,7 +367,9 @@ class ConversionScheduler:
             # Released for the same reason, and note what this does not do: a
             # conversion that ran and *decided* it could not read the file is
             # stored as ``failed`` by ``_store`` and keeps its row. Only a run
-            # that never reached a verdict is made retryable.
+            # that never reached a verdict is made retryable here; the one
+            # exception for stored verdicts - a capability-absent failure
+            # against a changed installed set - belongs to ``_claim``.
             await self._release_quietly(namespace_key=namespace_key, cache_key=cache_key)
         finally:
             ATTACHMENT_CONVERSION_DURATION.observe(max(0.0, time.monotonic() - started))
@@ -355,6 +385,10 @@ class ConversionScheduler:
     ) -> None:
         blobs = self._blobs or get_attachment_blob_store()
         cache_key = conversion_cache_key(source_sha256)
+        # Read once for the whole run: the claim this takes and the verdict it
+        # stores must cite the same capability set, or a retry could re-arm
+        # against a fingerprint it never ran under.
+        capability_fingerprint = installed_capability_fingerprint()
 
         async with AsyncSessionLocal() as db:
             claimed = await self._claim(
@@ -362,6 +396,7 @@ class ConversionScheduler:
                 namespace_key=namespace_key,
                 cache_key=cache_key,
                 source_sha256=source_sha256,
+                capability_fingerprint=capability_fingerprint,
             )
             if not claimed:
                 return
@@ -391,6 +426,7 @@ class ConversionScheduler:
                 namespace_key=namespace_key,
                 cache_key=cache_key,
                 result=result,
+                capability_fingerprint=capability_fingerprint,
             )
             await db.commit()
 
@@ -408,6 +444,7 @@ class ConversionScheduler:
         namespace_key: str,
         cache_key: str,
         source_sha256: str,
+        capability_fingerprint: str,
     ) -> bool:
         """Take the lease on this content, or find somebody else holding it.
 
@@ -424,8 +461,21 @@ class ConversionScheduler:
         does. ``DO NOTHING`` here would mean one interrupted run poisons that
         file's cache entry permanently, since the key is derived from the
         content and re-uploading produces the same one. The ``WHERE`` reads the
-        stored row, so a ``done`` or ``failed`` entry is never disturbed and a
-        live claim is never stolen.
+        stored row, so a ``done`` entry is never disturbed and a live claim is
+        never stolen.
+
+        **A failed row is not always a stored answer.** A verdict whose
+        ``failure_code`` names an absent capability holds only for the
+        installed set stamped on it, so a row bearing a different stamp is
+        taken over exactly like an expired lease, and the verdict this run
+        stores - success or a fresh failure - carries the current one. The
+        restamp is what keeps the retry single: same fingerprint, no takeover.
+        ``IS DISTINCT FROM`` rather than ``!=`` is what lets the pre-column
+        ``NULL`` stamp count as different, so failures cached before the
+        fingerprint existed retry once instead of needing the hand-written
+        DELETE this mechanism replaces. A ``failed`` row outside those codes -
+        a parser that broke on the file itself - matches neither branch and
+        keeps its row.
         """
         stale_before = func.now() - func.make_interval(0, 0, 0, 0, 0, 0, self._lease_seconds)
         stmt = (
@@ -439,9 +489,20 @@ class ConversionScheduler:
             .on_conflict_do_update(
                 index_elements=["namespace_key", "cache_key"],
                 set_={"state": STATE_RUNNING, "updated_at": func.now()},
-                where=and_(
-                    AgentAttachmentConversion.state == STATE_RUNNING,
-                    AgentAttachmentConversion.updated_at < stale_before,
+                where=or_(
+                    and_(
+                        AgentAttachmentConversion.state == STATE_RUNNING,
+                        AgentAttachmentConversion.updated_at < stale_before,
+                    ),
+                    and_(
+                        AgentAttachmentConversion.state == STATE_FAILED,
+                        AgentAttachmentConversion.failure_code.in_(
+                            sorted(CAPABILITY_ABSENT_FAILURE_CODES)
+                        ),
+                        AgentAttachmentConversion.capability_fingerprint.is_distinct_from(
+                            capability_fingerprint
+                        ),
+                    ),
                 ),
             )
             .returning(AgentAttachmentConversion.id)
@@ -496,6 +557,7 @@ class ConversionScheduler:
         namespace_key: str,
         cache_key: str,
         result: ConversionResult,
+        capability_fingerprint: str,
     ) -> None:
         text = result.text[:CACHED_TEXT_MAX_CHARS]
         truncated = result.text_truncated or len(text) < len(result.text)
@@ -508,6 +570,7 @@ class ConversionScheduler:
             "meaningful_chars": result.meaningful_chars,
             "stored_truncated": truncated,
             "failure_code": result.failure_code,
+            "capability_fingerprint": capability_fingerprint,
         }
         await db.execute(
             update(AgentAttachmentConversion)

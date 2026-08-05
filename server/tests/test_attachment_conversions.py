@@ -17,9 +17,15 @@ import asyncio
 import uuid
 
 import pytest
+from agent_control_models import attachment_converter_backends as backends_module
 from agent_control_models.attachment_converter import (
+    FAILURE_OCR_CONVERTER_ABSENT,
     ConversionResult,
     ConversionStatus,
+)
+from agent_control_models.attachment_converter_backends import (
+    FAILURE_CONVERTER_ERROR,
+    DoclingBackend,
 )
 from agent_control_models.attachments import AttachmentVariant
 from sqlalchemy import text
@@ -34,6 +40,7 @@ from agent_control_server.services.attachment_conversions import (
 )
 from agent_control_server.services.attachment_converter_cache import (
     conversion_cache_key,
+    installed_capability_fingerprint,
 )
 
 from .conftest import engine
@@ -51,14 +58,18 @@ def _seed_entry(
     state: str = STATE_DONE,
     body: str | None = "extracted words",
     status: str = ConversionStatus.TEXT_LAYER_EXTRACTED.value,
+    failure_code: str | None = None,
+    capability_fingerprint: str | None = None,
 ) -> None:
     with engine.begin() as conn:
         conn.execute(
             text(
                 "INSERT INTO agent_attachment_conversions "
                 "(namespace_key, cache_key, source_sha256, state, status, "
-                " text_body, text_chars, meaningful_chars) "
-                "VALUES (:ns, :key, :sha, :state, :status, :body, :chars, :chars)"
+                " text_body, text_chars, meaningful_chars, failure_code, "
+                " capability_fingerprint) "
+                "VALUES (:ns, :key, :sha, :state, :status, :body, :chars, :chars, "
+                " :code, :fingerprint)"
             ),
             {
                 "ns": _NAMESPACE,
@@ -68,6 +79,8 @@ def _seed_entry(
                 "status": status,
                 "body": body,
                 "chars": len(body or ""),
+                "code": failure_code,
+                "fingerprint": capability_fingerprint,
             },
         )
 
@@ -332,3 +345,225 @@ async def test_stored_text_is_capped_and_says_so(async_db, fake_converter) -> No
     assert len(cached.text) == conversions.CACHED_TEXT_MAX_CHARS
     assert cached.stored_truncated is True
     assert cached.text_chars == len(oversized)
+
+
+# ---------------------------------------------------------------------------
+# Capability-gated retry: a failure is only as durable as the toolbox it cites
+# ---------------------------------------------------------------------------
+
+
+def _pin(source_sha256: str) -> str:
+    return f"pin:{source_sha256[:32]}"
+
+
+@pytest.fixture()
+def pinned_key(monkeypatch: pytest.MonkeyPatch):
+    """Hold the cache key still while capabilities move.
+
+    The incident under test is the one the key cannot see: a format extra
+    arriving inside an installed MarkItDown changes no backend's
+    ``available()``, so the key holds still and the stored refusal keeps
+    answering. Pinning the key reproduces that blindness for any capability
+    change, so these tests exercise the row fingerprint rather than the key
+    rotation that already covers whole converters.
+    """
+    monkeypatch.setattr(conversions, "conversion_cache_key", _pin)
+
+
+def _docling(monkeypatch: pytest.MonkeyPatch, *, present: bool) -> None:
+    monkeypatch.setattr(DoclingBackend, "available", lambda self: present)
+
+
+def _unavailable(code: str = FAILURE_OCR_CONVERTER_ABSENT) -> ConversionResult:
+    return ConversionResult(status=ConversionStatus.CONVERTER_UNAVAILABLE, failure_code=code)
+
+
+async def _fresh_read(db, source_sha256: str):  # type: ignore[no-untyped-def]
+    """Re-read past the session's identity map, which read_cached never needs
+    in production: each turn's session is new, while a test reuses one."""
+    db.expire_all()
+    return await read_cached(db, namespace_key=_NAMESPACE, source_sha256=source_sha256)
+
+
+def _pinned_row_count(source_sha256: str) -> int:
+    with engine.begin() as conn:
+        return conn.execute(
+            text(
+                "SELECT count(*) FROM agent_attachment_conversions"
+                " WHERE namespace_key = :ns AND cache_key = :key"
+            ),
+            {"ns": _NAMESPACE, "key": _pin(source_sha256)},
+        ).scalar_one()
+
+
+async def test_a_capability_absent_failure_is_retried_after_the_capability_appears(
+    async_db, fake_converter, pinned_key, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The manual DELETE, retired.
+
+    A deck fails while a converter is missing; the converter arrives; the next
+    read answers as a miss, the scheduler takes the failed row over, and the
+    same row ends up carrying the text. Before the fingerprint, the second
+    half of that story was an operator deleting the row by hand.
+    """
+    calls, outcome = fake_converter
+    _docling(monkeypatch, present=False)
+    outcome["result"] = _unavailable()
+    sha = _sha()
+    scheduler = ConversionScheduler(blobs=_FakeBlobStore(b"%PDF-1.7 body"))
+    assert scheduler.submit(namespace_key=_NAMESPACE, attachment_id=1, source_sha256=sha)
+    await scheduler.drain()
+
+    cached = await _fresh_read(async_db, sha)
+    assert cached is not None
+    assert cached.state == STATE_FAILED
+    assert cached.failure_code == FAILURE_OCR_CONVERTER_ABSENT
+
+    _docling(monkeypatch, present=True)
+    outcome["result"] = _result("read at last", ConversionStatus.OCR_EXTRACTED)
+
+    assert await _fresh_read(async_db, sha) is None
+    assert scheduler.submit(namespace_key=_NAMESPACE, attachment_id=1, source_sha256=sha)
+    await scheduler.drain()
+
+    cached = await _fresh_read(async_db, sha)
+    assert cached is not None
+    assert cached.state == STATE_DONE
+    assert cached.text == "read at last"
+    assert len(calls) == 2
+    assert _pinned_row_count(sha) == 1  # the verdict was replaced, never duplicated
+
+
+async def test_a_genuine_failure_is_not_retried_by_a_capability_change(
+    async_db, fake_converter, pinned_key, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``converter_error`` describes the file, and new tools change nothing
+    about the file: served forever, converted once, whatever gets installed."""
+    calls, outcome = fake_converter
+    _docling(monkeypatch, present=False)
+    outcome["result"] = ConversionResult(
+        status=ConversionStatus.FAILED, failure_code=FAILURE_CONVERTER_ERROR
+    )
+    sha = _sha()
+    scheduler = ConversionScheduler(blobs=_FakeBlobStore(b"%PDF-1.7 body"))
+    assert scheduler.submit(namespace_key=_NAMESPACE, attachment_id=2, source_sha256=sha)
+    await scheduler.drain()
+
+    _docling(monkeypatch, present=True)
+    cached = await _fresh_read(async_db, sha)
+    assert cached is not None
+    assert cached.state == STATE_FAILED
+    assert cached.failure_code == FAILURE_CONVERTER_ERROR
+
+    assert scheduler.submit(namespace_key=_NAMESPACE, attachment_id=2, source_sha256=sha)
+    await scheduler.drain()
+    assert len(calls) == 1
+
+
+async def test_an_unchanged_capability_set_serves_the_failure_without_rerunning(
+    async_db, fake_converter, pinned_key
+) -> None:
+    """No thrash: the fingerprint gates on change, not on the failure existing.
+
+    Three reads and a forced resubmission against the same installed set: the
+    stored refusal is served as a hit every time, so the binding path never
+    reschedules it, and the claim refuses the takeover even when something
+    schedules it anyway.
+    """
+    calls, outcome = fake_converter
+    outcome["result"] = _unavailable()
+    sha = _sha()
+    scheduler = ConversionScheduler(blobs=_FakeBlobStore(b"%PDF-1.7 body"))
+    assert scheduler.submit(namespace_key=_NAMESPACE, attachment_id=3, source_sha256=sha)
+    await scheduler.drain()
+
+    for _ in range(3):
+        cached = await _fresh_read(async_db, sha)
+        assert cached is not None
+        assert cached.state == STATE_FAILED
+
+    assert scheduler.submit(namespace_key=_NAMESPACE, attachment_id=3, source_sha256=sha)
+    await scheduler.drain()
+    assert len(calls) == 1
+
+
+async def test_a_retry_that_fails_again_waits_for_the_next_change(
+    async_db, fake_converter, pinned_key, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One capability change buys one retry, not a loop.
+
+    The retry re-fails - the deck needed something the change did not bring -
+    and the fresh verdict carries the new fingerprint, so every later poll is
+    a hit again until the *next* change.
+    """
+    calls, outcome = fake_converter
+    _docling(monkeypatch, present=False)
+    outcome["result"] = _unavailable()
+    sha = _sha()
+    scheduler = ConversionScheduler(blobs=_FakeBlobStore(b"%PDF-1.7 body"))
+    assert scheduler.submit(namespace_key=_NAMESPACE, attachment_id=4, source_sha256=sha)
+    await scheduler.drain()
+
+    _docling(monkeypatch, present=True)
+    assert await _fresh_read(async_db, sha) is None  # the change arms one retry
+    assert scheduler.submit(namespace_key=_NAMESPACE, attachment_id=4, source_sha256=sha)
+    await scheduler.drain()
+    assert len(calls) == 2
+
+    cached = await _fresh_read(async_db, sha)  # restamped, so a hit again
+    assert cached is not None
+    assert cached.state == STATE_FAILED
+    assert scheduler.submit(namespace_key=_NAMESPACE, attachment_id=4, source_sha256=sha)
+    await scheduler.drain()
+    assert len(calls) == 2
+
+
+async def test_a_failure_cached_before_the_fingerprint_existed_retries_once(
+    async_db, fake_converter
+) -> None:
+    """The deployed backlog, recovered without psql.
+
+    Rows written before the column carry ``NULL``, which ``IS DISTINCT FROM``
+    reads as "not the current set": one retry, and the fresh verdict stamps
+    them like any other row.
+    """
+    calls, _ = fake_converter
+    sha = _sha()
+    _seed_entry(
+        source_sha256=sha,
+        state=STATE_FAILED,
+        body=None,
+        status=ConversionStatus.CONVERTER_UNAVAILABLE.value,
+        failure_code=FAILURE_OCR_CONVERTER_ABSENT,
+    )
+    assert await read_cached(async_db, namespace_key=_NAMESPACE, source_sha256=sha) is None
+
+    scheduler = ConversionScheduler(blobs=_FakeBlobStore(b"%PDF-1.7 body"))
+    assert scheduler.submit(namespace_key=_NAMESPACE, attachment_id=5, source_sha256=sha)
+    await scheduler.drain()
+
+    cached = await _fresh_read(async_db, sha)
+    assert cached is not None
+    assert cached.state == STATE_DONE
+    assert cached.text == "hello from the document"
+    assert len(calls) == 1
+
+
+def test_a_format_extra_changes_the_fingerprint_but_not_the_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The blindness the incident rode in on, pinned as an invariant.
+
+    The key reads whole backends, deliberately: rotating it on a format extra
+    would retire every successful conversion too. The extra still has to show
+    up somewhere, and the fingerprint is that somewhere.
+    """
+    installed = {"markitdown"}
+    monkeypatch.setattr(backends_module, "_module_installed", lambda module: module in installed)
+    sha = _sha()
+    key_before = conversion_cache_key(sha)
+    fingerprint_before = installed_capability_fingerprint()
+
+    installed.add("pptx")
+    assert conversion_cache_key(sha) == key_before
+    assert installed_capability_fingerprint() != fingerprint_before

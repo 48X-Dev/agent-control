@@ -1301,6 +1301,14 @@ class AgentAttachmentConversion(Base):
     answering from the day OCR was unavailable. ``source_sha256`` is kept
     beside it only so a human can join this back to an attachment.
 
+    ``capability_fingerprint`` is stamped by every stored verdict and consulted
+    only for failed ones whose ``failure_code`` names an absent capability. The
+    key sees whole converters appearing; this sees the finer grain - a format
+    extra arriving inside an installed converter - and a failed row whose stamp
+    no longer matches the installed set is read as a miss and converted once
+    more. ``NULL`` marks rows written before the column existed, which reads as
+    "unknown" and buys the same single retry.
+
     ``text`` is deferred. It can run to millions of characters and this row is
     read by the delivery path on every turn that carries a file; an incautious
     ``select(AgentAttachmentConversion)`` pulling the text of every cached
@@ -1345,6 +1353,7 @@ class AgentAttachmentConversion(Base):
         Boolean, nullable=False, server_default=text("false")
     )
     failure_code: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    capability_fingerprint: Mapped[str | None] = mapped_column(String(255), nullable=True)
     duration_seconds: Mapped[int] = mapped_column(
         Integer, nullable=False, server_default=text("0")
     )

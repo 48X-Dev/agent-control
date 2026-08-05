@@ -1,7 +1,7 @@
-"""Alembic coverage for the conversion cache revision.
+"""Alembic coverage for the conversion cache revisions.
 
-Small, because the revision is one additive table with no foreign keys. Two of
-these assertions are not bookkeeping.
+Small, because both revisions are additive - one table, then one column - with
+no foreign keys. Two of these assertions are not bookkeeping.
 
 **The ORM and the revisions have to describe the same table.** ``conftest``
 builds the test database from ``Base.metadata.create_all`` and every deployment
@@ -113,6 +113,7 @@ def downgrade_to(alembic_config: Config) -> Callable[[str], None]:
 
 PRE_MIGRATION_REVISION = "b2e7c94a1d55"
 MIGRATION_REVISION = "c4a91e7b3d26"
+FINGERPRINT_REVISION = "b7d2e94c5a18"
 TABLE = "agent_attachment_conversions"
 
 
@@ -128,7 +129,34 @@ def test_the_revision_adds_the_cache_table(
 
     upgrade_to(MIGRATION_REVISION)
     assert TABLE in set(inspect(temp_engine).get_table_names(schema="public"))
+
+
+def test_the_orm_and_the_newest_revision_describe_the_same_table(
+    temp_engine: Engine, upgrade_to: Callable[[str], None]
+) -> None:
+    """The parity check lives at the newest conversion revision on purpose.
+
+    ``conftest`` builds test databases from the ORM and deployments build them
+    from revisions, so the two must agree where a deployment ends up, not at a
+    waypoint an upgrade passes through.
+    """
+    upgrade_to(FINGERPRINT_REVISION)
     assert _columns(temp_engine) == {column.name for column in Base.metadata.tables[TABLE].columns}
+
+
+def test_the_fingerprint_revision_adds_one_column_and_takes_it_away(
+    temp_engine: Engine,
+    upgrade_to: Callable[[str], None],
+    downgrade_to: Callable[[str], None],
+) -> None:
+    upgrade_to(MIGRATION_REVISION)
+    assert "capability_fingerprint" not in _columns(temp_engine)
+
+    upgrade_to(FINGERPRINT_REVISION)
+    assert "capability_fingerprint" in _columns(temp_engine)
+
+    downgrade_to(MIGRATION_REVISION)
+    assert "capability_fingerprint" not in _columns(temp_engine)
 
 
 def test_one_content_key_can_only_be_claimed_once_per_namespace(

@@ -23,6 +23,7 @@ from .attachment_converter_backends import (
 )
 from .attachment_converter_containers import refine_container_mime
 from .attachment_converter_types import (
+    CAPABILITY_ABSENT_FAILURE_CODES,
     DEFAULT_CONVERTIBLE_MIMES,
     DEFAULT_OPTIONS,
     DEFAULT_TEXT_MAX_CHARS,
@@ -42,6 +43,7 @@ from .attachment_converter_types import (
 )
 
 __all__ = [
+    "CAPABILITY_ABSENT_FAILURE_CODES",
     "DEFAULT_CONVERTIBLE_MIMES",
     "DEFAULT_OPTIONS",
     "DEFAULT_TEXT_MAX_CHARS",
