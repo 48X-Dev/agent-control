@@ -549,6 +549,17 @@ verbatim. The open ADK limitation is recorded rather than worked around: if a
 per-call header mechanism ever lands, the fleet could move to this surface with
 session tokens and 8.2 would become the internal core only.
 
+**Demoted to unscheduled (2026-08-06), on the operator's direction.** "All we
+want is the info in the Agent Control panel, as that would be our operating
+system." That is a product decision only the operator could make, and it
+inverts the priority this section assumed: the console is the human surface,
+and the MCP mount waits behind a demand gate - it returns to the schedule when
+a NAMED external consumer exists (a specific claude.ai connector, a specific
+second framework), not before. The design above stays written because it cost
+its thinking already and changes nothing while unbuilt; the fleet's
+session-token route is unaffected either way. What takes its scheduled week is
+the console panel, Phase 3b below.
+
 ## 9. Access (design question 6)
 
 **Slice one: one corpus, namespace-wide, every agent sees the same thing.** `HeaderAuthProvider._resolve_namespace_key` returns the default for every caller (verified by three prior plans against the same line), so the namespace is a constant in every reachable deployment and per-namespace partitioning would compare two constants. Per-team collections, mapped from folder subtrees and repo lists to `teams.slug`, are the designed later step: a `collection` column on `sources`, a team-to-collections table, and the search filtered by the calling session's team, which `agent-fleet-topology.md` 5.2's task-to-team resolution already knows how to find.
@@ -725,12 +736,21 @@ One engineer, including tests, in this repo's convention. Configuration and real
 
 **Phase 3: retrieval, governed. 2 weeks. Depends on Phase 2 having indexed anything.** The two operations registered, the endpoint beside the nudge routes with `session_target_context`, the ceilings and the window, fence rendering and all-field neutralization, `SESSION_TOKEN_SCOPES` widening, `knowledge_tools.py`, example-agent wiring with the README section on qualified names and the pairing note, the `company_knowledge_recent` tool with its window cap (its W-test proves the window and k bound it and that no cursor exists), the `synonyms` rewrite wired into the query path, all three shipped controls with compile and behavioral tests, W-K1 through W-K6 (W-K6 needs the dispatcher stubs, which is most of the half-week this phase grew in review). This is where the capability becomes governed rather than merely narrow, and it lands before any agent reaches the tool.
 
-**Phase 3b: the MCP surface. 1 week. Depends on Phase 3's core.** The
-streamable-HTTP mount at `/mcp/knowledge`, the two tool definitions over the
-same core, the per-key window, W-K7's three proofs (unauthenticated attach
-refused by absence, the window across a burst, the fence surviving MCP
-transport verbatim). This is the surface every non-fleet MCP client uses, per
-8.7; nothing in it may reach past the core's caps.
+**Phase 3b: the console knowledge panel. 1 week. Depends on Phase 3's core.**
+The human surface, in the operating system the operator already lives in: a
+Knowledge page with the three verbs as one panel - a search box (ask), a "what
+changed" tab over the same capped window as the agents' recent tool, and the
+freshness strip from the status endpoint as the footer. Results render snippet,
+heading path, source name and modified date as TEXT NODES - the console's
+plain-text rule applies in full, snippets are corpus content and corpus content
+is untrusted for rendering purposes regardless of the trust tier that admitted
+it - with the one link per result built through `safeHttpUrl` to the Drive or
+GitHub original. Auth is the console session at the status operation's tier;
+the browser never holds a source credential, per section 2.2's matrix - the
+link opens the original under the HUMAN's own Google or GitHub login, which is
+exactly the separation the matrix wants. Playwright coverage follows the
+dispatch panel's pattern, including one test that a snippet containing markup
+renders inert. The MCP surface (8.7) is unscheduled behind its demand gate.
 
 **Phase 4: `serve`, status endpoint, staleness. 1 week. Depends on Phase 3.** The loop with jitter and SIGTERM discipline, `GET /company-knowledge/status`, `last_verified_at` and the staleness line, the startup half-on log lines, `.env.example` completion, the parity CI grep (env vars and mount paths, per section 12).
 
@@ -742,7 +762,7 @@ transport verbatim). This is the surface every non-fleet MCP client uses, per
 
 **Phase 8: the console sources page, per-team collections. Unscheduled.** Named so nobody thinks they were forgotten.
 
-**Total scheduled: roughly 10 weeks (9 plus the MCP surface)**, of which the honest split is about 1.5 weeks of configuration and wiring (init scripts, compose, Apple parity, env plumbing, allowlist loading) and 7.5 weeks of real work (chunker, sync, lease, retrieval, fencing, controls, tests). Two things the estimate omits, in `task-dispatcher.md` 15.1's spirit: somebody must own the service-account key and the GitHub token in production, the same unresolved secrets conversation `agent-drive.md` section 9 names; and the first full sync of a large Drive is hours of wall clock against API quotas, which is an operational afternoon, not code.
+**Total scheduled: roughly 10 weeks (9 plus the console panel)**, of which the honest split is about 1.5 weeks of configuration and wiring (init scripts, compose, Apple parity, env plumbing, allowlist loading) and 7.5 weeks of real work (chunker, sync, lease, retrieval, fencing, controls, tests). Two things the estimate omits, in `task-dispatcher.md` 15.1's spirit: somebody must own the service-account key and the GitHub token in production, the same unresolved secrets conversation `agent-drive.md` section 9 names; and the first full sync of a large Drive is hours of wall clock against API quotas, which is an operational afternoon, not code.
 
 ---
 
