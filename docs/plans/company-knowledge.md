@@ -489,7 +489,17 @@ condition:
 
 An empty result is rendered as: *"No results in the company knowledge base for this query. The knowledge base holds N documents from M sources, last synced <when>. A gap is a finding: report that this information was not found rather than inventing it, and name the query you tried."* That sentence is a constant, and it deliberately matches the researcher persona's existing instruction that absence is reportable.
 
-What FTS misses, written down so nobody oversells it: synonymy ("laptop policy" versus a doc that only says "hardware provisioning"), paraphrase, acronym expansion the corpus does not spell out, cross-language content, and stemming across compound product names. `pg_trgm` similarity backstops misspellings and code-name fragments ("ACME-7") where `websearch_to_tsquery` returns nothing, at a threshold K6 tunes on the real corpus. The miss list is the argument *for* the embeddings phase and the reason it stays honest to gate it: **this deployment's endpoint answered 404 on `POST /v1/embeddings`, measured this session, so there is no provider to build on.** Phase 7's gate is a probe in code, `knowledge doctor` calling the configured embeddings URL and refusing to enable the vector path until it answers, so the phase turns on when reality changes rather than when hope does.
+What FTS misses, written down so nobody oversells it: synonymy ("laptop policy" versus a doc that only says "hardware provisioning"), paraphrase, acronym expansion the corpus does not spell out, cross-language content, and stemming across compound product names. `pg_trgm` similarity backstops misspellings and code-name fragments ("ACME-7") where `websearch_to_tsquery` returns nothing, at a threshold K6 tunes on the real corpus. Before embeddings, the cheapest real answer to synonymy is a curated rewrite
+table: `synonyms` in the knowledge database (migration 003), applied at query
+time with `ts_rewrite`, seeded from `synonyms.yaml` beside `knowledge.yaml` and
+owned by the same person the allowlist is - twenty rows of the company's actual
+vocabulary ("laptop" -> "hardware provisioning", product code-names, acronym
+expansions) outperform a mediocre embedding model on a corpus this size, cost
+nothing per query, and every rewrite is inspectable where a vector similarity
+is not. The sync never writes this table; it is operator-curated configuration,
+loaded by the same reload path as the allowlist. 
+
+The miss list is the argument *for* the embeddings phase and the reason it stays honest to gate it: **this deployment's endpoint answered 404 on `POST /v1/embeddings`, measured this session, so there is no provider to build on.** Phase 7's gate is a probe in code, `knowledge doctor` calling the configured embeddings URL and refusing to enable the vector path until it answers, so the phase turns on when reality changes rather than when hope does.
 
 ---
 
@@ -510,7 +520,7 @@ metering into per-process metering for the callers where the strongest form is
 available. Dispatched and chat turns therefore stay on 8.2 exactly as written.
 
 **Everything else gets MCP.** The server additionally mounts a streamable-HTTP MCP
-endpoint at `/mcp/knowledge`, serving two tools, `company_knowledge_search` and
+endpoint at `/mcp/knowledge`, serving three tools, `company_knowledge_search`, `company_knowledge_recent` and
 `company_knowledge_status`, backed by the same core: same FTS query, same
 per-call caps, same 8.5 fencing inside the returned text content, same
 no-enumeration rule. This is what makes the corpus reachable from every
@@ -713,7 +723,7 @@ One engineer, including tests, in this repo's convention. Configuration and real
 
 **Phase 2: the sync, Drive only, `once` mode. 2 weeks. Depends on Phase 1.** Service-account auth, changes cursor, export and download paths (xlsx for Sheets), converter reuse and the cache, tombstones, ceilings, the lease claim against the singleton, the ingest guard with its env wiring, counters, `status` as CLI output. The compose and Apple wiring for the container ships here even though `serve` does not, because a container that can run `once` is the deployable unit, and the Apple block ships with its named mounts rather than a mirror of the mount-less dispatcher block.
 
-**Phase 3: retrieval, governed. 2 weeks. Depends on Phase 2 having indexed anything.** The two operations registered, the endpoint beside the nudge routes with `session_target_context`, the ceilings and the window, fence rendering and all-field neutralization, `SESSION_TOKEN_SCOPES` widening, `knowledge_tools.py`, example-agent wiring with the README section on qualified names and the pairing note, all three shipped controls with compile and behavioral tests, W-K1 through W-K6 (W-K6 needs the dispatcher stubs, which is most of the half-week this phase grew in review). This is where the capability becomes governed rather than merely narrow, and it lands before any agent reaches the tool.
+**Phase 3: retrieval, governed. 2 weeks. Depends on Phase 2 having indexed anything.** The two operations registered, the endpoint beside the nudge routes with `session_target_context`, the ceilings and the window, fence rendering and all-field neutralization, `SESSION_TOKEN_SCOPES` widening, `knowledge_tools.py`, example-agent wiring with the README section on qualified names and the pairing note, the `company_knowledge_recent` tool with its window cap (its W-test proves the window and k bound it and that no cursor exists), the `synonyms` rewrite wired into the query path, all three shipped controls with compile and behavioral tests, W-K1 through W-K6 (W-K6 needs the dispatcher stubs, which is most of the half-week this phase grew in review). This is where the capability becomes governed rather than merely narrow, and it lands before any agent reaches the tool.
 
 **Phase 3b: the MCP surface. 1 week. Depends on Phase 3's core.** The
 streamable-HTTP mount at `/mcp/knowledge`, the two tool definitions over the
