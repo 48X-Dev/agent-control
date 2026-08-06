@@ -81,8 +81,17 @@ for i in $(seq 1 30); do
   sleep 2
 done
 container exec "$PG_NAME" pg_isready -U agent_control -d agent_control >/dev/null
+# The provisioning docker-compose.dev.yml runs as a one-shot job: the adk role
+# and the REVOKEs that close the control database to PUBLIC. It is not in the
+# schema migrations on purpose (see the SQL's own header) and pg_dump does not
+# carry database-level privileges, so both a fresh volume and a restored dump
+# arrive without it - test_adk_db_isolation is what catches that. Idempotent;
+# re-running on every up is the intended usage.
+container exec -i "$PG_NAME" psql -q -v ON_ERROR_STOP=1 -U agent_control -d postgres \
+  -v adk_password="${ADK_DB_PASSWORD:-adk_local}" \
+  -f /dev/stdin < server/scripts/adk_db_init.sql >/dev/null
 PG_IP=$(ip_of "$PG_NAME")
-echo "   up at $PG_IP"
+echo "   up at $PG_IP (hardened)"
 
 echo "== server"
 if running "$SERVER_NAME"; then echo "   already running"; else
