@@ -477,6 +477,52 @@ What FTS misses, written down so nobody oversells it: synonymy ("laptop policy" 
 
 ---
 
+### 8.7 The same contract over MCP, as a second surface
+
+Asked directly by the operator: can this not be an MCP server? Yes - and it should
+also be one, without replacing 8.2. One retrieval core, two thin surfaces, because
+the two callers differ in exactly one property that matters: whether a session
+exists to meter against.
+
+**The fleet keeps the session-token route.** 8.3's ceilings are the exfiltration
+arithmetic's whole defence, and their strongest form is session-keyed: the runtime
+token binds every search to one session, one task, one budget window. An MCP
+toolset cannot carry that token - the connection is established once, at attach,
+with fixed headers (the Exa integration's own shape, and ADK offers no per-call
+header injection) - so an MCP-only design would quietly weaken per-session
+metering into per-process metering for the callers where the strongest form is
+available. Dispatched and chat turns therefore stay on 8.2 exactly as written.
+
+**Everything else gets MCP.** The server additionally mounts a streamable-HTTP MCP
+endpoint at `/mcp/knowledge`, serving two tools, `company_knowledge_search` and
+`company_knowledge_status`, backed by the same core: same FTS query, same
+per-call caps, same 8.5 fencing inside the returned text content, same
+no-enumeration rule. This is what makes the corpus reachable from every
+MCP-speaking client the company already uses - Claude Code, claude.ai
+connectors, any future agent framework - which is most of what "each of the AI
+agents can come get all of that information" meant. The Exa precedent covers the
+consuming side end to end, including the degrade-when-down wrapper and the
+agent-qualified-name warning; a fleet executor MAY also attach this toolset, and
+where it does, the fence and per-key window below still hold.
+
+**Auth and metering on this surface.** The MCP route authenticates with the
+ordinary `X-API-Key` header at attach - `AUTHENTICATED`, not the header-path
+`ADMIN` of 8.1, and the difference is earned rather than asserted: 8.1 fails the
+header path closed because it has no session to meter, while this route meters
+on a `(namespace, caller_hash)` sliding window reusing `turn_quota.py`'s shape,
+so the thing ADMIN was compensating for exists here. Under `NoAuthProvider` the
+window degrades to the shared None-bucket exactly as 8.1 already states. The
+key never grants more than search and status; source credentials stay where
+section 2.2's matrix put them.
+
+**Cost and proof.** One week, placed as Phase 3b after the core exists: the MCP
+mount, the two tool definitions, and W-K7 - proof by absence that an
+unauthenticated MCP attach cannot call either tool, plus the per-key window
+enforced across a burst, plus the fence surviving MCP text-content transport
+verbatim. The open ADK limitation is recorded rather than worked around: if a
+per-call header mechanism ever lands, the fleet could move to this surface with
+session tokens and 8.2 would become the internal core only.
+
 ## 9. Access (design question 6)
 
 **Slice one: one corpus, namespace-wide, every agent sees the same thing.** `HeaderAuthProvider._resolve_namespace_key` returns the default for every caller (verified by three prior plans against the same line), so the namespace is a constant in every reachable deployment and per-namespace partitioning would compare two constants. Per-team collections, mapped from folder subtrees and repo lists to `teams.slug`, are the designed later step: a `collection` column on `sources`, a team-to-collections table, and the search filtered by the calling session's team, which `agent-fleet-topology.md` 5.2's task-to-team resolution already knows how to find.
@@ -653,6 +699,13 @@ One engineer, including tests, in this repo's convention. Configuration and real
 
 **Phase 3: retrieval, governed. 2 weeks. Depends on Phase 2 having indexed anything.** The two operations registered, the endpoint beside the nudge routes with `session_target_context`, the ceilings and the window, fence rendering and all-field neutralization, `SESSION_TOKEN_SCOPES` widening, `knowledge_tools.py`, example-agent wiring with the README section on qualified names and the pairing note, all three shipped controls with compile and behavioral tests, W-K1 through W-K6 (W-K6 needs the dispatcher stubs, which is most of the half-week this phase grew in review). This is where the capability becomes governed rather than merely narrow, and it lands before any agent reaches the tool.
 
+**Phase 3b: the MCP surface. 1 week. Depends on Phase 3's core.** The
+streamable-HTTP mount at `/mcp/knowledge`, the two tool definitions over the
+same core, the per-key window, W-K7's three proofs (unauthenticated attach
+refused by absence, the window across a burst, the fence surviving MCP
+transport verbatim). This is the surface every non-fleet MCP client uses, per
+8.7; nothing in it may reach past the core's caps.
+
 **Phase 4: `serve`, status endpoint, staleness. 1 week. Depends on Phase 3.** The loop with jitter and SIGTERM discipline, `GET /company-knowledge/status`, `last_verified_at` and the staleness line, the startup half-on log lines, `.env.example` completion, the parity CI grep (env vars and mount paths, per section 12).
 
 **Phase 5: GitHub files. 1.5 weeks. Depends on Phase 2's skeleton.** Allowlist loading, tree walk with path filters, since-cursor and the force-push fallback, sniff-based binary refusal, K4's token in the container.
@@ -663,7 +716,7 @@ One engineer, including tests, in this repo's convention. Configuration and real
 
 **Phase 8: the console sources page, per-team collections. Unscheduled.** Named so nobody thinks they were forgotten.
 
-**Total scheduled: roughly 9 weeks**, of which the honest split is about 1.5 weeks of configuration and wiring (init scripts, compose, Apple parity, env plumbing, allowlist loading) and 7.5 weeks of real work (chunker, sync, lease, retrieval, fencing, controls, tests). Two things the estimate omits, in `task-dispatcher.md` 15.1's spirit: somebody must own the service-account key and the GitHub token in production, the same unresolved secrets conversation `agent-drive.md` section 9 names; and the first full sync of a large Drive is hours of wall clock against API quotas, which is an operational afternoon, not code.
+**Total scheduled: roughly 10 weeks (9 plus the MCP surface)**, of which the honest split is about 1.5 weeks of configuration and wiring (init scripts, compose, Apple parity, env plumbing, allowlist loading) and 7.5 weeks of real work (chunker, sync, lease, retrieval, fencing, controls, tests). Two things the estimate omits, in `task-dispatcher.md` 15.1's spirit: somebody must own the service-account key and the GitHub token in production, the same unresolved secrets conversation `agent-drive.md` section 9 names; and the first full sync of a large Drive is hours of wall clock against API quotas, which is an operational afternoon, not code.
 
 ---
 
