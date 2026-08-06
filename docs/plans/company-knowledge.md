@@ -386,6 +386,22 @@ Per call: `max_results` clamped to `search_max_results` (default 5, hard cap 8) 
 
 There is no list endpoint for agents, no wildcard query, no paging cursor on search, and `query` under `query_min_chars` (3) or over `query_max_chars` (500) is refused typed. An agent reaches the corpus only through ranked search, k-capped. The reason is written here so it survives feature pressure: **wholesale export is exfiltration shaped like a feature.** A `list_documents` tool plus a loop is the whole corpus in a transcript in an afternoon, defeating every ceiling above one page at a time; and the secondary reason is quality, because FTS rank over an empty or two-character query is noise (K6 measures the trgm threshold that backstops short queries). A whole-document fetch tool is likewise out of scope in slice one; section 13 names the refusal and the condition under which it could return as its own operation with its own plan.
 
+### 8.4.1 "What changed", bounded, is not enumeration
+
+The operator's ask was knowing what is *going on*, and ranked search only answers
+what *is*. The third verb is recency, and it gets its own narrow shape rather
+than a loosened search: `company_knowledge_recent(days, max_results)` - `days`
+capped at `recent_window_days_max` (14), results capped by the same per-call
+ceiling, returning the same fenced snippet heads with `modified_at` sort, newest
+first, no cursor. Why this is not the enumeration 8.4 refuses, written down: the
+window and the k-cap bound it to "one page of what moved this fortnight", it
+cannot be paged, and repeating the call returns the same page - a loop gains
+nothing. The quality argument inverts here too: rank over an empty query is
+noise, but `modified_at` over a date window is exact. Same operation, same
+metering, same fencing; one more tool name on both surfaces, and the README's
+qualified-name list grows by one line. An agent brief can now honestly say
+"check what changed before answering what stands".
+
 ### 8.5 The tool, the fencing, and what controls see
 
 `sdks/python/src/agent_control/integrations/google_adk/knowledge_tools.py`, following `progress_tools.py`: a plain function tool reading the session-bound runtime token from seeded state (A1 holds, `spike-findings.md`), calling the endpoint, and rendering:
