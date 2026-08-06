@@ -62,10 +62,52 @@ def resolve_ui_asset_path(ui_dist_dir: Path, request_path: str) -> Path | None:
     if direct_candidate.name and "." in direct_candidate.name:
         return None
 
+    dynamic_candidate = _resolve_dynamic_route(ui_dist_dir, relative_path.parts)
+    if dynamic_candidate is not None:
+        return dynamic_candidate
+
     fallback_entrypoint = ui_dist_dir / "index.html"
     if fallback_entrypoint.is_file():
         return fallback_entrypoint
 
+    return None
+
+
+def _resolve_dynamic_route(ui_dist_dir: Path, parts: tuple[str, ...]) -> Path | None:
+    """Map a concrete URL onto the export's ``[param]`` shell, if one fits.
+
+    A statically exported dynamic route ships one HTML shell under a literal
+    bracket directory - ``teams/[slug]/index.html`` here - and expects the
+    server to route every concrete sibling (``/teams/engineering``) onto it;
+    the client reads the real value back off ``location``. Without this, an
+    unknown slug fell through to the root ``index.html``, which boots the home
+    page and turns every refresh of a team page into a bounce to the start.
+
+    Resolution is per segment, exactly as the pages router matches: descend
+    into a real directory when one matches, otherwise into a bracket directory
+    when the level has exactly one - two would be an ambiguity the router
+    itself would not allow. No catch-all (``[...param]``) handling, because the
+    export contains none; if one is ever added this returns None for it and
+    the root fallback makes the breakage visible rather than half-working.
+    """
+    current = ui_dist_dir
+    for part in parts:
+        descended = current / part
+        if descended.is_dir():
+            current = descended
+            continue
+        brackets = [
+            entry
+            for entry in current.iterdir()
+            if entry.is_dir() and entry.name.startswith("[") and entry.name.endswith("]")
+        ]
+        if len(brackets) != 1:
+            return None
+        current = brackets[0]
+
+    shell = current / "index.html"
+    if shell.is_file():
+        return shell
     return None
 
 
