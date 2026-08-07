@@ -86,6 +86,10 @@ RUNTIME_TOKEN_BOUND_OPERATIONS: tuple[Operation, ...] = (
     # rather than a check the endpoint has to remember to make.
     Operation.AGENT_NUDGES_CONSUME,
     Operation.AGENT_PLANS_WRITE,
+    # The machine-side read, same binding for the same reason. A search is
+    # metered per session, and a token that names its own session is the only
+    # thing that makes the meter's key unforgeable.
+    Operation.COMPANY_KNOWLEDGE_SEARCH,
 )
 """Operations the runtime-auth mode owns, instead of the default authorizer."""
 

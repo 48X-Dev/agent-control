@@ -141,6 +141,18 @@ class Operation(StrEnum):
     # namespace. See ``auth_framework.config`` for the wiring.
     AGENT_NUDGES_CONSUME = "agent_nudges.consume"
     AGENT_PLANS_WRITE = "agent_plans.write"
+    # Reading the company-knowledge mirror. Machine-side like the two above:
+    # an agent asks through a session-bound runtime token, never with a key
+    # that would be valid for every session in the namespace.
+    COMPANY_KNOWLEDGE_SEARCH = "company_knowledge.search"
+
+    # The oversight half, and the only one a human uses. Separate from the
+    # operation above rather than folded into it, because a console reaching
+    # the corpus under ``company_knowledge.search`` would be a browser holding
+    # the machine-side credential and every ceiling attached to it. It carries
+    # the console's Knowledge panel today; the per-source status endpoint the
+    # name suggests is a later phase and joins this same operation.
+    COMPANY_KNOWLEDGE_STATUS = "company_knowledge.status"
 
 
 @dataclass(frozen=True)

@@ -99,6 +99,33 @@ services:
       # entry is refused.
       AGENT_CONTROL_LINEAR_WRITE_ENABLED: ${AGENT_CONTROL_LINEAR_WRITE_ENABLED:-false}
       AGENT_CONTROL_LINEAR_CONSOLE_BASE_URL: ${AGENT_CONTROL_LINEAR_CONSOLE_BASE_URL:-}
+      # Company knowledge, read side. Off by default; while off, nothing here
+      # touches the corpus database and every search answers a stated
+      # `knowledge_disabled` refusal. The routes are registered either way, so
+      # a stack that never enabled this still serves the same OpenAPI spec.
+      #
+      # The DSN is passed through rather than composed here, and that is the
+      # difference between a signal and a lie. This file starts no
+      # knowledge-db-init: the corpus lives in its own database that something
+      # else has to create (docker-compose.dev.yml, scripts/apple-container-up.sh,
+      # or server/scripts/knowledge_db_init.sql by hand). A URL hardcoded here
+      # would name a database this stack never made, so enabling the feature
+      # without provisioning it would refuse every search with no startup line
+      # at all - and every stack that never wanted knowledge would log the
+      # configured-but-disabled line on every boot. Unset, the off state is
+      # silent and the enabled-with-no-DSN state says so by name.
+      #
+      # When you do set it, it is the knowledge_read role - SELECT and nothing
+      # else, from server/scripts/knowledge_db_init.sql - and deliberately not
+      # the control-plane credential and not the sync's. Inside this network
+      # the host is `postgres`, not localhost.
+      AGENT_CONTROL_KNOWLEDGE_ENABLED: ${AGENT_CONTROL_KNOWLEDGE_ENABLED:-false}
+      AGENT_CONTROL_KNOWLEDGE_DB_URL: ${AGENT_CONTROL_KNOWLEDGE_DB_URL:-}
+      AGENT_CONTROL_KNOWLEDGE_SEARCH_MAX_RESULTS: ${AGENT_CONTROL_KNOWLEDGE_SEARCH_MAX_RESULTS:-5}
+      AGENT_CONTROL_KNOWLEDGE_SNIPPET_MAX_CHARS: ${AGENT_CONTROL_KNOWLEDGE_SNIPPET_MAX_CHARS:-1200}
+      AGENT_CONTROL_KNOWLEDGE_SEARCHES_PER_MINUTE: ${AGENT_CONTROL_KNOWLEDGE_SEARCHES_PER_MINUTE:-6}
+      AGENT_CONTROL_KNOWLEDGE_STALENESS_WARN_SECONDS: ${AGENT_CONTROL_KNOWLEDGE_STALENESS_WARN_SECONDS:-86400}
+      AGENT_CONTROL_KNOWLEDGE_RECENT_WINDOW_DAYS_MAX: ${AGENT_CONTROL_KNOWLEDGE_RECENT_WINDOW_DAYS_MAX:-14}
     depends_on:
       postgres:
         condition: service_healthy

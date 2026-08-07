@@ -2,6 +2,14 @@ SHELL := /bin/bash
 
 ALEMBIC := uv run --with alembic alembic -c alembic.ini
 
+# The corpus database is a second database with a second schema owner, so it
+# gets a second config and a second script directory. AGENT_KNOWLEDGE_DB_URL
+# must be the knowledge_sync DSN: these migrations create tables, and the role
+# the server reads with holds SELECT only.
+KNOWLEDGE_ALEMBIC := uv run --with alembic alembic -c knowledge_alembic.ini
+KNOWLEDGE_UP ?= head
+KNOWLEDGE_DOWN ?= -1
+
 MSG ?= update
 UP ?= head
 DOWN ?= -1
@@ -15,7 +23,7 @@ AGENT_CONTROL_DOCKER_COMPOSE_PROJECT_NAME ?= $(notdir $(or $(PWD),$(CURDIR)))-de
 
 TEST_DB ?= agent_control_test
 TEST_DB_ENV := env -u AGENT_CONTROL_DB_URL -u DATABASE_URL -u DB_URL AGENT_CONTROL_DB_HOST=localhost AGENT_CONTROL_DB_PORT=5432 AGENT_CONTROL_DB_USER=agent_control AGENT_CONTROL_DB_PASSWORD=agent_control AGENT_CONTROL_DB_DATABASE=$(TEST_DB) AGENT_CONTROL_DB_DRIVER=psycopg
-.PHONY: help run start-dependencies test migrate alembic-migrate alembic-revision alembic-upgrade alembic-downgrade alembic-current alembic-history alembic-heads alembic-show alembic-stamp
+.PHONY: help run start-dependencies test migrate alembic-migrate alembic-revision alembic-upgrade alembic-downgrade alembic-current alembic-history alembic-heads alembic-show alembic-stamp knowledge-migrate knowledge-downgrade knowledge-current knowledge-history
 
 help:
 	@echo "Available targets:"
@@ -32,6 +40,21 @@ help:
 	@echo "  alembic-heads                  - show heads"
 	@echo "  alembic-show SHOW=<rev>        - show revision detail"
 	@echo "  alembic-stamp STAMP=<rev>      - set head without running migrations"
+	@echo "  knowledge-migrate              - migrate agent_knowledge (needs AGENT_KNOWLEDGE_DB_URL)"
+	@echo "  knowledge-downgrade KNOWLEDGE_DOWN=-1"
+	@echo "  knowledge-current | knowledge-history"
+
+knowledge-migrate:
+	$(KNOWLEDGE_ALEMBIC) upgrade $(KNOWLEDGE_UP)
+
+knowledge-downgrade:
+	$(KNOWLEDGE_ALEMBIC) downgrade $(KNOWLEDGE_DOWN)
+
+knowledge-current:
+	$(KNOWLEDGE_ALEMBIC) current
+
+knowledge-history:
+	$(KNOWLEDGE_ALEMBIC) history
 
 migrate:
 	@echo "Running database migrations..."

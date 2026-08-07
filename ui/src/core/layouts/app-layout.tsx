@@ -12,6 +12,7 @@ import {
   IconBook,
   IconChevronRight,
   IconHexagons,
+  IconLibrary,
   IconMoon,
   IconSun,
   IconUsersGroup,
@@ -245,6 +246,20 @@ export function AppLayout({ children }: AppLayoutProps) {
                 }
                 label="Teams"
                 active={router.pathname.startsWith('/teams')}
+                onClick={closeNavbar}
+              />
+
+              <NavItem
+                href="/knowledge"
+                icon={
+                  <IconLibrary
+                    color="var(--jds-color-muted-foreground)"
+                    size={18}
+                    stroke={2}
+                  />
+                }
+                label="Knowledge"
+                active={router.pathname.startsWith('/knowledge')}
                 onClick={closeNavbar}
               />
 

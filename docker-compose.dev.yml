@@ -82,5 +82,46 @@ services:
         -f /adk_db_init.sql
     restart: "no"
 
+  # One-shot provisioning for the company-knowledge corpus, beside adk-db-init
+  # and for the same reasons: a named volume means /docker-entrypoint-initdb.d
+  # never runs, pg_dump does not carry database-level privileges, and
+  # CREATE DATABASE cannot live in a migration. Idempotent, so it runs on every
+  # `up`.
+  #
+  # It creates agent_knowledge owned by `knowledge_sync`, a `knowledge_read`
+  # role holding SELECT and nothing else, and closes the control-plane database
+  # to both. The sync process parses hostile bytes from any document in the
+  # mirror; if it connected as `agent_control` it could rewrite the controls
+  # that govern the agents doing the asking.
+  knowledge-db-init:
+    image: postgres:16-alpine
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: "${AGENT_CONTROL_POSTGRES_PASSWORD:-agent_control}"
+      KNOWLEDGE_DB_PASSWORD: "${KNOWLEDGE_DB_PASSWORD:-knowledge_local}"
+      KNOWLEDGE_READ_DB_PASSWORD: "${KNOWLEDGE_READ_DB_PASSWORD:-knowledge_read_local}"
+    volumes:
+      - ./server/scripts/knowledge_db_init.sql:/knowledge_db_init.sql:ro
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      # Second run closes the local pytest database, exactly as adk-db-init
+      # does. It is created by server/tests/conftest.py rather than by compose,
+      # so it may not exist; the script skips a missing control database and
+      # exits 0.
+      - >
+        psql -v ON_ERROR_STOP=1 -h postgres -U agent_control -d postgres
+        -v knowledge_sync_password="$${KNOWLEDGE_DB_PASSWORD}"
+        -v knowledge_read_password="$${KNOWLEDGE_READ_DB_PASSWORD}"
+        -f /knowledge_db_init.sql
+        &&
+        psql -v ON_ERROR_STOP=1 -h postgres -U agent_control -d postgres
+        -v knowledge_sync_password="$${KNOWLEDGE_DB_PASSWORD}"
+        -v knowledge_read_password="$${KNOWLEDGE_READ_DB_PASSWORD}"
+        -v control_db=agent_control_test
+        -f /knowledge_db_init.sql
+    restart: "no"
+
 volumes:
   pgdata:

@@ -10,6 +10,10 @@ from typing import Any
 
 import httpx
 from agent_control import Agent, AgentControlClient, agents, controls
+from agent_control.integrations.google_adk.knowledge_controls import (
+    KNOWLEDGE_CONTROLS,
+    OBSERVE_REFUSAL,
+)
 
 AGENT_NAME = "google-adk-plugin"
 SERVER_URL = os.getenv("AGENT_CONTROL_URL", "http://localhost:8000")
@@ -97,6 +101,18 @@ def _control_specs(execution: str) -> list[tuple[str, dict[str, Any]]]:
     ]
 
 
+def _knowledge_control_specs() -> list[tuple[str, dict[str, Any]]]:
+    """The shipped knowledge controls, when the knowledge tools are attached.
+
+    Nothing to create when the tools are off: a control scoped to a step name
+    no agent carries is a row that looks like coverage and is not.
+    """
+    raw = os.getenv("AGENT_CONTROL_KNOWLEDGE_TOOLS", "0").strip().lower()
+    if raw not in {"1", "true", "on", "yes"}:
+        return []
+    return [(name, dict(data)) for name, data in KNOWLEDGE_CONTROLS.items()]
+
+
 async def _ensure_control(
     client: AgentControlClient,
     name: str,
@@ -136,6 +152,16 @@ async def main(execution: str) -> None:
             control_id = await _ensure_control(client, control_name, control_data)
             control_ids.append(control_id)
             print(f"Prepared control: {control_name} ({control_id}) [{execution}]")
+
+        # The knowledge controls follow the tools. Created only when the tools
+        # are on, and only the observe one is attached: the other two are
+        # examples an operator turns on knowingly, and a deny nobody asked for
+        # is a deny somebody deletes rather than reads.
+        for control_name, control_data in _knowledge_control_specs():
+            control_id = await _ensure_control(client, control_name, control_data)
+            print(f"Prepared control: {control_name} ({control_id}) [server]")
+            if control_name == OBSERVE_REFUSAL:
+                control_ids.append(control_id)
 
         for control_id in control_ids:
             try:

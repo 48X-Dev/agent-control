@@ -166,6 +166,21 @@ DEFAULT_OPERATION_ACCESS: dict[Operation, AccessLevel] = {
     # operation has no such scoping by construction - reaching every session in
     # the namespace is the whole point - so the tier is what bounds it.
     Operation.AGENT_HALTS_WRITE_ALL: AccessLevel.ADMIN,
+    # Knowledge search is ADMIN here on the AGENT_NUDGES_CONSUME precedent and
+    # for its exact reason. The real grant is SESSION_TOKEN_SCOPES: an executor
+    # searches with a token bound to one session, short-lived and target-bound.
+    # This entry is only the fallback for a deployment with no runtime secret,
+    # and there the window has no verified binding to key on, so it falls back
+    # to one bucket for the namespace and this tier fails closed beside it.
+    Operation.COMPANY_KNOWLEDGE_SEARCH: AccessLevel.ADMIN,
+    # The oversight path, same tier as AGENT_TASKS_READ and for its reason: it
+    # is how a human sees whether the mirror is current and what is in it, and
+    # putting that behind ADMIN would mean watching the corpus required a key
+    # that also carries ``controls.create``. It does reach snippet text through
+    # the console panel, which is a wider grant than counters alone and is the
+    # same reach section 9 of the plan already gives every agent in the
+    # namespace - the allowlist is the security boundary, not the read path.
+    Operation.COMPANY_KNOWLEDGE_STATUS: AccessLevel.AUTHENTICATED,
 }
 
 

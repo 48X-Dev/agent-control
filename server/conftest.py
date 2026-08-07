@@ -206,6 +206,7 @@ with _scrubbed_environment():
         _config.linear_settings,
         _config.executor_settings,
         _config.model_settings,
+        _config.knowledge_settings,
         # After ``executor_settings``: the lease refusal on ``DispatchSettings``
         # reads the turn timeout off it, so it has to be back at its default
         # before this one is rebuilt.

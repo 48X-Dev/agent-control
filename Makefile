@@ -1,4 +1,4 @@
-.PHONY: help sync openapi-spec openapi-spec-check test test-extras test-all contrib-verify scripts-test models-test test-models test-sdk lint lint-fix typecheck check build build-models build-server build-sdk publish publish-models publish-server publish-sdk hooks-install hooks-uninstall prepush evaluators-test evaluators-lint evaluators-lint-fix evaluators-typecheck evaluators-build contrib-test contrib-lint contrib-lint-fix contrib-typecheck contrib-build sdk-ts-generate sdk-ts-overlay-test sdk-ts-name-check sdk-ts-generate-check sdk-ts-build sdk-ts-test sdk-ts-lint sdk-ts-typecheck sdk-ts-release-check sdk-ts-publish-dry-run sdk-ts-publish telemetry-test telemetry-lint telemetry-lint-fix telemetry-typecheck telemetry-build telemetry-publish
+.PHONY: help sync openapi-spec openapi-spec-check test test-extras test-all contrib-verify scripts-test models-test dispatcher-test test-models test-sdk lint lint-fix typecheck check build build-models build-server build-sdk publish publish-models publish-server publish-sdk hooks-install hooks-uninstall prepush evaluators-test evaluators-lint evaluators-lint-fix evaluators-typecheck evaluators-build contrib-test contrib-lint contrib-lint-fix contrib-typecheck contrib-build sdk-ts-generate sdk-ts-overlay-test sdk-ts-name-check sdk-ts-generate-check sdk-ts-build sdk-ts-test sdk-ts-lint sdk-ts-typecheck sdk-ts-release-check sdk-ts-publish-dry-run sdk-ts-publish telemetry-test telemetry-lint telemetry-lint-fix telemetry-typecheck telemetry-build telemetry-publish
 
 # Workspace package names
 PACK_MODELS := agent-control-models
@@ -7,6 +7,7 @@ PACK_SDK    := agent-control
 PACK_ENGINE := agent-control-engine
 PACK_TELEMETRY := agent-control-telemetry
 PACK_EVALUATORS := agent-control-evaluators
+PACK_DISPATCHER := agent-control-dispatcher
 OPENAPI_SPEC_PATH := server/.generated/openapi.json
 
 # Directories
@@ -18,6 +19,7 @@ ENGINE_DIR := engine
 TELEMETRY_DIR := telemetry
 EVALUATORS_DIR := evaluators/builtin
 CONTRIB_DIR := evaluators/contrib
+DISPATCHER_DIR := dispatcher
 UI_DIR := ui
 
 define run-contrib-target
@@ -45,6 +47,7 @@ help:
 	@echo "  make contrib-verify  - verify root contrib packaging contract wiring"
 	@echo "  make scripts-test    - run root contrib packaging contract tests"
 	@echo "  make models-test     - run shared model tests with coverage"
+	@echo "  make dispatcher-test - run dispatcher tests with coverage"
 	@echo "  make test-extras     - run tests for all discovered contrib evaluators"
 	@echo "  make test-all        - alias for make test"
 	@echo "  make sdk-ts-test     - run TypeScript SDK tests"
@@ -94,7 +97,7 @@ openapi-spec-check: openapi-spec
 # Test
 # ---------------------------
 
-test: contrib-verify scripts-test models-test telemetry-test server-test engine-test sdk-test evaluators-test contrib-test
+test: contrib-verify scripts-test models-test telemetry-test server-test engine-test sdk-test evaluators-test dispatcher-test contrib-test
 
 contrib-verify:
 	uv run python scripts/contrib_packages.py verify
@@ -109,6 +112,13 @@ test-models: models-test
 
 telemetry-test:
 	$(MAKE) -C $(TELEMETRY_DIR) test
+
+# The dispatcher is a workspace member whose suite nothing ran. That mattered
+# once `serve` landed: several of its tests are proofs by absence - that the
+# loop never reaches the import route, never names a scope - and a proof that
+# does not run on every change is a comment.
+dispatcher-test:
+	cd $(DISPATCHER_DIR) && uv run pytest --cov=src --cov-report=xml:../coverage-dispatcher.xml -q
 
 # Run tests for discovered contrib evaluators
 test-extras: contrib-test
@@ -127,16 +137,19 @@ lint: engine-lint telemetry-lint evaluators-lint contrib-lint
 	uv run --package $(PACK_MODELS) ruff check --config pyproject.toml models/src
 	uv run --package $(PACK_SERVER) ruff check --config pyproject.toml server/src
 	uv run --package $(PACK_SDK) ruff check --config pyproject.toml sdks/python/src
+	uv run --package $(PACK_DISPATCHER) ruff check --config pyproject.toml dispatcher/src dispatcher/tests
 
 lint-fix: engine-lint-fix telemetry-lint-fix evaluators-lint-fix contrib-lint-fix
 	uv run --package $(PACK_MODELS) ruff check --config pyproject.toml --fix models/src
 	uv run --package $(PACK_SERVER) ruff check --config pyproject.toml --fix server/src
 	uv run --package $(PACK_SDK) ruff check --config pyproject.toml --fix sdks/python/src
+	uv run --package $(PACK_DISPATCHER) ruff check --config pyproject.toml --fix dispatcher/src dispatcher/tests
 
 typecheck: engine-typecheck telemetry-typecheck evaluators-typecheck contrib-typecheck
 	uv run --package $(PACK_MODELS) mypy --config-file pyproject.toml models/src
 	uv run --package $(PACK_SERVER) mypy --config-file pyproject.toml server/src
 	uv run --package $(PACK_SDK) mypy --config-file pyproject.toml sdks/python/src
+	uv run --package $(PACK_DISPATCHER) mypy --config-file pyproject.toml dispatcher/src
 
 telemetry-lint:
 	$(MAKE) -C $(TELEMETRY_DIR) lint

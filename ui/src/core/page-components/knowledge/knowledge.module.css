@@ -1,0 +1,41 @@
+/* The Knowledge panel. Corpus text renders here, so nothing in this file may
+   assume the text is safe to treat as anything but characters. */
+
+.result {
+  padding: var(--mantine-spacing-sm) var(--mantine-spacing-md);
+  border: 1px solid var(--jds-color-border);
+  border-radius: var(--mantine-radius-sm);
+  background-color: var(--mantine-color-white);
+}
+
+[data-mantine-color-scheme='dark'] .result {
+  background-color: var(--mantine-color-dark-7);
+  border-color: var(--mantine-color-dark-4);
+}
+
+/* A document nobody in the workspace wrote, or one the sync could not
+   attribute. Marked so a reader weighs it differently, never hidden. */
+.resultExternal {
+  border-left: 3px solid var(--mantine-color-yellow-5);
+}
+
+/* Corpus text, verbatim and wrapped. This is the string an attacker would
+   choose, so it is a text node inside a plain element and stays one. */
+.snippet {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: var(--mantine-font-family-monospace);
+  font-size: var(--mantine-font-size-xs);
+  line-height: 1.5;
+}
+
+.path {
+  font-family: var(--mantine-font-family-monospace);
+  font-size: var(--mantine-font-size-xs);
+  overflow-wrap: anywhere;
+}
+
+.strip {
+  padding-top: var(--mantine-spacing-sm);
+  border-top: 1px solid var(--jds-color-border);
+}

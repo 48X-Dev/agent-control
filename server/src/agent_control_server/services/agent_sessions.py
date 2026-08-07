@@ -105,11 +105,18 @@ in its path.
 SESSION_TOKEN_SCOPES: tuple[str, ...] = (
     Operation.AGENT_NUDGES_CONSUME.value,
     Operation.AGENT_PLANS_WRITE.value,
+    Operation.COMPANY_KNOWLEDGE_SEARCH.value,
 )
 """What the executor may do with its session token: drain nudges written for
-this session, and report progress on this session. Notably not ``runtime.use``,
-so this token cannot be used for control resolution, and not anything that
-reads another session."""
+this session, report progress on this session, and read the company-knowledge
+mirror. Notably not ``runtime.use``, so this token cannot be used for control
+resolution, and not anything that reads another session.
+
+The third member is a read against a database this token's holder cannot write
+and the control plane itself only reads. It is here rather than on an API key
+because the per-session search ceiling has to be keyed on something a caller
+cannot pick, and because a long-lived key handed to every agent process would
+make one agent's runaway loop spend every other agent's allowance."""
 
 _HEALTH_PROBE_LIMIT = 25
 """Ceiling on executors probed by one health call. A namespace with more agents

@@ -163,6 +163,47 @@ from .halts import (
     ListHaltsResponse,
 )
 from .health import HealthResponse
+from .knowledge import (
+    CHUNK_MAX_CHARS,
+    CHUNK_MIN_CHARS,
+    HEADING_PATH_SEPARATOR,
+    Chunk,
+    KnowledgeRefusalCode,
+    ScrubbedChunks,
+    ScrubResult,
+    chunk_and_scrub,
+    chunk_markdown,
+    is_secret_filename,
+    normalize_index_name,
+    normalize_index_path,
+    scrub_chunk,
+)
+from .knowledge_render import (
+    HEADER_FIELD_MAX_CHARS,
+    empty_sentence,
+    neutralize,
+    neutralize_header_field,
+    refusal_sentence,
+    render_results,
+    staleness_sentence,
+    truncate_snippet,
+)
+from .knowledge_render import (
+    PREAMBLE as KNOWLEDGE_PREAMBLE,
+)
+from .knowledge_render import (
+    TRUNCATION_MARKER as KNOWLEDGE_TRUNCATION_MARKER,
+)
+from .knowledge_search import (
+    MAX_RESULTS_REQUEST_CEILING,
+    QUERY_MAX_CHARS,
+    QUERY_MIN_CHARS,
+    KnowledgeCorpus,
+    KnowledgeRecentRequest,
+    KnowledgeSearchRequest,
+    KnowledgeSearchResponse,
+    KnowledgeSnippet,
+)
 from .linear import (
     LINEAR_TEAM_KEY_MAX_LENGTH,
     LINEAR_TEAM_KEY_PATTERN,
@@ -417,6 +458,39 @@ __all__ = [
     "is_mime_mismatch",
     "normalize_display_name",
     "sniff_mime",
+    # Company knowledge, index time
+    "CHUNK_MAX_CHARS",
+    "CHUNK_MIN_CHARS",
+    "HEADING_PATH_SEPARATOR",
+    "Chunk",
+    "KnowledgeRefusalCode",
+    "ScrubResult",
+    "ScrubbedChunks",
+    "chunk_and_scrub",
+    "chunk_markdown",
+    "is_secret_filename",
+    "normalize_index_name",
+    "normalize_index_path",
+    "scrub_chunk",
+    # Company knowledge, retrieval time
+    "HEADER_FIELD_MAX_CHARS",
+    "KNOWLEDGE_PREAMBLE",
+    "KNOWLEDGE_TRUNCATION_MARKER",
+    "MAX_RESULTS_REQUEST_CEILING",
+    "QUERY_MAX_CHARS",
+    "QUERY_MIN_CHARS",
+    "KnowledgeCorpus",
+    "KnowledgeRecentRequest",
+    "KnowledgeSearchRequest",
+    "KnowledgeSearchResponse",
+    "KnowledgeSnippet",
+    "empty_sentence",
+    "neutralize",
+    "neutralize_header_field",
+    "refusal_sentence",
+    "render_results",
+    "staleness_sentence",
+    "truncate_snippet",
     # Health
     "HealthResponse",
     # Agent

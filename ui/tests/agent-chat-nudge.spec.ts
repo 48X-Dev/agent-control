@@ -38,9 +38,14 @@ test.describe('Agent chat: nudging the agent', () => {
       .fill('  Check the invoice total first.  ');
     await mockedPage.getByTestId('chat-nudge-send').click();
 
-    expect(chat.nudgesQueued).toEqual([
-      { sessionKey: SESSION, body: 'Check the invoice total first.' },
-    ]);
+    // Polled, not read once: the click starts a request and this assertion is
+    // about what that request carried, so reading the recorder on the very
+    // next tick is a race the assertion loses whenever the suite is busy.
+    await expect
+      .poll(() => chat.nudgesQueued)
+      .toEqual([
+        { sessionKey: SESSION, body: 'Check the invoice total first.' },
+      ]);
     // The composer empties, so the next nudge is not the previous one again.
     await expect(mockedPage.getByTestId('chat-nudge-input')).toHaveValue('');
   });
@@ -95,9 +100,9 @@ test.describe('Agent chat: nudging the agent', () => {
 
     await mockedPage.getByTestId('chat-nudge-cancel').click();
 
-    expect(chat.nudgesCancelled).toEqual([
-      { sessionKey: SESSION, nudgeId: 42 },
-    ]);
+    await expect
+      .poll(() => chat.nudgesCancelled)
+      .toEqual([{ sessionKey: SESSION, nudgeId: 42 }]);
     await expect(mockedPage.getByTestId('chat-queued-nudge')).toHaveAttribute(
       'data-nudge-status',
       'cancelled'
