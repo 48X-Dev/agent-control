@@ -184,6 +184,55 @@ an empty tool list for that turn; the same guard covers a toolset that cannot
 be constructed at all, such as an install without the ADK extension. Without
 it a down server raises out of tool discovery and fails the whole turn.
 
+## Company knowledge, and why it is off by default
+
+Two more tools, `company_knowledge_search` and `company_knowledge_recent`, read
+a mirror of the company's own documents. They are attached only when you ask
+for them:
+
+```bash
+AGENT_CONTROL_KNOWLEDGE_TOOLS=1 uv run adk run my_agent
+```
+
+The default is the decision, not laziness. This example ships the Exa web tools
+on, and retrieval beside a free-form outbound tool is an **egress pair**: an
+instruction hidden inside a company document can make the agent search for a
+snippet and then put that snippet into a web query or a fetch URL, at which
+point corpus text has left the building through a destination somebody else
+chose. No new capability is needed for that - the pair exists the moment both
+are attached. So attaching both is something you do knowingly, and the honest
+runbook rule for a sensitive corpus is: do not co-provision, or index less.
+
+What holds the line if you do attach both, strongest first: not attaching both;
+a pre-stage control on the web tools' `input`, which sees the argument as
+composed and is the same shape as the live `block-ssn` control; and the shipped
+`knowledge-deny-fence-in-web-args` tripwire, which catches a whole fenced block
+pasted into a web argument and nothing subtler than that. A model that
+paraphrases walks straight past it.
+
+**The names to scope controls to are `root_agent.company_knowledge_search` and
+`root_agent.company_knowledge_recent`**, exactly as for the web tools above,
+and for the same reason: the bare name matches nothing, warns about nothing,
+and the tool runs. Three control definitions ship in valid schema at
+`sdks/python/src/agent_control/integrations/google_adk/knowledge_controls.py` -
+an observe control on refusals meant to be bound, plus the external-author deny
+and the egress tripwire as examples. The external-author one selects the whole
+`output` object rather than the bare count: pointed at a scalar, the `json`
+evaluator answers "unsupported data type", `allow_invalid_json` defaults to
+false, and the control then denies every search including a perfectly clean
+one.
+
+What the tools return is a dict carrying `text` (the fenced results), plus
+`result_count`, `external_author_count`, `stale_seconds` and `refusal_code`.
+Post-stage controls select `output.text` for content regexes, `output` for the
+`json` evaluator and `output.refusal_code` for the observe control. Snippet
+text is fenced as DATA with a standing warning, and any fence marker or
+`[agent-control:` marker a document authored itself arrives neutralized.
+
+If the server has no knowledge database - which is most deployments - the tools
+answer a stated refusal, the model is told it could not check, and the turn
+carries on. Nothing here fails a turn.
+
 ## Run
 
 ```bash

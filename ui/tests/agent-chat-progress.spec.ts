@@ -45,7 +45,10 @@ function plan(overrides: Partial<Plan> = {}): Plan {
   };
 }
 
-function marked(statuses: PlanStepStatus[], at = new Date().toISOString()): Plan {
+function marked(
+  statuses: PlanStepStatus[],
+  at = new Date().toISOString()
+): Plan {
   return plan({
     steps: statuses.map((status, index) =>
       step({ index, title: `Step ${index}`, status, updated_at: at })
@@ -110,7 +113,9 @@ test.describe('Agent chat: the progress rail', () => {
   test('a declared plan is rendered as the agent worded it, under its own label', async ({
     mockedPage,
   }) => {
-    await mockRoutes.agentSessions(mockedPage, { plans: { [SESSION]: plan() } });
+    await mockRoutes.agentSessions(mockedPage, {
+      plans: { [SESSION]: plan() },
+    });
     await mockedPage.goto(chatUrl);
 
     // The label is exact. Softening it to "Progress" would drop the author.
@@ -148,7 +153,10 @@ test.describe('Agent chat: the progress rail', () => {
       'active',
       'pending',
     ].entries()) {
-      await expect(steps.nth(index)).toHaveAttribute('data-step-status', status);
+      await expect(steps.nth(index)).toHaveAttribute(
+        'data-step-status',
+        status
+      );
     }
     const tally = mockedPage.getByTestId('chat-progress-tally');
     await expect(tally).toContainText('1 done');
@@ -211,7 +219,9 @@ test.describe('Agent chat: the progress rail', () => {
     const turn = gate();
     const chat = await mockRoutes.agentSessions(mockedPage, {
       turnGate: turn.promise,
-      plans: { [SESSION]: plan({ steps: [step({ title: 'The first idea' })] }) },
+      plans: {
+        [SESSION]: plan({ steps: [step({ title: 'The first idea' })] }),
+      },
     });
     await mockedPage.goto(chatUrl);
     await expect(mockedPage.getByTestId('chat-progress-step')).toContainText(
@@ -268,7 +278,9 @@ test.describe('Agent chat: the progress rail', () => {
   });
 
   test('a first plan says nothing about revisions', async ({ mockedPage }) => {
-    await mockRoutes.agentSessions(mockedPage, { plans: { [SESSION]: plan() } });
+    await mockRoutes.agentSessions(mockedPage, {
+      plans: { [SESSION]: plan() },
+    });
     await mockedPage.goto(chatUrl);
 
     await expect(mockedPage.getByTestId('chat-progress-step')).toHaveCount(3);
@@ -412,9 +424,13 @@ test.describe('Agent chat: reading the plan, and failing to', () => {
     await expect(mockedPage.getByTestId('chat-progress-step')).toHaveCount(3);
 
     await mockedPage.getByTestId('chat-session-switcher').click();
-    await mockedPage.getByRole('option', { name: /Onboarding checklist/ }).click();
+    await mockedPage
+      .getByRole('option', { name: /Onboarding checklist/ })
+      .click();
 
-    await expect(mockedPage.getByTestId('chat-progress-fallback')).toBeVisible();
+    await expect(
+      mockedPage.getByTestId('chat-progress-fallback')
+    ).toBeVisible();
     await expect(mockedPage.getByTestId('chat-progress-step')).toHaveCount(0);
   });
 });
@@ -480,7 +496,9 @@ test.describe('Agent chat: the rail in both colour schemes', () => {
     return locator.evaluate((element: HTMLElement) => {
       const relative = (colour: string) => {
         const parts = colour.match(/[\d.]+/g)?.map(Number) ?? [0, 0, 0];
-        return (0.2126 * parts[0] + 0.7152 * parts[1] + 0.0722 * parts[2]) / 255;
+        return (
+          (0.2126 * parts[0] + 0.7152 * parts[1] + 0.0722 * parts[2]) / 255
+        );
       };
       const style = getComputedStyle(element);
       return {

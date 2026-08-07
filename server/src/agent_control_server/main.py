@@ -22,7 +22,9 @@ from .config import (
     auth_settings,
     check_agent_config_startup_requirements,
     check_executor_startup_requirements,
+    check_knowledge_startup_state,
     executor_settings,
+    knowledge_settings,
     observability_settings,
     settings,
 )
@@ -40,11 +42,13 @@ from .endpoints.agent_tasks import router as agent_task_router
 from .endpoints.agent_workflows import router as agent_workflow_router
 from .endpoints.agents import router as agent_router
 from .endpoints.auth import router as auth_router
+from .endpoints.company_knowledge import router as company_knowledge_router
 from .endpoints.control_bindings import router as control_binding_router
 from .endpoints.controls import router as control_router
 from .endpoints.controls import template_router as control_template_router
 from .endpoints.evaluation import router as evaluation_router
 from .endpoints.evaluators import router as evaluator_router
+from .endpoints.knowledge import router as knowledge_router
 from .endpoints.observability import router as observability_router
 from .endpoints.policies import router as policy_router
 from .endpoints.system import router as system_router
@@ -202,6 +206,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             "AGENT_CONTROL_LINEAR_ATTACHMENTS_ENABLED=true if they should."
         )
 
+    # The knowledge corpus is a second database this server only reads, and it
+    # is absent on most deployments. Never a refusal to boot: with it off or
+    # unreachable the server starts normally and retrieval answers a stated
+    # refusal. What this does say out loud is the half-on state, where the
+    # feature is enabled with no DSN and every search would refuse in a way
+    # that is indistinguishable from an empty corpus.
+    check_knowledge_startup_state(knowledge_settings)
+
     # Install the request-auth provider selected by environment variables.
     from .auth_framework.config import configure_auth_from_env
 
@@ -274,6 +286,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     from .services.executor_factory import shutdown_executor_clients
 
     await shutdown_executor_clients()
+
+    # Shutdown: release the knowledge corpus pool. Also built on first use, so
+    # a deployment with the feature off never opened one.
+    from .knowledge.engine import dispose_knowledge_engine
+
+    await dispose_knowledge_engine()
 
     # Shutdown: let any background attachment conversion land, briefly. What it
     # would have written is a cache entry, so losing one costs a repeat rather
@@ -506,6 +524,26 @@ app.include_router(
 
 app.include_router(
     agent_halt_router,
+    prefix=api_v1_prefix,
+    dependencies=[Depends(get_api_key_from_header)],
+)
+
+# The company-knowledge reads, on the session path for the same reason the
+# nudge claim is: the token names the session and the verifier compares it
+# against this path. Registered unconditionally - a deployment with no corpus
+# answers a stated refusal rather than a 404, and the OpenAPI spec stays the
+# same shape everywhere.
+app.include_router(
+    knowledge_router,
+    prefix=api_v1_prefix,
+    dependencies=[Depends(get_api_key_from_header)],
+)
+
+# The same corpus for a human, on its own operation and its own meter. A
+# browser has no session key, so it cannot use the routes above at all - the
+# target-bound dependency refuses a credential with no binding.
+app.include_router(
+    company_knowledge_router,
     prefix=api_v1_prefix,
     dependencies=[Depends(get_api_key_from_header)],
 )

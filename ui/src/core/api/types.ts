@@ -1227,3 +1227,87 @@ export type RejectAgentTaskResponse = {
   task: AgentTaskSummary;
   writeback: AgentTaskWriteback;
 };
+
+// =============================================================================
+// Company knowledge
+//
+// Hand-written because these routes are not in the generated OpenAPI types
+// this file otherwise re-exports, and regenerating that file is a separate
+// change with a diff of its own. The shapes mirror
+// `agent_control_models.knowledge_search` field for field; the two counters
+// are required there and are required here for the same reason.
+// =============================================================================
+
+/** Why a search did not run. A closed set on the server, so a closed set here. */
+export type KnowledgeRefusalCode =
+  | 'query_too_short'
+  | 'query_too_long'
+  | 'rate_limited'
+  | 'knowledge_unavailable'
+  | 'knowledge_disabled'
+  | 'corpus_empty';
+
+/**
+ * One result.
+ *
+ * Every string here is corpus text: somebody wrote it in a document, and a
+ * filename is as attacker-choosable as a body. The server defuses the fence
+ * markers that would matter to a model; it does not escape markup, because
+ * escaping would corrupt the text an agent quotes. Rendering these as text
+ * nodes is what makes them inert in a browser, and it is not optional.
+ */
+export type KnowledgeSnippet = {
+  snippet: string;
+  path: string;
+  heading_path?: string | null;
+  title: string;
+  source_kind: string;
+  source_name: string;
+  /** 'workspace', 'external' or 'unknown'. 'unknown' is not 'safe'. */
+  author_kind: string;
+  modified_at?: string | null;
+  synced_at: string;
+};
+
+/**
+ * What the mirror says about itself, on every response including refusals.
+ *
+ * Which is why `measured` exists. The counters carry defaults so the block is
+ * never absent - a deny control selects the whole object and treats a missing
+ * key as a match - so a refusal raised before the store was opened arrives
+ * carrying zeros nobody counted. Optional here because a server one deploy
+ * behind will not send it, and a reader that assumes false in that case says
+ * less than it could rather than more than it knows.
+ */
+export type KnowledgeCorpus = {
+  documents: number;
+  sources: number;
+  sources_failing: number;
+  last_sync_at?: string | null;
+  /** Age of the oldest source's verification. Null when it cannot be computed. */
+  stale_seconds?: number | null;
+  /** Whether the counters above were read from the store, or are defaults. */
+  measured?: boolean;
+  /** This deployment's threshold for calling the mirror behind. Not a reading. */
+  staleness_warn_seconds?: number;
+};
+
+export type KnowledgeSearchResponse = {
+  results: KnowledgeSnippet[];
+  result_count: number;
+  external_author_count: number;
+  corpus: KnowledgeCorpus;
+  refusal_code?: KnowledgeRefusalCode | null;
+  /** Set only on rate_limited. */
+  retry_after_seconds?: number | null;
+};
+
+export type KnowledgeSearchRequest = {
+  query: string;
+  max_results?: number;
+};
+
+export type KnowledgeRecentRequest = {
+  days?: number;
+  max_results?: number;
+};

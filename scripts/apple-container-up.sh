@@ -90,6 +90,15 @@ container exec "$PG_NAME" pg_isready -U agent_control -d agent_control >/dev/nul
 container exec -i "$PG_NAME" psql -q -v ON_ERROR_STOP=1 -U agent_control -d postgres \
   -v adk_password="${ADK_DB_PASSWORD:-adk_local}" \
   -f /dev/stdin < server/scripts/adk_db_init.sql >/dev/null
+# The company-knowledge corpus, right after the ADK one and for identical
+# reasons: agent_knowledge owned by knowledge_sync, a knowledge_read role with
+# SELECT and nothing else, and the control plane closed to both. Parity between
+# the two runtimes is mandatory, not aspirational - a service that exists only
+# in compose does not exist on the machine this stack actually runs on.
+container exec -i "$PG_NAME" psql -q -v ON_ERROR_STOP=1 -U agent_control -d postgres \
+  -v knowledge_sync_password="${KNOWLEDGE_DB_PASSWORD:-knowledge_local}" \
+  -v knowledge_read_password="${KNOWLEDGE_READ_DB_PASSWORD:-knowledge_read_local}" \
+  -f /dev/stdin < server/scripts/knowledge_db_init.sql >/dev/null
 PG_IP=$(ip_of "$PG_NAME")
 echo "   up at $PG_IP (hardened)"
 
@@ -122,6 +131,13 @@ container run -d --name "$SERVER_NAME" --network "$NETWORK" -a arm64 \
   -e "AGENT_CONTROL_LINEAR_CACHE_TTL_SECONDS=${AGENT_CONTROL_LINEAR_CACHE_TTL_SECONDS:-60}" \
   -e "AGENT_CONTROL_LINEAR_WRITE_ENABLED=${AGENT_CONTROL_LINEAR_WRITE_ENABLED:-false}" \
   -e "AGENT_CONTROL_LINEAR_CONSOLE_BASE_URL=${AGENT_CONTROL_LINEAR_CONSOLE_BASE_URL:-}" \
+  -e "AGENT_CONTROL_KNOWLEDGE_ENABLED=${AGENT_CONTROL_KNOWLEDGE_ENABLED:-false}" \
+  -e "AGENT_CONTROL_KNOWLEDGE_DB_URL=postgresql+psycopg://knowledge_read:${KNOWLEDGE_READ_DB_PASSWORD:-knowledge_read_local}@${PG_IP}:5432/agent_knowledge" \
+  -e "AGENT_CONTROL_KNOWLEDGE_SEARCH_MAX_RESULTS=${AGENT_CONTROL_KNOWLEDGE_SEARCH_MAX_RESULTS:-5}" \
+  -e "AGENT_CONTROL_KNOWLEDGE_SNIPPET_MAX_CHARS=${AGENT_CONTROL_KNOWLEDGE_SNIPPET_MAX_CHARS:-1200}" \
+  -e "AGENT_CONTROL_KNOWLEDGE_SEARCHES_PER_MINUTE=${AGENT_CONTROL_KNOWLEDGE_SEARCHES_PER_MINUTE:-6}" \
+  -e "AGENT_CONTROL_KNOWLEDGE_STALENESS_WARN_SECONDS=${AGENT_CONTROL_KNOWLEDGE_STALENESS_WARN_SECONDS:-86400}" \
+  -e "AGENT_CONTROL_KNOWLEDGE_RECENT_WINDOW_DAYS_MAX=${AGENT_CONTROL_KNOWLEDGE_RECENT_WINDOW_DAYS_MAX:-14}" \
   agent-control-server:local >/dev/null
 fi
 SERVER_IP=$(ip_of "$SERVER_NAME")

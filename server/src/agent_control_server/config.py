@@ -873,6 +873,91 @@ def check_executor_startup_requirements(
         )
 
 
+class KnowledgeSettings(BaseSettings):
+    """What the control plane knows about the company-knowledge corpus.
+
+    Read-only, and off by default. The corpus lives in its own database owned
+    by a different process; everything here describes how this server reaches
+    it and what ceilings it enforces on the way back out.
+
+    Nothing in this class can start a sync, and nothing here holds a source
+    credential. The Drive service-account key and the GitHub token exist in
+    exactly one container's environment and it is not this one.
+
+    ``db_url`` is the ``knowledge_read`` DSN, which holds SELECT and nothing
+    else. It gets its own small engine rather than sharing the control plane's:
+    the knowledge database being down must not exhaust the pool that agent
+    turns depend on, so the failure is a typed refusal and the turn proceeds.
+    """
+
+    model_config = SettingsConfigDict(
+        **_COMMON_SETTINGS_CONFIG,
+        env_prefix="AGENT_CONTROL_KNOWLEDGE_",
+    )
+
+    enabled: bool = False
+    db_url: str | None = None
+
+    # Per call. The worst case is search_max_results x snippet_max_chars, and
+    # the hard cap on the first is what keeps that arithmetic honest against
+    # the 48,000-character delivery ceiling: one call cannot return even half of
+    # one converted deck, which is the whole contract this feature makes.
+    search_max_results: int = Field(default=5, ge=1, le=8)
+    snippet_max_chars: int = Field(default=1200, ge=200, le=4000)
+
+    # Per minute, per whatever the server verified about the caller: a bound
+    # session under the runtime-token path, a hashed key on the console path,
+    # and one bucket for the namespace when nothing was verified at all. In
+    # turn_quota.py's sliding-window shape and with its honesty note: the
+    # bucket is per process, so N replicas mean N times the allowance. Roughly
+    # right is the goal - this bounds a runaway search loop, it does not meter
+    # billing.
+    searches_per_minute: int = Field(default=6, ge=1)
+
+    # When the tool starts telling the model the mirror may be behind.
+    staleness_warn_seconds: int = Field(default=86400, ge=60)
+
+    # The recency verb's window ceiling. Capped in code as well as defaulted,
+    # because widening it turns "what moved this fortnight" into the corpus
+    # enumeration this design refuses.
+    recent_window_days_max: int = Field(default=14, ge=1, le=30)
+
+    pool_size: int = Field(default=2, ge=1, le=10)
+    connect_timeout_seconds: int = Field(default=5, ge=1)
+    statement_timeout_seconds: float = Field(default=10.0, ge=0)
+
+    def is_configured(self) -> bool:
+        """Whether searches can reach a corpus at all."""
+        return self.enabled and bool(self.db_url)
+
+
+def check_knowledge_startup_state(knowledge: "KnowledgeSettings") -> None:
+    """Log the half-on states by name. Never refuses to boot.
+
+    The exists-versus-reaches lesson, applied to a flag pair that would
+    otherwise fail silently: a server with the feature enabled and no DSN
+    answers every search with a refusal that looks exactly like an empty
+    corpus, and an operator debugging "search finds nothing" has no way to tell
+    which problem they have. It is not a refusal to start, because a server
+    with no knowledge database is a legitimate deployment - most of them.
+    """
+    if knowledge.enabled and not knowledge.db_url:
+        _config_logger.warning(
+            "Knowledge search is enabled but AGENT_CONTROL_KNOWLEDGE_DB_URL is "
+            "unset; every search will refuse knowledge_unavailable. Set it to "
+            "the knowledge_read DSN, or set "
+            "AGENT_CONTROL_KNOWLEDGE_ENABLED=false."
+        )
+        return
+    if knowledge.db_url and not knowledge.enabled:
+        _config_logger.info(
+            "A knowledge database is configured but "
+            "AGENT_CONTROL_KNOWLEDGE_ENABLED is false; the corpus is not "
+            "reachable from any agent and every search refuses "
+            "knowledge_disabled."
+        )
+
+
 class ModelSettings(BaseSettings):
     """The allowlist of models an agent may be configured to run on.
 
@@ -1066,5 +1151,6 @@ ui_settings = UISettings()
 linear_settings = LinearSettings()
 executor_settings = ExecutorSettings()
 model_settings = ModelSettings()
+knowledge_settings = KnowledgeSettings()
 # After ``executor_settings``: the lease refusal reads the turn timeout off it.
 dispatch_settings = DispatchSettings()

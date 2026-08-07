@@ -28,6 +28,9 @@ import type {
   ImportAgentTasksRequest,
   ImportAgentTasksResponse,
   InitAgentRequestBody,
+  KnowledgeRecentRequest,
+  KnowledgeSearchRequest,
+  KnowledgeSearchResponse,
   ListAgentConfigVersionsQueryParams,
   ListAgentConfigVersionsResponse,
   ListAgentModelsResponse,
@@ -774,6 +777,24 @@ export const api = {
   // a stop nobody can see is not a stop somebody presses twice.
   agentDispatch: {
     get: () => getJson<GetDispatchStateResponse>('/api/v1/agent-dispatch'),
+  },
+  // The console's own door into the company-knowledge mirror. The agents'
+  // routes hang off a session key and a runtime token; a browser has neither,
+  // so these are the separate surface at the oversight operation's tier.
+  //
+  // Both are POST because the query is a body, not a path: a search a person
+  // typed does not belong in a URL that lands in a proxy log.
+  companyKnowledge: {
+    search: (body: KnowledgeSearchRequest) =>
+      postJson<KnowledgeSearchResponse>(
+        '/api/v1/company-knowledge/search',
+        body
+      ),
+    recent: (body: KnowledgeRecentRequest) =>
+      postJson<KnowledgeSearchResponse>(
+        '/api/v1/company-knowledge/recent',
+        body
+      ),
   },
   observability: {
     getStats: (params: {

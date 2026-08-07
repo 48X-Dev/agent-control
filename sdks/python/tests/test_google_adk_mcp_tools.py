@@ -654,6 +654,42 @@ def test_example_omits_web_tools_when_opted_out(adk, monkeypatch, value):
     assert module._build_web_toolset() is None
 
 
+def test_example_leaves_the_knowledge_tools_off_until_asked(adk, monkeypatch):
+    """The egress pair is never a default, and this is where that is enforced.
+
+    This example ships the web tools on. Attaching retrieval beside them makes
+    a channel where an injected instruction can pull corpus text into a query
+    somebody else composed, so the pairing has to be an operator's written
+    decision rather than what happens when nobody chooses.
+    """
+    monkeypatch.delenv("AGENT_CONTROL_KNOWLEDGE_TOOLS", raising=False)
+
+    module = _load_example_agent(adk, monkeypatch, "example_agent_knowledge_default")
+
+    names = [getattr(tool, "__name__", "") for tool in module.root_agent.tools]
+    assert "company_knowledge_search" not in names
+    assert module._build_knowledge_tools() == []
+    assert "company_knowledge" not in module.root_agent.instruction
+
+
+@pytest.mark.parametrize("value", ["1", "true", "on", "yes", "TRUE", " On "])
+def test_example_attaches_both_knowledge_tools_when_asked(adk, monkeypatch, value):
+    monkeypatch.setenv("AGENT_CONTROL_KNOWLEDGE_TOOLS", value)
+    monkeypatch.setenv("AGENT_CONTROL_WEB_TOOLS", "0")
+
+    module = _load_example_agent(adk, monkeypatch, f"example_agent_kn_{abs(hash(value))}")
+
+    tools = module.root_agent.tools
+    assert [getattr(tool, "func", tool).__name__ for tool in tools[-2:]] == [
+        "company_knowledge_search",
+        "company_knowledge_recent",
+    ]
+    # The brief the model reads has to name the tools it now holds, or they sit
+    # there unused and the agent answers company questions from its weights.
+    assert "company_knowledge_search" in module.root_agent.instruction
+    assert "cite the path" in module.root_agent.instruction.lower()
+
+
 def test_example_needs_no_exa_credentials(adk, monkeypatch):
     """No key is configured, and a key in the environment is not picked up.
 
