@@ -1,21 +1,8 @@
 """Resolving a ZIP container to the Office document it actually holds.
 
-``agent_control_models.files.sniff_mime`` stops at ``application/zip`` on
-purpose, and its docstring forbids going further: it is shared with the SDK, so
-a parser added there ships inside the executor process. This module is the
-"somewhere with its own memory limit" that docstring points at. It runs
-server-side only, after the byte ceiling has already bounded the input.
-
-The refinement is structural, not a guess. An OOXML file is a ZIP carrying
-``[Content_Types].xml`` at the root plus exactly one of three well-known top
-level directories, and that directory is what names the kind. Reading the
-central directory does not decompress anything, so the classic
-decompression-bomb shape is not reachable from here.
-
-What bounds this is ``attachment_max_bytes`` upstream, not the entry cap below.
-``zipfile`` reads the whole central directory when it opens the archive, so the
-cap trims the scan and not the read; it is honest about being a scan bound. A
-twenty-megabyte archive cannot carry an unbounded number of entries.
+Structural, not a guess: an OOXML file is a ZIP carrying ``[Content_Types].xml``
+and one well-known root directory, and reading the central directory
+decompresses nothing. The byte ceiling upstream is what bounds the input.
 """
 
 from __future__ import annotations
@@ -44,9 +31,8 @@ _OOXML_SCAN_ENTRIES = 4096
 def refine_container_mime(data: bytes | None, sniffed: str | None) -> str | None:
     """Return the OOXML type a ZIP holds, or ``sniffed`` unchanged.
 
-    Total by construction. A malformed archive, a ZIP that is genuinely just a
-    ZIP, or anything that is not a ZIP at all leaves ``sniffed`` alone, because
-    refusing a file is this function failing safe and misnaming one is not.
+    Total by construction: anything unreadable leaves ``sniffed`` alone, because
+    refusing a file fails safe and misnaming one does not.
     """
     if sniffed != "application/zip" or not data:
         return sniffed

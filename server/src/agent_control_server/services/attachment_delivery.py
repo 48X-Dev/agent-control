@@ -58,10 +58,10 @@ import logging
 import re
 from dataclasses import dataclass
 
+from agent_control_models.attachment_converter import ConversionStatus
 from agent_control_models.sessions import TURN_MESSAGE_MAX_LENGTH
 
 from .attachment_conversions import CachedConversion
-from .attachment_converter import ConversionStatus
 from .executor_metrics import (
     ATTACHMENT_DELIVERIES,
     ATTACHMENT_DELIVERY_NO_TEXT,

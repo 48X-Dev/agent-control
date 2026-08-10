@@ -18,6 +18,7 @@ without a database, an executor or a converter. One rule per test:
 from __future__ import annotations
 
 import pytest
+from agent_control_models.attachment_converter import ConversionStatus
 from agent_control_models.attachments import ATTACHMENT_MAX_PER_TURN
 from agent_control_models.sessions import TURN_MESSAGE_MAX_LENGTH
 
@@ -26,7 +27,6 @@ from agent_control_server.services.attachment_conversions import (
     STATE_FAILED,
     CachedConversion,
 )
-from agent_control_server.services.attachment_converter import ConversionStatus
 from agent_control_server.services.attachment_delivery import (
     FILES_BLOCK_MAX_CHARS,
     NOT_INCLUDED,

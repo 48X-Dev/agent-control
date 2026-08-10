@@ -20,6 +20,7 @@ module does is a function of its arguments.
 from __future__ import annotations
 
 import pytest
+from agent_control_models.attachment_converter import ConversionStatus
 from agent_control_models.files import normalize_display_name
 from agent_control_models.sessions import TURN_MESSAGE_MAX_LENGTH
 
@@ -27,7 +28,6 @@ from agent_control_server.services.attachment_conversions import (
     STATE_DONE,
     CachedConversion,
 )
-from agent_control_server.services.attachment_converter import ConversionStatus
 from agent_control_server.services.attachment_delivery import (
     MIN_TEXT_BLOCK_CHARS,
     NOT_INCLUDED,

@@ -1,37 +1,8 @@
 """Bytes in, text out, and an honest name for how honest the text is.
 
-This module is a library and nothing else. It takes bytes and a declared MIME
-type, runs at most two converters over them, and returns the text with a status
-that says which converter produced it. It touches no database, opens no socket,
-reads no setting and knows nothing about sessions, turns or namespaces. Storing
-the result, scheduling the work and deciding what a status means for delivery
-all belong to the caller.
-
-**Why there is no ``ok``.** The plan's sidecar sketch had one and it would be
-the most dangerous value in the enum. The measured failure mode on this
-deployment's endpoint is an HTTP 200 with the file silently dropped: an agent
-is told a spec is attached, receives nothing, and answers confidently from the
-title. A text-layer extraction has the same shape. MarkItDown reading 733
-characters out of a carousel PDF has not read the carousel, and calling that
-``ok`` invites exactly one bug, once, in the one place nobody looks. So the
-status is :attr:`ConversionStatus.TEXT_LAYER_EXTRACTED`, it is never called a
-clean read, and :attr:`ConversionStatus.OCR_EXTRACTED` is a different value
-because it was a different act.
-
-**Why escalation is the normal path.** Section 8A measured this workspace's six
-real attachments: one PDF with 733 characters of text layer, five PNGs with
-zero each. MarkItDown returns nothing on all five and Docling's OCR returns
-roughly 552 characters apiece in about twenty seconds. Five of six escalate.
-The gigabyte is the main path, which is also why it is an optional extra whose
-absence is a *stated status* rather than a crash: a deployment that has not
-paid for it should be told what it is missing on every file, not surprised by
-an ``ImportError`` at the first PNG.
-
-**Why this cannot run inline.** One issue with five visuals is roughly a
-hundred seconds of OCR against a twenty-five second per-step budget. The caller
-runs this out of band, keyed by content hash, and a cache miss yields a stated
-"not yet converted" descriptor rather than a wait. ``attachment_converter_cache``
-holds the key that makes that possible; the store behind it is the caller's.
+A library and nothing else: no database, no socket, no settings. There is no
+``ok`` status on purpose, because a text-layer read is not a clean read, and
+conversion runs out of band because OCR costs tens of seconds per file.
 """
 
 from __future__ import annotations
@@ -100,8 +71,7 @@ _ECHO_SOURCE_WINDOW = 256
 """How far into the file the echo probe is gathered from."""
 
 _ECHO_TEXT_WINDOW = 1024
-"""How much of a converter's output is examined. Each character of it came from
-at least one source byte, so this window always covers the probe's window."""
+"""How much of a converter's output is examined."""
 
 
 def convert_attachment(
@@ -113,11 +83,9 @@ def convert_attachment(
 ) -> ConversionResult:
     """Convert one attachment's bytes to text.
 
-    The declared type is advisory throughout. The magic bytes decide which
-    parser runs and whether one runs at all, and the disagreement is reported
-    rather than resolved silently.
-
-    Never raises for a bad document. Every failure is a status and a code.
+    The declared type is advisory: the magic bytes decide which parser runs,
+    and a disagreement is reported rather than resolved silently. Never raises
+    for a bad document; every failure is a status and a code.
     """
     active = default_backends() if backends is None else backends
     sniffed = refine_container_mime(data, sniff_mime(data))
@@ -150,12 +118,8 @@ async def convert_attachment_async(
 ) -> ConversionResult:
     """Run :func:`convert_attachment` off the event loop.
 
-    Conversion is CPU-bound for tens of seconds. Calling the synchronous
-    function from a request handler would stall every other request in the
-    process for the length of an OCR run, which is the defect the plan spends
-    two paragraphs on for LibreOffice. A thread is not isolation and is not
-    claimed to be; it is the difference between a slow conversion and a stopped
-    server.
+    Conversion is CPU-bound for tens of seconds. A thread is not isolation; it
+    is the difference between a slow conversion and a stopped server.
     """
     return await asyncio.to_thread(
         convert_attachment,
@@ -175,10 +139,7 @@ class _Pass:
     invoked: bool = False
     """Whether the converter's ``extract`` was entered at all.
 
-    A backend reporting ``available() is False`` produces an attempt without
-    ever being asked to read anything, and that difference is what
-    ``escalated`` has to be computed from: a result flagged as escalated when
-    the only OCR backend was absent overcounts every cost read off it."""
+    What ``escalated`` is computed from: an absent OCR backend never ran."""
 
 
 def _run_pipeline(
@@ -213,12 +174,7 @@ def _run_pipeline(
 
 
 def _winner(passes: list[_Pass]) -> _Pass | None:
-    """The pass that produced the most readable text, if any did.
-
-    Ranked on meaningful characters rather than raw length, so a converter
-    returning four hundred bytes of ``<!-- image -->`` never outranks one that
-    returned a sentence.
-    """
+    """The pass that produced the most readable text, ranked on meaningful chars."""
     return max(
         (p for p in passes if p.attempt.meaningful_chars > 0),
         key=lambda p: p.attempt.meaningful_chars,
@@ -229,37 +185,9 @@ def _winner(passes: list[_Pass]) -> _Pass | None:
 def _degraded_status(passes: list[_Pass], winner: _Pass | None) -> ConversionStatus:
     """Name what happened once no pass cleared the escalation threshold.
 
-    Ordered so the most actionable answer wins. "Install the OCR extra" is a
-    remedy and "this file is empty" is a fact about the file; reporting the fact
-    when the remedy applies is how a missing gigabyte gets mistaken for a blank
-    document. A converter that broke outranks a converter that read little for
-    the same reason.
-
-    **Thin text still counts as text, and this is the row measured rather than
-    reasoned.** A real 1300x150 PNG carrying the headline ``BOARD REVIEW 2026``
-    was run through both shipped libraries on 2026-08-03: MarkItDown returned
-    zero meaningful characters, Docling's OCR returned the headline exactly, in
-    34.1 seconds, and that is fifteen meaningful characters. Every word in the
-    image was recovered. Reporting that as :attr:`ConversionStatus.EMPTY` would
-    be this module's own opening argument made backwards - a status that tells
-    the caller nothing was found while the text sits in the result unread. So
-    the threshold decides *whether to escalate* and nothing else; once every
-    converter has run, any meaningful text is named after the converter that
-    found it. Short OCR output is still not a clean read, which is exactly what
-    :attr:`ConversionStatus.OCR_EXTRACTED` already says.
-
-    The caller keeps the floor it needs: ``meaningful_chars`` rides the result,
-    so "fifteen characters is not worth delivering" stays a delivery decision.
-    What a caller cannot do is recover text this function threw away.
-
-    **The remedy still outranks the read, and the read still travels.** On a
-    deployment carrying the OCR extra but not the text-layer one, an absent
-    converter and a recovered image happen together: the status names the
-    absence, because "install the missing extra" is the sentence an operator
-    needs and the next file will hit the same hole. The recovered text is not
-    lost to that choice - it rides in ``text`` with ``converter`` naming
-    Docling and ``has_text`` reading true - which is the whole reason
-    :attr:`ConversionResult.has_text` is no longer derived from the status.
+    Ordered so the most actionable answer wins: a remedy an operator can act on
+    outranks a fact about the file. Thin text still counts as text, named after
+    the converter that found it, and it travels in the result either way.
     """
     outcomes = {p.attempt.outcome for p in passes}
     if not passes or AttemptOutcome.UNAVAILABLE in outcomes:
@@ -286,10 +214,8 @@ def _attempt(
 ) -> _Pass:
     """Run one converter and describe what it did, without ever raising.
 
-    ``available()`` is inside the guard too. The two shipped adapters answer it
-    from a spec lookup that cannot raise, but this function's contract with the
-    pipeline is that no backend escapes it as an exception, and a third-party
-    backend is not covered by what the shipped two happen to do.
+    ``available()`` is inside the guard too: a third-party backend is not
+    covered by what the shipped two happen to do.
     """
     started = time.monotonic()
     try:
@@ -356,41 +282,9 @@ def _ascii_skeleton(raw: bytes) -> bytes:
 def _is_source_echoed(text: str, data: bytes) -> bool:
     """Whether a converter handed back its input instead of converting it.
 
-    **Measured, on 2026-08-03, against MarkItDown 0.1.7.** Given
-    ``b"%PDF-1.4\\nthis is not a document"`` and a PDF stream info, it does not
-    raise: it falls through to its plain-text converter and returns the file's
-    own bytes as the extraction, header included. A longer corrupt body returns
-    156 characters of the same, which clears every text threshold there is.
-
-    That is the exact failure this library exists to refuse, wearing the
-    opposite mask. An agent is told it is reading a specification and receives
-    ``%PDF-1.4`` followed by whatever ASCII a malformed - or deliberately
-    constructed - file happened to contain, under a status claiming a
-    successful text-layer read. Nothing downstream could tell the difference,
-    because the status and the character count both look healthy.
-
-    **Why the bytes are not compared directly.** The first version of this
-    round-tripped the output back through latin-1 and compared eight bytes,
-    which three attacker-chosen bytes defeat. Only ``%PDF-`` is needed for the
-    sniffer to route a file as a PDF; bytes five to seven are free, and a
-    charset detector decodes ``\\x80\\x91\\x92`` to codepoints outside latin-1
-    that ``errors="ignore"`` then silently dropped, so the prefix no longer
-    matched and the file's own body arrived as a ``text_layer_extracted`` read
-    with a healthy character count and no failure code - and with the sniff
-    agreeing with the declared type, nothing else on the result flagged it.
-    Reproduced against the real library on both byte triples on 2026-08-03. So
-    the comparison is made on the *printable ASCII
-    skeleton* of both sides: whatever a decoder did with the bytes it could not
-    map, the ASCII it could map survives in order on both sides. A file with
-    fewer than eight printable bytes in its first ``_ECHO_SOURCE_WINDOW``
-    carries too short a probe to distinguish an echo from a coincidence, so it
-    falls back to the exact byte comparison, which is what catches a faithful
-    echo of a wholly binary file.
-
-    Narrow on purpose either way: the output must *begin with* the input's own
-    opening bytes. Text that merely quotes ``%PDF`` further in is a real
-    extraction. A converter that echoes has failed, so it is recorded as a
-    failure and its text is discarded rather than delivered.
+    Compared on the printable ASCII skeleton of both sides rather than on the
+    raw bytes, which three attacker-chosen bytes defeat. Narrow on purpose: the
+    output must *begin with* the input's own opening bytes.
     """
     if not data:
         return False
@@ -446,17 +340,9 @@ def _finish(
 ) -> ConversionResult:
     """Assemble the result, carrying the best text any converter produced.
 
-    "Best" is the most meaningful characters, not the last run. A failed OCR
-    escalation must not discard the thin text the first pass did find: a
-    hundred characters of title page is worth more to an agent than nothing,
-    provided the status says plainly that it is all there is. ``has_text`` is
-    then read off the text rather than off the status, so those rows do not
-    deny carrying what they carry.
-
-    The reported count is recomputed after the cut. It is the number a caller's
-    delivery floor is computed on, and a floor applied to characters the caller
-    never received is a floor applied to the wrong string. The per-converter
-    counts in ``attempts`` still describe what each parser produced.
+    "Best" is the most meaningful characters, not the last run, so a failed OCR
+    escalation does not discard what the first pass found. The reported count is
+    recomputed after the cut; ``attempts`` keeps the per-converter ones.
     """
     winner = _winner(passes)
     text = winner.text if winner else ""
@@ -483,9 +369,7 @@ def _finish(
 def _result_failure_code(status: ConversionStatus, passes: list[_Pass]) -> str | None:
     """The code belonging to the attempt the status was decided on.
 
-    Taking the last code instead would report a text-layer parser's complaint
-    as the reason an OCR escalation was unavailable, which sends whoever reads
-    it to the wrong remedy.
+    Taking the last code instead sends whoever reads it to the wrong remedy.
     """
     wanted = _STATUS_OUTCOME.get(status)
     if wanted is None:

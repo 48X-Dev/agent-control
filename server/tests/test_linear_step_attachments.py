@@ -250,7 +250,7 @@ def test_a_deck_linked_only_in_the_description_reaches_the_model_as_text(
     So the assertion is on the message the executor actually received.
     """
     _, outcome = fake_converter
-    from agent_control_server.services.attachment_converter import ConversionStatus
+    from agent_control_models.attachment_converter import ConversionStatus
 
     from .test_attachment_conversions import _result
 
@@ -363,7 +363,7 @@ def test_a_file_nobody_could_read_says_so_rather_than_not_read_yet(
 ) -> None:
     """A scanned page nobody could read and a page nobody has tried to read are
     different facts, and only one of them is worth asking a person about."""
-    from agent_control_server.services.attachment_converter import ConversionStatus
+    from agent_control_models.attachment_converter import ConversionStatus
 
     from .test_attachment_conversions import _result
 
@@ -767,7 +767,7 @@ def test_text_ready_predicts_what_the_delivery_section_says_about_the_file(
     statements about one file that disagree, and an agent resolving that
     optimistically is back to answering from the title.
     """
-    from agent_control_server.services.attachment_converter import ConversionStatus
+    from agent_control_models.attachment_converter import ConversionStatus
 
     from .test_attachment_conversions import _result
 

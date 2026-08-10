@@ -1,30 +1,8 @@
 """The two converters, behind one interface, each importable or absent.
 
-Two libraries do the work and they are not interchangeable. MarkItDown reads a
-document's *text layer*: fast, cheap, and worth nothing on a picture of words.
-Docling runs layout analysis and OCR: it reads the picture, and it costs a
-gigabyte of install and tens of seconds per file. Section 8A of the plan
-measured both against this workspace's real attachments and five of six carried
-no text layer at all, so OCR is the main path here rather than a rare
-escalation.
-
-Three rules hold for both adapters.
-
-**Neither is a hard dependency.** Each is imported inside the call that needs
-it and each reports ``available()`` from a spec lookup that imports nothing. A
-deployment without them converts nothing and says so; it does not fail to
-start and it does not raise ``ImportError`` at a caller.
-
-**No upstream text ever leaves this module.** A parser traceback carries
-document content, and a converter failure that echoes it into an operator
-console would undo the point of running the parser away from everything else.
-Failures leave as a code from a hand-written constant, following the same
-discipline ``services/executor_client.py`` keeps.
-
-**Routing is by sniffed type, never by the caller's filename.** The extension
-handed to a converter is derived from the magic bytes. A file named
-``invoice.pdf`` that is really a PNG is converted as a PNG, and the display
-name never reaches a parser's format-detection path at all.
+Neither is a hard dependency: both are imported inside the call that needs them
+and absence is a stated status. No upstream text ever leaves this module, and
+routing is by sniffed type rather than by the caller's filename.
 """
 
 from __future__ import annotations
@@ -55,20 +33,13 @@ _EXTENSION_BY_MIME = {
 }
 """Sniffable types this module knows how to hand to a converter.
 
-Deliberately the set ``sniff_mime`` can name and the plan's
-``attachment_accepted_mimes`` admits. A type absent here is refused before any
-parser is constructed."""
+A type absent here is refused before any parser is constructed."""
 
 _ENCRYPTION_HINTS = ("password", "encrypted", "decrypt")
 
 
 class ConverterKind(StrEnum):
-    """What a converter is able to read.
-
-    The distinction decides escalation order and it decides the status the
-    caller reports, which is why it is a property of the backend rather than a
-    fact the pipeline hard-codes about two names.
-    """
+    """What a converter is able to read. Decides escalation order and status."""
 
     TEXT_LAYER = "text_layer"
     OCR = "ocr"
@@ -99,12 +70,7 @@ class ConverterFailedError(Exception):
 
 
 class EncryptedDocumentError(Exception):
-    """The document is password-protected, so no converter will read it.
-
-    Separate from :class:`ConverterFailedError` because it changes what the caller
-    does: escalating an encrypted PDF to OCR spends a minute of CPU to learn
-    the same thing the text-layer pass already learned.
-    """
+    """Password-protected, so escalating to OCR would learn nothing new."""
 
     def __init__(self, code: str = FAILURE_ENCRYPTED_DOCUMENT) -> None:
         super().__init__(code)
@@ -134,10 +100,7 @@ def _module_installed(module: str) -> bool:
 
 
 def _looks_encrypted(error: BaseException) -> bool:
-    """Classify a parser error as an encryption refusal.
-
-    The message is read here and discarded here. What escapes is a boolean.
-    """
+    """Classify a parser error as an encryption refusal. Only a boolean escapes."""
     text = f"{type(error).__name__} {error}".lower()
     return any(hint in text for hint in _ENCRYPTION_HINTS)
 
@@ -145,10 +108,8 @@ def _looks_encrypted(error: BaseException) -> bool:
 class MarkItDownBackend:
     """MarkItDown 0.1.7 (MIT), the text-layer pass.
 
-    Plugins are disabled explicitly rather than left at their default. A
-    converter that loads third-party entry points is a converter whose parser
-    set depends on what else is installed in the image, which is not a property
-    anyone wants to discover from a changed extraction.
+    Plugins are disabled explicitly, so the parser set does not depend on what
+    else the image happens to carry.
     """
 
     name = MARKITDOWN_BACKEND_NAME
@@ -189,16 +150,8 @@ class MarkItDownBackend:
 class DoclingBackend:
     """Docling (MIT), the OCR and layout pass.
 
-    Two costs are paid here and both are deliberate.
-
-    The converter object loads a layout model, so it is built once per process
-    and reused. Building one per document would add that load to every file.
-
-    Extraction is serialized on a module lock. Docling's thread safety is not
-    documented and was not verified, and the plan already bounds concurrent
-    conversions at two, so serializing costs a queue rather than throughput
-    that was ever promised. The caller runs this out of band, which is what
-    makes the queue affordable.
+    The layout model is loaded once per process, and extraction is serialized
+    on a module lock because Docling's thread safety is undocumented.
     """
 
     name = DOCLING_BACKEND_NAME
@@ -243,15 +196,9 @@ _docling_build_failure: str | None = None
 def _docling_converter() -> Any:
     """Build the shared Docling converter on first use, or repeat why it failed.
 
-    The failure is remembered as well as the success. Building this loads a
-    torch layout model - 59.8 seconds against a cold weight cache, 13.0 for a
-    build and a one-line PDF together once the weights are on disk - and it
-    happens while every other conversion waits on ``_docling_build_lock``. A
-    build that fails for a reason the next document will not change - no room
-    for the model weights, a poisoned cache - would otherwise re-attempt that
-    per file and serialize the whole queue behind each attempt, on the path
-    that is the main path for five of this workspace's six attachments. One
-    slow failure, then fast ones. ``reset_backend_caches`` clears both.
+    The failure is remembered too: loading the torch layout model takes about a
+    minute and every other conversion waits behind it. One slow failure, then
+    fast ones. ``reset_backend_caches`` clears both.
     """
     global _docling_converter_instance, _docling_build_failure
     with _docling_build_lock:
@@ -280,7 +227,7 @@ def _build_failure(code: str) -> Exception:
 def reset_backend_caches() -> None:
     """Forget the shared Docling converter and any remembered build failure.
 
-    For tests, and for nothing else."""
+    For tests, and nothing else."""
     global _docling_converter_instance, _docling_build_failure
     with _docling_build_lock:
         _docling_converter_instance = None
