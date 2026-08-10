@@ -1,0 +1,50 @@
+# The company knowledge allowlist. Copy to knowledge.yaml and edit.
+#
+# READ THIS BEFORE ADDING A REPOSITORY.
+#
+# 1. This file is the security boundary, not a convenience.
+#    The credential in use is a classic `repo`-scoped PAT (operator decision,
+#    2026-08-10). It reaches 62 repositories across five organisations, with
+#    push on 61 and admin on 51, and GitHub refuses none of them. Under the
+#    fine-grained token section 6 asks for, a mistake here fails at the API.
+#    Under this one it succeeds against the wrong repository. So the loader
+#    refuses anything ambiguous: unknown keys, wildcards, globs, bare owners,
+#    and repeated entries. An empty or missing list indexes nothing; it never
+#    means "everything".
+#
+# 2. Everything indexed is readable by every agent that holds the search tool.
+#    There is no per-team, per-agent or per-user scoping in slice one. The
+#    mitigation available today is source selection: do not index a repository
+#    whose content should not reach the whole fleet.
+#
+# 3. Before giving an agent `company_knowledge_search` alongside a web search
+#    or fetch tool, read section 3.1 of docs/plans/company-knowledge.md and
+#    decide on purpose. A retrieval tool and an outbound tool in one
+#    alternation is an egress pair, and co-provisioning is a decision.
+#
+# What gets indexed from a listed repository, on its default branch:
+#   - README* anywhere in the tree
+#   - everything under docs/
+#   - *.md at the repository root
+#   - anything under an include_paths prefix below
+#
+# What is refused whatever admits it: vendor/, node_modules/, third_party/,
+# dist/, build/, *.min.*, lockfiles, files whose names are themselves
+# credentials (.env, *.pem, id_rsa*, credentials.json, *.key), and any file
+# whose bytes sniff as a binary. Chunks matching the credential deny-list are
+# dropped and counted (5.6). Issue and PR text is Phase 6 and is off here.
+
+github:
+  # Adding a repository is a reviewed diff. Keep this list short and justified.
+  repos: []
+
+  # The shape, for when there is something to add:
+  #
+  # repos:
+  #   - repo: earlycore/agent-control        # explicit owner/name; no wildcards
+  #
+  #   - repo: earlycore/handbook
+  #     include_paths:                       # literal prefixes, beyond the default set
+  #       - runbooks                         # widen one directory, not a whole source tree
+  #       - reference/policies
+  #     github_issues_enabled: false         # Phase 6 only; private repos only
