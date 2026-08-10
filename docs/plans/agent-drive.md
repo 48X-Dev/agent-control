@@ -276,6 +276,18 @@ The MCP server, at startup and every `drive_scope_canary_interval_seconds` (defa
 
 **Inbound.** `files.list` with `q: "sharedWithMe = true"` returns empty. Under `drive.file` it is empty forever, because the app cannot see shared files. Non-empty means the scope was widened or a share path exists that 4.2 says does not.
 
+**Amended 2026-08-06, and the amendment weakens this canary on purpose.** `company-knowledge.md`
+2.1 records an operator decision to read the company corpus with *this same account* under a separate
+`drive.readonly` client. From that moment `sharedWithMe` is non-empty by construction and the
+assertion above would fire forever, which is worse than useless: a canary that always fires is a
+canary nobody reads. The assertion becomes **"`sharedWithMe` contains exactly the folder ids in
+`knowledge.yaml`, and nothing else"** - still a real detector for an unexpected share path, but an
+allowlist to keep current rather than an invariant that maintains itself. The difference matters and
+is not hidden: an allowlist drifts, and the day somebody adds a corpus folder without updating it,
+this canary cries wolf; the day somebody shares something unexpected *and* the allowlist happens to
+be stale in the same direction, it stays quiet. Restoring the invariant costs one Workspace seat and
+is the first thing to do if the share list starts moving.
+
 **Outbound, which the previous draft did not have.** `files.list` over the agent's subtree with `fields=files(id,name,shared,ownedByMe,permissions(id,type,emailAddress,role))`, asserting on every node that `ownedByMe == true` and that the permission set is exactly `{agent account: owner}` plus, if configured, `{<the one group>: reader}` and nothing else. `shared` is a documented File field and the `permissions` field is readable on app-created files, so this costs one extra field on a call the canary already makes. It catches a link-viewable file, an added collaborator, an external grant, and the case in 7's table where a human moves the whole root into a folder that is already shared.
 
 Either assertion failing fires `agent_control_drive_outbound_share_detected_total` or `agent_control_drive_scope_canary_failures_total`, latches, and refuses every subsequent tool call until a human clears it.
