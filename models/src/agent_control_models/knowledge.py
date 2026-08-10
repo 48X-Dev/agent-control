@@ -7,8 +7,8 @@ agree byte for byte about what a chunk is and what a heading path says. Two
 implementations that must agree will not.
 
 Nothing here parses a file format. The chunker's input is markdown that
-``services/attachment_converter.py`` has already produced; anything that has to
-open a PDF belongs in the process with the memory limit and no credentials.
+``attachment_converter.py`` has already produced; anything that has to open a
+PDF belongs in the process with the memory limit and no credentials.
 """
 
 from __future__ import annotations
@@ -264,9 +264,13 @@ def _split_into_sections(text: str) -> list[tuple[str | None, str]]:
     Each section's body keeps its own heading line, so the heading's words are
     searchable and ``ts_headline`` can highlight them. Preamble before the first
     heading carries ``heading_path=None``.
+
+    The stack holds each open heading's own level rather than relying on
+    position, because a document is free to start at ``##`` or to skip a level,
+    and a stack indexed by level reads siblings as parent and child.
     """
 
-    stack: list[str] = []
+    stack: list[tuple[int, str]] = []
     sections: list[tuple[str | None, list[str]]] = []
     current: tuple[str | None, list[str]] = (None, [])
     in_fence = False
@@ -292,9 +296,10 @@ def _split_into_sections(text: str) -> list[tuple[str | None, str]]:
             sections.append(current)
         level = len(heading.group(1))
         title = normalize_index_name(heading.group(2))
-        del stack[level - 1 :]
-        stack.append(title or "")
-        path = HEADING_PATH_SEPARATOR.join(part for part in stack if part) or None
+        while stack and stack[-1][0] >= level:
+            stack.pop()
+        stack.append((level, title or ""))
+        path = HEADING_PATH_SEPARATOR.join(part for _, part in stack if part) or None
         current = (path, [line])
 
     if _has_text(current[1]):

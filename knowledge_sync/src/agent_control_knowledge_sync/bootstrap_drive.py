@@ -13,15 +13,10 @@ remains and what Desktop clients are for: this binds an ephemeral port on
 127.0.0.1, opens the consent page, and catches the redirect. Nothing listens
 afterwards.
 
-**Which account you consent as is a design decision, not a detail.** The consent
-page offers whichever Google session the browser already has, and the script
-prints the result because a signed-in browser is how somebody authorizes the
-wrong identity without noticing. `company-knowledge.md` 2.1 records what this
-deployment chose: the agent's own account, under this separate `drive.readonly`
-client, with `agent-drive.md`'s inbound canary amended from an invariant to an
-allowlist as the stated cost. A deployment that wants the invariant back mints
-this token for a dedicated reader account instead; nothing in the sync depends
-on which account it belongs to.
+The consent page offers whichever Google session the browser already has, so
+the script prints which account authorized. This deployment reads the corpus
+with the agent's own account under this separate `drive.readonly` client
+(`company-knowledge.md` 2.1), scoped to one shared root (5.7).
 """
 
 from __future__ import annotations
@@ -151,7 +146,7 @@ def main(argv: list[str] | None = None) -> int:
     thread.start()
 
     print(f"Listening on {redirect_uri}")
-    print("Sign in as the CORPUS READER account - not the agent's account.\n")
+    print("Sign in as the corpus reader: agent.control@ for this deployment.\n")
     if args.no_browser:
         print(consent)
     else:
@@ -231,10 +226,9 @@ def main(argv: list[str] | None = None) -> int:
     print("\n" + "=" * 68)
     print(f"Authorized as: {who}")
     print(
-        "Check that against company-knowledge.md 2.1. This deployment reads the\n"
-        "corpus with the agent's own account under a separate read-only client,\n"
-        "so agent.control@ is expected here - but the allowlist, not the sharing,\n"
-        "is what decides which folders are indexed."
+        "This deployment reads the corpus with the agent's own account under a\n"
+        "separate read-only client, so agent.control@ is expected. What gets\n"
+        "indexed is the one shared root in AGENT_KNOWLEDGE_DRIVE_ROOT_FOLDER_ID."
     )
     print("=" * 68)
     print("\nAdd to .env at the repo root:\n")
