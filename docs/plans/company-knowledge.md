@@ -129,13 +129,17 @@ knowledge/src/agent_control_knowledge/
     lease.py         # the sync_lease singleton claim, UPDATE ... RETURNING, turn_locks.py's argument
     drive.py         # changes cursor, export/download, ancestry walk, per-source ceilings
     github.py        # allowlisted repos, since-cursor, path filters      (Phase 5)
-    convert.py       # thin caller into agent_control_server.services.attachment_converter
+    convert.py       # thin caller into agent_control_models.attachment_converter
     chunk.py         # heading-bounded chunking
     scrub.py         # secret patterns, name normalization at index time
     store.py         # documents/chunks/sources/sync_runs writes, schema_version
     migrations/      # NNN_*.sql, applied idempotently by the sync at startup
 knowledge/tests/
 ```
+
+**The converter moved to `models` during the Phase 2 build, and the reason is worth keeping.** `convert.py` originally reached `agent_control_server.services.attachment_converter` through `importlib.import_module`, so that `knowledge_sync` would not have to declare a dependency on the API server and drag FastAPI into a batch container. But the sync image installs `agent-control-knowledge-sync` alone, so that container would have started cleanly and answered `converter_unavailable` on every document: a successful sync of nothing, which is this plan's recurring failure shape. The whole chain turned out to be framework-free already (stdlib, `agent_control_models.files`, and its own siblings, with MarkItDown and Docling imported inside the methods that use them), so it moved to `models`, which both packages already depend on, and the call became a static import. Proven rather than argued: a venv holding `models` and `knowledge_sync[text-extraction]` and **no** server package converts a real `.xlsx` end to end, while the old `import_module` call raises `ImportError` in that same venv.
+
+One consequence to name, because it crosses a boundary this plan otherwise guards. `agent_control_models` is vendored wholesale into the SDK wheel, so the converter modules now ship inside the SDK and therefore inside the executor process. They are inert there: stdlib only, MarkItDown is an optional extra rather than a dependency, and nothing in the SDK imports them. `attachment_converter_containers.py` originally justified itself by noting that `sniff_mime` deliberately ships no parser to the SDK. That is still true. The code ships; the parsing does not.
 
 Who holds what, and this table is the security design more than any control is:
 
@@ -398,12 +402,30 @@ is a fact about who else can see it, not about what the agent indexes. The rever
 reader cannot read despite the root being shared, is possible in Drive and surfaces as a per-item
 refusal counted in the run summary rather than a silent gap.
 
+**Probed 2026-08-10, and it changes how every Drive call in this plan is written.** The root that
+shipped is not in anybody's My Drive. It lives in a **shared drive**, and the reader reaches it as a
+non-member holding a direct grant on the one folder. Three measured consequences:
+
+- **Every Drive call carries `supportsAllDrives=true`, and every list call also carries
+  `includeItemsFromAllDrives=true`.** Without them the API does not complain. `files.get` on the root
+  returns `404 File not found` and `files.list` returns zero rows, which is the same shape a folder
+  nobody ever shared produces. The first probe run read exactly that and concluded the share had not
+  been made. A missing flag is indistinguishable from an empty corpus, so the loader resolves the
+  root at startup and refuses on 404 rather than syncing nothing and reporting success.
+- **The reader sees the folder, not the drive.** `drives.get` on the containing shared drive is 404
+  and `drives.list` is empty, so the grant reaches one subtree and stops there. That is tighter
+  containment than My Drive sharing gives, and it is the property the canary asserts.
+- **`canShare` is false.** The reader cannot widen its own access, which is worth writing down
+  because it is the one privilege that would make the two points above self-undermining.
+
 **Trust and its preconditions are unchanged** (section 7): they now attach to the single root and are
 recorded against it rather than against a list.
 
 ## 6. GitHub scope (design question 3)
 
 **An explicit allowlist of repos, in a checked-in `knowledge.yaml`, never org-wide discovery.** Adding a repo is a PR diff a reviewer sees, the same argument `fleet.yaml` makes for executor topology. The token is a fine-grained read-only PAT (contents and metadata read; issues and pull-requests read only when Phase 6 turns those channels on), held by the sync container only, K4 confirming the minimal grant set.
+
+**Operator decision 2026-08-10: a classic PAT ships instead, and the allowlist absorbs the difference.** The credential in use is classic and `repo`-scoped, reaching 62 repositories across five organisations with push on 61 and admin on 51. The decision was made knowingly on the grounds that this is an internal tool. What it changes is not trust, it is *where scope is enforced*. Under the fine-grained token GitHub refuses an out-of-scope read and a config error fails closed at the API. Under this one GitHub refuses nothing, so `knowledge.yaml` stops being a convenience and becomes the sole enforcement boundary. Phase 5 is therefore built to make it behave like one: unknown YAML keys are refused rather than ignored, so a typo cannot silently disable a filter; wildcards, globs and org-wide forms are rejected and only explicit `owner/name` is accepted; a missing or empty allowlist indexes nothing rather than defaulting to everything; and every request asserts its repo appeared in the allowlist at the call site, not only at load time. The residual risk stays real and stated: a bug in that code has write reach, where the same bug under a fine-grained token would have none.
 
 **Indexed, slice one: files only.** `README*` anywhere, everything under `docs/`, and `*.md` at repo root, on the default branch. That set is where engineering writes for readers, it is small, and it is the highest knowledge-per-byte region of any repo (this repo's own `docs/plans/` being the proof at hand).
 
@@ -431,6 +453,8 @@ The rule inherited from every prior plan: **trust changes ceilings and eligibili
 3. The Workspace admin sharing-settings review from `agent-drive.md`'s Phase 0 checklist has been done for the humans' OU too, in writing, since it governs who can appear in precondition 1 tomorrow.
 
 **Whether any of this is checkable at runtime is itself unverified, and the plan's own standard applies to it.** The intended check: the sync lists the subtree root's permission entries and counts non-domain principals. Whether a reader-role service account may call `permissions.list` on a folder shared to it is **not guaranteed** (permission visibility varies with role and sharing settings), so K1 gains the assertion, with a named branch per outcome. If the SA can read the permission set: a non-zero external count logs at WARNING, moves a metric off zero, and flips the source's trust to `external_authors` from the next run, which tightens ceilings rather than switching anything off, the Linear canary's shape with a 15-minute honesty window. If it cannot: the runtime half of this section does not exist, trust rests entirely on the written checklist plus periodic human review, the sync logs that state at startup naming itself, and section 18 prices the weaker position instead of hiding it.
+
+**Resolved 2026-08-10: branch B, and it resolved in the worse of the two ways.** `permissions.list` on the shared root, called by the reader with `supportsAllDrives=true`, returns **HTTP 200 with `{"permissions": []}`**. Not 403. The reader is permitted to ask and is shown nothing, because it is not a member of the shared drive that contains the folder. So the check does not fail loudly the way a denied call would. It succeeds, and it reports zero external principals on a folder whose principals it cannot see. Anything that counts that array is fail-open by construction: it returns the exact value meaning "clean" for the reason meaning "blind", and no amount of care at the call site distinguishes them. The runtime half of this section therefore does not exist. Trust rests on the written checklist above plus periodic human review, the sync logs that state at startup naming itself, and section 18 prices it. One thing this closes off: if a future deployment makes the reader a *member* of the shared drive and this call starts returning rows, that is a widening of the reader's standing and takes its own decision. It is not a quiet promotion to branch A.
 
 **GitHub, split.** Files in your own private repos, written by people with push access: `workspace`. Issue and PR text is different in kind: on a public repo, anyone with a GitHub account can author it, which makes it the one channel in this whole plan where **arbitrary strangers write directly into the corpus**. So: public-repo issue/PR text is refused outright in slice one (section 6), and when Phase 6 admits private-repo issue text it lands as `author_kind='external'` wherever the author is not an org member, rendered in the fence header and countable by a post control (8.5). `trust='external_authors'` sources also get a lower per-source ceiling by default and their snippets rank below workspace snippets at equal FTS score, which is eligibility and ordering, not fencing.
 
@@ -688,7 +712,7 @@ Every snippet carries both `modified_at` (the source's own mtime) and `synced_at
 
 **Verification and advancement are split, because a quiet source is not a dead sync.** A repo with no new commits produces no batch, its cursor never advances, and a staleness clock keyed on cursor advancement would warn forever on a healthy deployment, training agents and operators to ignore the one in-band freshness signal this plan has. So every successful check stamps `last_verified_at`, zero-change runs included: Drive's `changes.list` returns a token even when nothing changed, and a GitHub head compare that answers "equal" is a verification. `stale_seconds` is now minus the oldest enabled source's `last_verified_at`; `cursor_advanced_at` stays for diagnostics. When corpus-wide `stale_seconds` exceeds `staleness_warn_seconds` (default 86,400), the tool appends one line: *"Note: the knowledge base has not synced in over a day; recent changes may be missing."* A failing source similarly surfaces as `sources_failing` in every response, because a mirror that is quietly three weeks behind is the confident-wrongness risk from section 3 and the agent is the one who needs to know.
 
-The UI question is deferred, deliberately: a sources/status console page is Phase 8 material, the console has enough panels in flight, and `GET /company-knowledge/status` plus these in-band signals carry the operational need until then.
+The UI question is deferred, deliberately: a sources/status console page is Phase 8 material, the console has enough panels in flight, and `GET /company-knowledge/status` plus these in-band signals carry the operational need until then. **Settled 2026-08-10:** the panel is scheduled, read-only, and reads this endpoint; Phase 8 records what it shows and why a connect button was refused.
 
 ---
 
@@ -718,42 +742,36 @@ The exists-versus-reaches lesson hit four times this session, so this section is
     image: ${AGENT_CONTROL_KNOWLEDGE_IMAGE:-agent-control-knowledge:local}
     build:
       context: .
-      dockerfile: knowledge/Dockerfile
-    command: >-
-      serve
-      --interval-seconds ${AGENT_KNOWLEDGE_SYNC_INTERVAL_SECONDS:-900}
+      dockerfile: knowledge_sync/Dockerfile
+    profiles: ["knowledge"]
+    command: ["once"]
     environment:
       # The sync's own database role. NOT the control-plane credential, and no
       # Agent Control API key at all: this process never calls the server.
       AGENT_KNOWLEDGE_DB_URL: postgresql+psycopg://knowledge_sync:${KNOWLEDGE_DB_PASSWORD:-knowledge_local}@postgres:5432/agent_knowledge
-      AGENT_KNOWLEDGE_SOURCES_FILE: /config/knowledge.yaml
-      AGENT_KNOWLEDGE_DRIVE_SA_KEY_FILE: /secrets/knowledge-drive-sa.json
+      AGENT_KNOWLEDGE_DRIVE_CLIENT_ID: ${AGENT_KNOWLEDGE_DRIVE_CLIENT_ID:-}
+      AGENT_KNOWLEDGE_DRIVE_CLIENT_SECRET: ${AGENT_KNOWLEDGE_DRIVE_CLIENT_SECRET:-}
+      AGENT_KNOWLEDGE_DRIVE_REFRESH_TOKEN: ${AGENT_KNOWLEDGE_DRIVE_REFRESH_TOKEN:-}
+      AGENT_KNOWLEDGE_DRIVE_ROOT_FOLDER_ID: ${AGENT_KNOWLEDGE_DRIVE_ROOT_FOLDER_ID:-}
       AGENT_KNOWLEDGE_GITHUB_TOKEN: ${AGENT_KNOWLEDGE_GITHUB_TOKEN:-}
       AGENT_KNOWLEDGE_FILE_MAX_BYTES: ${AGENT_KNOWLEDGE_FILE_MAX_BYTES:-20971520}
-      AGENT_KNOWLEDGE_SOURCE_MAX_BYTES: ${AGENT_KNOWLEDGE_SOURCE_MAX_BYTES:-2147483648}
-      AGENT_KNOWLEDGE_SOURCE_MAX_FILES: ${AGENT_KNOWLEDGE_SOURCE_MAX_FILES:-20000}
+      AGENT_KNOWLEDGE_MAX_DOCUMENTS_PER_RUN: ${AGENT_KNOWLEDGE_MAX_DOCUMENTS_PER_RUN:-10000}
+      AGENT_KNOWLEDGE_REQUEST_TIMEOUT_SECONDS: ${AGENT_KNOWLEDGE_REQUEST_TIMEOUT_SECONDS:-120}
       # The agent-output ingest guard (section 11). Same value the executor
       # holds; unset disables the guard and the sync logs that state by name.
       AGENT_CONTROL_EXECUTOR_DRIVE_ROOT_ID: ${AGENT_CONTROL_EXECUTOR_DRIVE_ROOT_ID:-}
-    volumes:
-      - ./knowledge.yaml:/config/knowledge.yaml:ro
-      - ${AGENT_KNOWLEDGE_DRIVE_SA_KEY_PATH:-./secrets/knowledge-drive-sa.json}:/secrets/knowledge-drive-sa.json:ro
     depends_on:
       - postgres
-    restart: unless-stopped
-    stop_grace_period: 120s
+    restart: "no"
 ```
+
+**Corrected against what shipped in Phase 2.** Three things this block asserted are no longer true, and each was wrong in a way worth naming. The Dockerfile is `knowledge_sync/Dockerfile`, matching the package. `serve` and its interval belong to Phase 4, so Phase 2's container is `command: ["once"]` with `restart: "no"`, a run-to-completion unit behind a `knowledge` profile rather than a daemon. And **there are no volume mounts at all**: the service-account key file became four OAuth environment variables in 2.1, and `AGENT_KNOWLEDGE_SOURCES_FILE` became the single `AGENT_KNOWLEDGE_DRIVE_ROOT_FOLDER_ID` of 5.7. `knowledge.yaml` is not dead, but it is now Phase 5's GitHub repo allowlist only, and it arrives with the mount when that phase does.
 
 The server service gains its side: `AGENT_CONTROL_KNOWLEDGE_ENABLED` (default `false`), `AGENT_CONTROL_KNOWLEDGE_DB_URL` (the `knowledge_read` DSN), `AGENT_CONTROL_KNOWLEDGE_SEARCH_MAX_RESULTS`, `AGENT_CONTROL_KNOWLEDGE_SNIPPET_MAX_CHARS`, `AGENT_CONTROL_KNOWLEDGE_SEARCHES_PER_MINUTE`, `AGENT_CONTROL_KNOWLEDGE_STALENESS_WARN_SECONDS`, each with an `.env.example` line. ~~Routes register only when the flag is true, inheriting the executor-router precedent.~~ **Superseded in build.** The routes register unconditionally and a disabled deployment answers a stated `knowledge_disabled` refusal. Conditional registration would answer 404, which is a code the tool would have to guess the meaning of where the contract promises a refusal an agent can read; and it would make the generated OpenAPI spec, and therefore every SDK built from it, depend on one deployment's environment. The executor-router precedent does not carry here because nothing is built from that router's shape.
 
-`scripts/apple-container-up.sh` gains, in the same commit: `KNOWLEDGE_NAME=ac-knowledge`, a provisioning exec running `server/scripts/knowledge_db_init.sql` right after the adk one (idempotent, every up, because the fresh-volume provisioning lesson applies to this database identically), the new server `-e` lines, and a fourth `container run` block pointed at `$PG_IP`. **"Mirror the dispatcher block" is not the instruction, because the dispatcher block has no volume mounts at all** (verified: its run block is `-e` lines only), and a faithful mirror would produce a sync with no sources and no credential that starts cleanly and does nothing. The knowledge block names its mounts explicitly:
+`scripts/apple-container-up.sh` gains, in the same commit: `KNOWLEDGE_NAME=ac-knowledge`, a provisioning exec running `server/scripts/knowledge_db_init.sql` right after the adk one (idempotent, every up, because the fresh-volume provisioning lesson applies to this database identically), the new server `-e` lines, and a fourth `container run` block pointed at `$PG_IP`. **Reversed 2026-08-10 by the OAuth switch: mirroring the dispatcher block is now exactly right.** This paragraph used to warn against it, because the dispatcher's run block is `-e` lines only and the sync needed a sources file and a key file. Both mounts are gone. The credential is four environment variables (2.1) and the source is one folder id (5.7), so the sync's run block is `-e` lines only too, plus `AGENT_CONTROL_EXECUTOR_DRIVE_ROOT_ID` for the ingest guard. Fewer moving parts than the design that replaced them, which is the point.
 
-```
--v "$PWD/knowledge.yaml:/config/knowledge.yaml:ro"
--v "${AGENT_KNOWLEDGE_DRIVE_SA_KEY_PATH:-$PWD/secrets/knowledge-drive-sa.json}:/secrets/knowledge-drive-sa.json:ro"
-```
-
-plus every `-e` from the compose block including `AGENT_CONTROL_EXECUTOR_DRIVE_ROOT_ID`. Parity between the two runtimes is mandatory, not aspirational: this deployment now runs under Apple `container`, and a service that exists only in compose does not exist. Phase 4 mechanizes the parity as a CI grep asserting every `AGENT_KNOWLEDGE_*` and `AGENT_CONTROL_KNOWLEDGE_*` compose var **and both mount paths** appear in the script.
+**The parity check shipped in Phase 2, not Phase 4, and it asserts more than this section asked for.** `scripts/check_knowledge_env_parity.py` runs in CI and checks two directions rather than one. Parity: `docker-compose.yml`, `scripts/apple-container-up.sh` and `server/.env.example` declare the same set. **Reached:** every `AGENT_KNOWLEDGE_*` variable actually read anywhere under `knowledge_sync/src` appears in that set. The second direction is the one that closes the exists-versus-reaches loop, because three files can agree perfectly with each other and still not match what the process reads, which is precisely how this bug shipped four times. Each file gets an extraction rule matched to its real passing mechanism (`NAME:` in compose, `-e "NAME=` in the shell, `^#?NAME=` in the example), so a variable merely mentioned in prose does not count as wired. It found four unwired variables on its first execution.
 
 `docker-compose.dev.yml` gains a `knowledge-db-init` one-shot beside `adk-db-init`, same image, same pattern.
 
@@ -826,10 +844,11 @@ plus every `-e` from the compose block including `AGENT_CONTROL_EXECUTOR_DRIVE_R
 
 **Phase 0 probes, recorded in `docs/plans/spike-findings.md`'s format:**
 
-- **K1**: share a real folder with a real service account; assert `drive.readonly` sees exactly the shared subtree and nothing else; export a real company Doc to markdown and eyeball heading fidelity; **and assert whether the SA can `permissions.list` the shared root and enumerate non-domain principals** (decides whether section 7's runtime trust check exists; both branches named there). Load-bearing for sections 2.1 and 7.
+- **K1** (run 2026-08-10 against the real folder and the real reader; results in 5.7 and 7): assert `drive.readonly` sees exactly the shared subtree and nothing else; export a real company Doc to markdown and eyeball heading fidelity; **and assert whether the reader can `permissions.list` the shared root and enumerate non-domain principals** (decides whether section 7's runtime trust check exists; both branches named there). Load-bearing for sections 2.1 and 7. **Outcome:** visibility across all corpora is exactly one entry and it is the root, so the canary's invariant holds as written, though only when the query opts into shared drives (5.7). `permissions.list` returns 200-empty, so section 7 takes branch B. The Doc export half is still open, because the folder is empty as of the probe and there is nothing yet to export.
 - **K2**: narrow a permission and delete a file; observe what `changes.list` reports to the service account. Decides whether tombstoning is feed-driven or diff-driven.
-- **K3**: export a Doc near and over the documented 10MB export bound and record the failure shape; export a five-tab Sheet as xlsx and assert every tab survives conversion (5.2's correction, proven rather than assumed).
-- **K4**: mint the fine-grained GitHub token with contents+metadata read only; assert the tree, blob and compare calls this plan makes all succeed and nothing else does.
+- **K3**: export a Doc near and over the documented 10MB export bound and record the failure shape; export a five-tab Sheet as xlsx and assert every tab survives conversion (5.2's correction, proven rather than assumed). **Partly run 2026-08-10, and the corpus itself moved the question.** The real folder holds no Google-native files at all: it is uploaded `.pptx` and `.pdf`, which never touch Drive's exporter and go straight to MarkItDown. Both downloaded byte-exact against their declared `size` and converted through the shipped `text-extraction` backend. The 3MB deck yielded 9,960 chars in 1.2s with slide boundaries marked, its capability table intact as a markdown table, and **speaker notes extracted**, which is the higher-value half of a deck because the slide carries labels and the notes carry the argument. The 508KB PDF yielded 17,300 chars in 0.4s of clean prose and **zero headings**: the title arrives as body text, and the PDF's hard line wrapping survives into the output. Two consequences for the chunker in 5.3, neither optional: heading-derived section boundaries are unavailable on PDFs and cannot be the only strategy, and sentence splitting has to treat a single newline as soft or it will cut mid-sentence on every PDF in the corpus. The export half of K3 stays open until a Google-native Doc and a multi-tab Sheet exist to run it against, and it may stay open indefinitely if this company simply does not keep knowledge in Google-native formats, which is itself the finding.
+- **K4**: mint the fine-grained GitHub token with contents+metadata read only; assert the tree, blob and compare calls this plan makes all succeed and nothing else does. **Run 2026-08-10 against a classic PAT, not the fine-grained token this asks for.** All three calls pass on both a public and a private repo: recursive tree (931 and 1,095 blobs), blob fetch and base64 decode, and commit compare. Rate limit is 5,000/hour, which is not a constraint at this corpus size. The "and nothing else does" half is **untested and untestable with this credential**: a classic `repo` token grants write on every repo the bearer can reach, so the `knowledge.yaml` allowlist is the only thing keeping the sync in scope. Under a fine-grained token GitHub enforces it and a config error refuses; under this one a config error succeeds against the wrong repo. Operator decision 2026-08-10: the classic token is accepted for probing and local runs, and Phase 5 does not ship to an unattended container until the fine-grained token replaces it.
+  **New assertion this probe added: `tree.truncated` must be checked.** GitHub truncates a recursive tree response rather than erroring, so an unchecked `truncated: true` is a silently partial index, the same failure shape as the missing shared-drive flags in 5.7. Both repos returned `false` at ~1,000 blobs, so this is currently latent rather than live, which is exactly when it is cheapest to handle. The walk refuses on a truncated tree rather than indexing what it happened to receive.
 - **K5**: the embeddings gate, formalized: the probe script that POSTs `/v1/embeddings` and records the 404, checked in as the Phase 7 gate. Already measured once this session.
 - **K6**: `websearch_to_tsquery` and `pg_trgm` behaviour on garbage, short and adversarial queries, against a local corpus of this repo's own docs; pick the trgm threshold. An afternoon, no external account.
 - **K7**: the token path end to end: widen `SESSION_TOKEN_SCOPES` in a branch, call a stub endpoint from a tool reading the seeded token, assert `LocalJwtVerifyProvider` admits it with the session target and refuses a foreign session. Mostly de-risked by A1 and the nudge path; half a day to prove.
@@ -840,7 +859,7 @@ plus every `-e` from the compose block including `AGENT_CONTROL_EXECUTOR_DRIVE_R
 
 One engineer, including tests, in this repo's convention. Configuration and real work separated per phase.
 
-**Phase 0: probes and the admin checklist. 1 week. Blocks everything.** K1-K7, plus in writing: the service account exists with no domain-wide delegation, the company folder is shared to it, the trust preconditions of section 7 hold, and the `knowledge.yaml` allowlist has an owner. If K1 fails (service-account sharing does not behave as documented), stop and re-plan section 2.1 before anything is built.
+**Phase 0: probes and the admin checklist. 1 week. Blocks everything.** K1-K7, plus in writing: the reader identity holds only `drive.readonly` under its own OAuth client, the company folder is shared to it, the trust preconditions of section 7 hold, and the `knowledge.yaml` allowlist has an owner from Phase 5 onward. If K1 fails, stop and re-plan section 2.1 before anything is built. **Amended 2026-08-10:** the service-account form of this checklist is void, because the Google organisation enforces `iam.disableServiceAccountKeyCreation`. K1 ran and passed. Section 7's written half is now load-bearing rather than belt-and-braces, since the runtime trust check turned out to be fail-open and does not exist.
 
 **Phase 1: the store. 1.5 weeks. Depends on K1 only.** `knowledge_db_init.sql` with its isolation assertions in both directions (including the positive-SELECT check from 4.1) and the dev one-shot; migrations 001-003 (extension plus reader privileges, tables plus the seeded `sync_lease` row, indexes); `store.py`; the chunker; the scrub and name normalization. Real work with one config edge (the init script), and the chunker is the only subtle code.
 
@@ -877,7 +896,7 @@ through it. The console reads are metered on their own bucket, keyed on a
 hashed caller composed server-side: an unmetered surface beside a metered one
 is not a convenience, it is the way around the ceiling.
 
-**Phase 4: `serve`, status endpoint, staleness. 1 week. Depends on Phase 3.** The loop with jitter and SIGTERM discipline, `GET /company-knowledge/status`, `last_verified_at` and the staleness line, the startup half-on log lines, `.env.example` completion, the parity CI grep (env vars and mount paths, per section 12).
+**Phase 4: `serve`, status endpoint, staleness. 1 week. Depends on Phase 3.** The loop with jitter and SIGTERM discipline, `GET /company-knowledge/status`, `last_verified_at` and the staleness line, the startup half-on log lines. `.env.example` completion and the parity check both shipped early, in Phase 2. One prerequisite from the build: `sync.py` finished at 492 lines against the 500-line cap, so the `serve` loop cannot land in it until `SyncJournal` moves to its own module.
 
 **Phase 5: GitHub files. 1.5 weeks. Depends on Phase 2's skeleton.** Allowlist loading, tree walk with path filters, since-cursor and the force-push fallback, sniff-based binary refusal, K4's token in the container.
 
@@ -885,7 +904,15 @@ is not a convenience, it is the way around the ceiling.
 
 **Phase 7: embeddings, gated on K5's probe passing. Unscheduled.** pgvector column beside `body_tsv`, hybrid rank, the doctor gate. Not designed further here because designing against a provider that measurably does not exist is how plans acquire fiction.
 
-**Phase 8: the console sources page, per-team collections. Unscheduled.** Named so nobody thinks they were forgotten.
+**Phase 8: the console sources panel. 0.5 weeks. Scheduled by operator decision, 2026-08-10.** Per-team collections stay unscheduled and keep their place in this line so nobody thinks they were forgotten.
+
+The decision that produced this also settled what the panel is *not*. A "Connect Drive" button was considered and refused, and the reasoning is worth keeping because it will be proposed again. Linking is a one-time act already done out of band: `agent-knowledge-sync-bootstrap` mints the refresh token on a machine with a browser and a person pastes three lines into `.env`, the same shape `AGENT_CONTROL_LINEAR_API_KEY` and the executor secret already have. A button would remove that last step and neither of the two before it, since nobody can create a GCP OAuth client or share a folder from inside this console. What it would do is move a live source credential out of one process's environment and into Postgres, where it joins every backup and `pg_dump` and becomes readable by anything holding database access. That is a posture change, and it does not get to arrive as a side effect of a nicer setup experience. If a second deployment ever makes hand-editing `.env` the real obstacle, it can be argued on its own terms.
+
+**What the panel shows, chosen from what actually fails here.** Linking Drive once is not the failure mode. The failure mode is a refresh token dying six weeks later, or a passthrough that was never wired, and a corpus that quietly stops moving while every answer still sounds confident. So, per source: whether the credential still exchanges, `last_verified_at` as a human interval, `stale_seconds` against `staleness_warn_seconds`, the cursor position, and the count and reasons of per-item refusals from the last run. Two states get their own treatment rather than a row in a table, because both present as success. **Zero indexed documents on an enabled source** is the shape a missing env passthrough makes and reads identically to an empty folder, so it is called out rather than rendered as a `0`. And a source whose root **fails to resolve** is surfaced with 5.7's reason attached, since a shared-drive root reached without `supportsAllDrives` returns 404 and looks exactly like a folder nobody shared. The panel is read-only and reads `GET /company-knowledge/status`, which Phase 4 already builds; this phase is the view, not new backend surface.
+
+**Built 2026-08-10, as a third tab on `/knowledge` beside "What changed" and "Ask". Four things the contract did not give the view, recorded because three of them are still true.** `refusals_by_code` turned out to be a standing total of tombstoned documents rather than a last-run tally, because the schema carries no per-source, per-code refusal table; the panel therefore reads "Currently excluded", and a test asserts the words "last run" appear nowhere near it. `sources_failing` counts enabled-but-empty sources too, so the header speaks of sources needing attention rather than of failed syncs. There is no `display_name`, so a Drive source is labelled by its folder id, which is honest but not friendly, and a later contract addition would fix it. The fourth was a real defect caught in the build: `last_failure_code` carries a synthesised `no_documents_indexed` for an empty source, making the empty case indistinguishable at the type level from a genuinely broken sync, so any consumer trusting that field renders an empty folder as a stopped one. The panel discards that specific code before deciding state; whether the contract itself should change is under review.
+
+**A run that finished with a recorded error is not a source that stopped**, so a `partial` run (`failing: false` with a real code) is shown as a warning rather than a failure. That distinction was decided during the build rather than here, and it is written down now because a future reader would otherwise find it only in a CSS class name. Polling is 60 seconds, foreground only, no retry, and nothing is requested until the tab is opened, because this route is deliberately not metered while search and recent are.
 
 **Total scheduled: roughly 10 weeks (9 plus the console panel)**, of which the honest split is about 1.5 weeks of configuration and wiring (init scripts, compose, Apple parity, env plumbing, allowlist loading) and 7.5 weeks of real work (chunker, sync, lease, retrieval, fencing, controls, tests). Two things the estimate omits, in `task-dispatcher.md` 15.1's spirit: somebody must own the service-account key and the GitHub token in production, the same unresolved secrets conversation `agent-drive.md` section 9 names; and the first full sync of a large Drive is hours of wall clock against API quotas, which is an operational afternoon, not code.
 
@@ -895,7 +922,7 @@ is not a convenience, it is the way around the ceiling.
 
 **Roughly 3.5 weeks: K1, K6, K7, a cut Phase 1, Phase 2 with `once` only, and a cut Phase 3.** No GitHub, no `serve`, no status endpoint, no staleness line, no Phase 4.
 
-1. A human runs `knowledge_db_init.sql` once, shares one Drive folder with the service account, and records the three section 7 preconditions for that folder in `knowledge.yaml` before the first sync.
+1. A human runs `knowledge_db_init.sql` once, mints the reader's refresh token with `agent-knowledge-sync-bootstrap`, shares one Drive folder with that identity, and records the three section 7 preconditions for the folder in writing before the first sync.
 2. `knowledge.yaml` names that one folder. `agent-control-knowledge once` runs by hand and reports what it indexed, converted and skipped.
 3. The endpoint ships with the per-call caps **and** the session window, because "search only, k-capped, rate-bounded" is advertised in section 13 as a property of the system, not of Phase 3, and the window is `turn_quota.py`'s shape, under a day of work; cutting it would leave nothing bounding an injected search loop that snowball-enumerates the folder inside one turn, which is exactly what 8.4 promises cannot happen. The tool ships on one agent, `root_agent.company_knowledge_search` joins that agent's allowlist control, and the observe control is bound. If that agent also holds a web tool, section 3.1 is read first and the pairing is a recorded choice.
 4. W-K2 and W-K4 run against the stub before anyone presses play.
@@ -932,7 +959,8 @@ A review round against an earlier draft returned four majors and seven minors; n
 | The agent-output ingest guard could never fire (env var never delivered to the sync) and equality missed subfolders | 11 (ancestry walk, half-on log line, the canary backstop), 12 (the env line in both runtimes, same commit) |
 | Sheets exported as CSV would silently mirror the first tab only | 5.2 (xlsx export through the shipped converter), K3 |
 | Fence header interpolated untrusted names un-neutralized | 4.2 (index-time normalization), 8.5 (all-field neutralization and caps), W-K4 |
-| The runtime trust check assumed `permissions.list` works for a reader SA, unverified | 7 (both branches), K1, 18 |
+| The runtime trust check assumed `permissions.list` works for a reader, unverified | 7 (both branches), K1, 18. **Closed 2026-08-10: branch B.** The call returns 200-empty rather than 403, so counting its result is fail-open; there is no runtime check |
+| Drive calls assumed a My Drive root, so a shared-drive root reads as an empty corpus with no error | **Closed 2026-08-10:** 5.7 makes both shared-drive flags mandatory and the loader refuses on an unresolvable root; `agent-drive.md`'s inbound canary carries the same flags |
 | Staleness conflated quiet sources with a dead sync | 4.2 (`last_verified_at`), 5.1, 10 |
 | The minimum slice dropped the rate window it still advertised, and skipped the trust attestation | 17 (window kept, preconditions recorded) |
 | `knowledge_read` had no SELECT path to the tables; the Apple block "mirroring the dispatcher" would have no mounts | 4.1 (default privileges plus the positive assertion), 12 (named mounts, extended CI grep), 15 (positive-SELECT test) |
