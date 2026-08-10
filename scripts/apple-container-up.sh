@@ -30,6 +30,7 @@ NETWORK=agent-control
 PG_NAME=ac-postgres
 SERVER_NAME=ac-server
 DISPATCHER_NAME=ac-dispatcher
+KNOWLEDGE_NAME=ac-knowledge
 
 container network inspect "$NETWORK" >/dev/null 2>&1 || container network create "$NETWORK"
 container volume inspect ac-pgdata >/dev/null 2>&1 || container volume create ac-pgdata
@@ -154,6 +155,34 @@ container run -d --name "$DISPATCHER_NAME" --network "$NETWORK" -a arm64 \
         --max-tasks "${AGENT_CONTROL_DISPATCHER_MAX_TASKS:-1}" >/dev/null
 fi
 echo "   polling ${SERVER_IP}:8000"
+
+# Phase 2 is `once`: run to completion, then exit. Detached so `up` does not
+# block on a first full sync, and skipped outright when the Drive credentials
+# are unset - a sync that authenticates against nothing reports zero documents,
+# which is indistinguishable from an empty folder.
+echo "== knowledge sync"
+if [ -z "${AGENT_KNOWLEDGE_DRIVE_REFRESH_TOKEN:-}" ] || [ -z "${AGENT_KNOWLEDGE_DRIVE_ROOT_FOLDER_ID:-}" ]; then
+  echo "   skipped: AGENT_KNOWLEDGE_DRIVE_REFRESH_TOKEN or AGENT_KNOWLEDGE_DRIVE_ROOT_FOLDER_ID unset"
+elif running "$KNOWLEDGE_NAME"; then
+  echo "   already running"
+else
+container rm "$KNOWLEDGE_NAME" >/dev/null 2>&1 || true
+container run -d --name "$KNOWLEDGE_NAME" --network "$NETWORK" -a arm64 \
+  -e "AGENT_KNOWLEDGE_DB_URL=postgresql+psycopg://knowledge_sync:${KNOWLEDGE_DB_PASSWORD:-knowledge_local}@${PG_IP}:5432/agent_knowledge" \
+  -e "AGENT_KNOWLEDGE_DRIVE_CLIENT_ID=${AGENT_KNOWLEDGE_DRIVE_CLIENT_ID:-}" \
+  -e "AGENT_KNOWLEDGE_DRIVE_CLIENT_SECRET=${AGENT_KNOWLEDGE_DRIVE_CLIENT_SECRET:-}" \
+  -e "AGENT_KNOWLEDGE_DRIVE_REFRESH_TOKEN=${AGENT_KNOWLEDGE_DRIVE_REFRESH_TOKEN:-}" \
+  -e "AGENT_KNOWLEDGE_DRIVE_ROOT_FOLDER_ID=${AGENT_KNOWLEDGE_DRIVE_ROOT_FOLDER_ID:-}" \
+  -e "AGENT_KNOWLEDGE_GITHUB_TOKEN=${AGENT_KNOWLEDGE_GITHUB_TOKEN:-}" \
+  -e "AGENT_KNOWLEDGE_FILE_MAX_BYTES=${AGENT_KNOWLEDGE_FILE_MAX_BYTES:-}" \
+  -e "AGENT_KNOWLEDGE_MAX_DOCUMENTS_PER_RUN=${AGENT_KNOWLEDGE_MAX_DOCUMENTS_PER_RUN:-}" \
+  -e "AGENT_KNOWLEDGE_REQUEST_TIMEOUT_SECONDS=${AGENT_KNOWLEDGE_REQUEST_TIMEOUT_SECONDS:-}" \
+  -e "AGENT_KNOWLEDGE_LOG_LEVEL=${AGENT_KNOWLEDGE_LOG_LEVEL:-INFO}" \
+  -e "AGENT_CONTROL_EXECUTOR_DRIVE_ROOT_ID=${AGENT_CONTROL_EXECUTOR_DRIVE_ROOT_ID:-}" \
+  agent-control-knowledge:local \
+  once >/dev/null
+echo "   syncing against $PG_IP; container logs $KNOWLEDGE_NAME"
+fi
 
 echo
 echo "UI: http://localhost:${AGENT_CONTROL_SERVER_HOST_PORT:-8000}/ui"

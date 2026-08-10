@@ -99,26 +99,13 @@ services:
       # entry is refused.
       AGENT_CONTROL_LINEAR_WRITE_ENABLED: ${AGENT_CONTROL_LINEAR_WRITE_ENABLED:-false}
       AGENT_CONTROL_LINEAR_CONSOLE_BASE_URL: ${AGENT_CONTROL_LINEAR_CONSOLE_BASE_URL:-}
-      # Company knowledge, read side. Off by default; while off, nothing here
-      # touches the corpus database and every search answers a stated
-      # `knowledge_disabled` refusal. The routes are registered either way, so
-      # a stack that never enabled this still serves the same OpenAPI spec.
-      #
-      # The DSN is passed through rather than composed here, and that is the
-      # difference between a signal and a lie. This file starts no
-      # knowledge-db-init: the corpus lives in its own database that something
-      # else has to create (docker-compose.dev.yml, scripts/apple-container-up.sh,
-      # or server/scripts/knowledge_db_init.sql by hand). A URL hardcoded here
-      # would name a database this stack never made, so enabling the feature
-      # without provisioning it would refuse every search with no startup line
-      # at all - and every stack that never wanted knowledge would log the
-      # configured-but-disabled line on every boot. Unset, the off state is
-      # silent and the enabled-with-no-DSN state says so by name.
-      #
-      # When you do set it, it is the knowledge_read role - SELECT and nothing
-      # else, from server/scripts/knowledge_db_init.sql - and deliberately not
-      # the control-plane credential and not the sync's. Inside this network
-      # the host is `postgres`, not localhost.
+      # Company knowledge, read side. Off by default; while off every search
+      # answers a stated `knowledge_disabled` refusal and the routes still
+      # register, so the OpenAPI spec never depends on one deployment's env.
+      # The DSN is passed through, not composed: this file provisions no corpus
+      # database, so a hardcoded URL would name one that was never created.
+      # It is the knowledge_read role - SELECT only, not the control-plane
+      # credential and not the sync's. In this network the host is `postgres`.
       AGENT_CONTROL_KNOWLEDGE_ENABLED: ${AGENT_CONTROL_KNOWLEDGE_ENABLED:-false}
       AGENT_CONTROL_KNOWLEDGE_DB_URL: ${AGENT_CONTROL_KNOWLEDGE_DB_URL:-}
       AGENT_CONTROL_KNOWLEDGE_SEARCH_MAX_RESULTS: ${AGENT_CONTROL_KNOWLEDGE_SEARCH_MAX_RESULTS:-5}
@@ -193,6 +180,49 @@ services:
     # reach its own finish call; killing it before that leaves the row at
     # `running` until its lease lapses, which is recoverable and still ugly.
     stop_grace_period: 330s
+
+  # Company knowledge sync. Phase 2 is `once`, so this runs to completion and
+  # exits rather than looping.
+  #
+  # Behind a profile, so `docker compose up` never starts it. An unconfigured
+  # sync running on every `up` would authenticate against nothing and report a
+  # successful sync of zero documents, which reads exactly like an empty folder.
+  # Run it when you mean it:
+  #
+  #   docker compose run --rm knowledge-sync
+  knowledge-sync:
+    platform: ${AGENT_CONTROL_SERVER_PLATFORM:-linux/amd64}
+    image: ${AGENT_CONTROL_KNOWLEDGE_IMAGE:-agent-control-knowledge:local}
+    build:
+      context: .
+      dockerfile: knowledge_sync/Dockerfile
+    profiles: ["knowledge"]
+    command: ["once"]
+    environment:
+      # The sync's own role, passed through like the reader DSN above. No Agent
+      # Control API key at all: this process never calls the server.
+      AGENT_KNOWLEDGE_DB_URL: ${AGENT_KNOWLEDGE_DB_URL:-}
+      # The only container in this stack holding a Drive credential (2.2).
+      AGENT_KNOWLEDGE_DRIVE_CLIENT_ID: ${AGENT_KNOWLEDGE_DRIVE_CLIENT_ID:-}
+      AGENT_KNOWLEDGE_DRIVE_CLIENT_SECRET: ${AGENT_KNOWLEDGE_DRIVE_CLIENT_SECRET:-}
+      AGENT_KNOWLEDGE_DRIVE_REFRESH_TOKEN: ${AGENT_KNOWLEDGE_DRIVE_REFRESH_TOKEN:-}
+      # One shared root, descended recursively (5.7). Not a list, not sharedWithMe.
+      AGENT_KNOWLEDGE_DRIVE_ROOT_FOLDER_ID: ${AGENT_KNOWLEDGE_DRIVE_ROOT_FOLDER_ID:-}
+      # Phase 5. Contents + metadata read, on an explicit repo list.
+      AGENT_KNOWLEDGE_GITHUB_TOKEN: ${AGENT_KNOWLEDGE_GITHUB_TOKEN:-}
+      # Ceilings. Empty means the sync's own default; restating one here is how
+      # two defaults drift apart.
+      AGENT_KNOWLEDGE_FILE_MAX_BYTES: ${AGENT_KNOWLEDGE_FILE_MAX_BYTES:-}
+      AGENT_KNOWLEDGE_MAX_DOCUMENTS_PER_RUN: ${AGENT_KNOWLEDGE_MAX_DOCUMENTS_PER_RUN:-}
+      AGENT_KNOWLEDGE_REQUEST_TIMEOUT_SECONDS: ${AGENT_KNOWLEDGE_REQUEST_TIMEOUT_SECONDS:-}
+      AGENT_KNOWLEDGE_LOG_LEVEL: ${AGENT_KNOWLEDGE_LOG_LEVEL:-INFO}
+      # The agent-output ingest guard (section 11). A guard keyed on a variable
+      # the container never receives is the bug this block exists to prevent.
+      AGENT_CONTROL_EXECUTOR_DRIVE_ROOT_ID: ${AGENT_CONTROL_EXECUTOR_DRIVE_ROOT_ID:-}
+    depends_on:
+      - postgres
+    # `unless-stopped` would turn one sync into an endless loop.
+    restart: "no"
 
 volumes:
   pgdata:

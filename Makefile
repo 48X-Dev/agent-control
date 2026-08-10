@@ -1,4 +1,4 @@
-.PHONY: help sync openapi-spec openapi-spec-check test test-extras test-all contrib-verify scripts-test models-test dispatcher-test test-models test-sdk lint lint-fix typecheck check build build-models build-server build-sdk publish publish-models publish-server publish-sdk hooks-install hooks-uninstall prepush evaluators-test evaluators-lint evaluators-lint-fix evaluators-typecheck evaluators-build contrib-test contrib-lint contrib-lint-fix contrib-typecheck contrib-build sdk-ts-generate sdk-ts-overlay-test sdk-ts-name-check sdk-ts-generate-check sdk-ts-build sdk-ts-test sdk-ts-lint sdk-ts-typecheck sdk-ts-release-check sdk-ts-publish-dry-run sdk-ts-publish telemetry-test telemetry-lint telemetry-lint-fix telemetry-typecheck telemetry-build telemetry-publish
+.PHONY: help sync openapi-spec openapi-spec-check test test-extras test-all contrib-verify scripts-test models-test dispatcher-test knowledge-sync-test test-models test-sdk lint lint-fix typecheck check build build-models build-server build-sdk publish publish-models publish-server publish-sdk hooks-install hooks-uninstall prepush evaluators-test evaluators-lint evaluators-lint-fix evaluators-typecheck evaluators-build contrib-test contrib-lint contrib-lint-fix contrib-typecheck contrib-build sdk-ts-generate sdk-ts-overlay-test sdk-ts-name-check sdk-ts-generate-check sdk-ts-build sdk-ts-test sdk-ts-lint sdk-ts-typecheck sdk-ts-release-check sdk-ts-publish-dry-run sdk-ts-publish telemetry-test telemetry-lint telemetry-lint-fix telemetry-typecheck telemetry-build telemetry-publish
 
 # Workspace package names
 PACK_MODELS := agent-control-models
@@ -8,6 +8,7 @@ PACK_ENGINE := agent-control-engine
 PACK_TELEMETRY := agent-control-telemetry
 PACK_EVALUATORS := agent-control-evaluators
 PACK_DISPATCHER := agent-control-dispatcher
+PACK_KNOWLEDGE_SYNC := agent-control-knowledge-sync
 OPENAPI_SPEC_PATH := server/.generated/openapi.json
 
 # Directories
@@ -20,6 +21,7 @@ TELEMETRY_DIR := telemetry
 EVALUATORS_DIR := evaluators/builtin
 CONTRIB_DIR := evaluators/contrib
 DISPATCHER_DIR := dispatcher
+KNOWLEDGE_SYNC_DIR := knowledge_sync
 UI_DIR := ui
 
 define run-contrib-target
@@ -97,7 +99,7 @@ openapi-spec-check: openapi-spec
 # Test
 # ---------------------------
 
-test: contrib-verify scripts-test models-test telemetry-test server-test engine-test sdk-test evaluators-test dispatcher-test contrib-test
+test: contrib-verify scripts-test models-test telemetry-test server-test engine-test sdk-test evaluators-test dispatcher-test knowledge-sync-test contrib-test
 
 contrib-verify:
 	uv run python scripts/contrib_packages.py verify
@@ -120,6 +122,23 @@ telemetry-test:
 dispatcher-test:
 	cd $(DISPATCHER_DIR) && uv run pytest --cov=src --cov-report=xml:../coverage-dispatcher.xml -q
 
+# Same gap as dispatcher-test above, one package over. The schema reflection
+# test is the only thing holding the sync's table metadata to the server's
+# migrations, and a drift check nothing runs is a comment.
+#
+# --extra text-extraction because knowledge_sync/Dockerfile installs it: without
+# MarkItDown the conversion tests exercise a different program than the one that
+# ships. Run from the repo root, which is where the conftest resolves its fakes.
+#
+# The database-backed tests SKIP when no Postgres answers. They are keyed on
+# AGENT_CONTROL_DB_HOST/_PORT/_USER/_PASSWORD, which also accept the bare
+# DB_HOST/DB_PORT/DB_USER/DB_PASSWORD aliases the CI workflow already sets.
+knowledge-sync-test:
+	uv run --package $(PACK_KNOWLEDGE_SYNC) --extra text-extraction \
+		pytest $(KNOWLEDGE_SYNC_DIR)/tests \
+		--cov=$(KNOWLEDGE_SYNC_DIR)/src \
+		--cov-report=xml:coverage-knowledge-sync.xml -q
+
 # Run tests for discovered contrib evaluators
 test-extras: contrib-test
 
@@ -138,18 +157,21 @@ lint: engine-lint telemetry-lint evaluators-lint contrib-lint
 	uv run --package $(PACK_SERVER) ruff check --config pyproject.toml server/src
 	uv run --package $(PACK_SDK) ruff check --config pyproject.toml sdks/python/src
 	uv run --package $(PACK_DISPATCHER) ruff check --config pyproject.toml dispatcher/src dispatcher/tests
+	uv run --package $(PACK_KNOWLEDGE_SYNC) ruff check --config pyproject.toml knowledge_sync/src knowledge_sync/tests
 
 lint-fix: engine-lint-fix telemetry-lint-fix evaluators-lint-fix contrib-lint-fix
 	uv run --package $(PACK_MODELS) ruff check --config pyproject.toml --fix models/src
 	uv run --package $(PACK_SERVER) ruff check --config pyproject.toml --fix server/src
 	uv run --package $(PACK_SDK) ruff check --config pyproject.toml --fix sdks/python/src
 	uv run --package $(PACK_DISPATCHER) ruff check --config pyproject.toml --fix dispatcher/src dispatcher/tests
+	uv run --package $(PACK_KNOWLEDGE_SYNC) ruff check --config pyproject.toml --fix knowledge_sync/src knowledge_sync/tests
 
 typecheck: engine-typecheck telemetry-typecheck evaluators-typecheck contrib-typecheck
 	uv run --package $(PACK_MODELS) mypy --config-file pyproject.toml models/src
 	uv run --package $(PACK_SERVER) mypy --config-file pyproject.toml server/src
 	uv run --package $(PACK_SDK) mypy --config-file pyproject.toml sdks/python/src
 	uv run --package $(PACK_DISPATCHER) mypy --config-file pyproject.toml dispatcher/src
+	uv run --package $(PACK_KNOWLEDGE_SYNC) mypy --config-file pyproject.toml knowledge_sync/src
 
 telemetry-lint:
 	$(MAKE) -C $(TELEMETRY_DIR) lint

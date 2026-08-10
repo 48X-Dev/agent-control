@@ -42,15 +42,24 @@ jobs:
       - name: Setup uv
         uses: astral-sh/setup-uv@v4
 
+      # postgresql-client is not optional: knowledge_provisioning.py shells out
+      # to psql to run knowledge_db_init.sql, and without it every corpus test
+      # skips and the build stays green.
       - name: Install libpq runtime
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libpq5
+          sudo apt-get install -y --no-install-recommends libpq5 postgresql-client
 
       - name: Show versions
         run: |
           uv --version
           python --version
+
+      # A knowledge setting that exists in .env and reaches no process has
+      # shipped four times here, and for the sync it presents as a successful
+      # run over zero documents. Runs early: it needs nothing installed.
+      - name: Company knowledge env parity
+        run: python3 scripts/check_knowledge_env_parity.py
 
       - name: Verify contrib packaging contract
         run: make contrib-verify
@@ -60,6 +69,21 @@ jobs:
 
       - name: Run Python checks
         run: make check
+
+      # The corpus tests skip when no Postgres answers, and `make check` stays
+      # green when they do. Schema reflection is the only thing holding the
+      # sync's table metadata to the server's migrations, so it has to actually
+      # run. Same skip-guard idiom as adk-contract-ci below, same reason.
+      - name: Knowledge corpus tests actually ran
+        run: |
+          set -o pipefail
+          uv run --package agent-control-knowledge-sync --extra text-extraction \
+            pytest knowledge_sync/tests/test_schema_reflection.py -q -rs \
+            2>&1 | tee knowledge-corpus.log
+          if grep -Eq "[0-9]+ skipped" knowledge-corpus.log; then
+            echo "::error::The knowledge corpus tests skipped instead of running, so they proved nothing. Check that the Postgres service is reachable and that psql is on PATH."
+            exit 1
+          fi
 
       - name: Collect coverage files
         id: coverage_files
@@ -73,6 +97,8 @@ jobs:
               "coverage-telemetry.xml",
               "coverage-server.xml",
               "coverage-sdk.xml",
+              "coverage-dispatcher.xml",
+              "coverage-knowledge-sync.xml",
           ]
           contrib_reports = sorted(path.name for path in Path(".").glob("coverage-evaluators-*.xml"))
           print(f"files={','.join([*base_reports, *contrib_reports])}")
@@ -150,6 +176,20 @@ jobs:
           if grep -rn "dangerouslySetInnerHTML\|innerHTML" \
               ui/src/core/page-components/agent-detail/agent-chat/; then
             echo "::error::Raw HTML is not allowed in the chat panel."
+            exit 1
+          fi
+
+      # Third directory, same rule, and here the untrusted author is anybody
+      # who can add a file to an indexed Drive folder. The server neutralizes
+      # the fence markers a model would act on and deliberately does not escape
+      # markup, because escaping would corrupt the text an agent quotes - so
+      # the rendering is the only thing between a document's author and this
+      # console's DOM.
+      - name: No raw HTML in the knowledge panel
+        run: |
+          if grep -rn "dangerouslySetInnerHTML\|innerHTML" \
+              ui/src/core/page-components/knowledge/; then
+            echo "::error::Raw HTML is not allowed in the knowledge panel."
             exit 1
           fi
 

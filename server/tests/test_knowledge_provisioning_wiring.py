@@ -45,6 +45,10 @@ INIT_TEXT: Final = INIT_SQL.read_text()
 READ_PASSWORD_VAR: Final = "KNOWLEDGE_READ_DB_PASSWORD"
 SYNC_PASSWORD_VAR: Final = "KNOWLEDGE_DB_PASSWORD"
 
+# The shell variable naming the one container allowed to hold the sync
+# credential. Everything else the Apple script starts must not see it.
+SYNC_CONTAINER_VAR: Final = "KNOWLEDGE_NAME"
+
 _DSN_RE: Final = re.compile(
     r"postgresql\+psycopg://(?P<user>[^:@\s]+):(?P<password>[^@\s]+)"
     r"@(?P<host>[^:/\s]+):(?P<port>\d+)/(?P<database>[A-Za-z0-9_]+)"
@@ -125,6 +129,33 @@ def compose(path: Path) -> dict[str, Any]:
     return parsed
 
 
+def container_blocks(script: str) -> dict[str, str]:
+    """Each ``container run`` invocation, keyed by the shell variable naming it.
+
+    The Apple script has no compose to group an environment under a service, so
+    a whole-file scan cannot tell the server's ``-e`` lines from the sync's.
+    Which container holds a credential IS the isolation, so the blocks have to
+    be parsed rather than grepped. Continuation lines end in a backslash, which
+    is what bounds a block.
+    """
+    blocks: dict[str, str] = {}
+    lines = script.splitlines()
+    index = 0
+    while index < len(lines):
+        if "container run" in lines[index]:
+            collected: list[str] = []
+            while index < len(lines):
+                collected.append(lines[index])
+                if not lines[index].rstrip().endswith("\\"):
+                    break
+                index += 1
+            block = "\n".join(collected)
+            named = re.search(r'--name\s+"?\$\{?(\w+)\}?"?', block)
+            blocks[named.group(1) if named else f"unnamed_{len(blocks)}"] = block
+        index += 1
+    return blocks
+
+
 # --- The two halves have to name the same corpus ----------------------------
 
 
@@ -195,15 +226,55 @@ def test_the_server_is_never_handed_the_sync_credential(runtime: Runtime) -> Non
     The sync role owns the corpus and parses hostile bytes. A control plane
     holding its password could rewrite the snippets a later turn reads back,
     and the separation would be a comment rather than a privilege.
+
+    Scoped per container, not per file. The sync container holds this credential
+    by design, so a whole-file scan can only be satisfied by taking it away from
+    the one process that needs it - trading a real isolation check for a sync
+    that authenticates against nothing. The pairing test below is the other half.
     """
     dsn = knowledge_dsn(runtime.consumes).group(0)
 
     assert "knowledge_sync" not in dsn
     assert SYNC_PASSWORD_VAR not in dsn
 
+    blocks = container_blocks(runtime.consumes)
+    assert SYNC_CONTAINER_VAR in blocks, f"{runtime.name} starts no sync container"
+
+    for name, block in blocks.items():
+        if name == SYNC_CONTAINER_VAR:
+            continue
+        assert SYNC_PASSWORD_VAR not in block, f"{name} is handed {SYNC_PASSWORD_VAR}"
+        assert "knowledge_sync" not in block, f"{name} is handed the knowledge_sync role"
+
+    # Outside every run block the only thing entitled to the sync password is
+    # the psql call that creates the role.
+    inside = {line for block in blocks.values() for line in block.splitlines()}
     for line in runtime.consumes.splitlines():
-        if SYNC_PASSWORD_VAR in line:
+        if SYNC_PASSWORD_VAR in line and line not in inside:
             assert "knowledge_sync_password" in line, line.strip()
+
+
+def test_the_sync_container_is_handed_the_credential_it_needs() -> None:
+    """The other half of the rule above, so nobody satisfies it by deletion.
+
+    Removing the DSN would make the isolation test pass and leave a container
+    that authenticates against nothing, reports a completed run over zero
+    documents, and reads exactly like an empty folder. The role it dials and the
+    role the script creates are both read out of the SQL, so a rename on one
+    side fails here rather than at the first sync.
+    """
+    block = container_blocks(APPLE_SCRIPT.read_text())[SYNC_CONTAINER_VAR]
+    dsn = _DSN_RE.search(block)
+
+    assert dsn is not None, "the sync container is handed no corpus DSN"
+    assert dsn.group("user") == script_default("knowledge_sync_role")
+    assert dsn.group("database") == script_default("knowledge_db")
+
+    provisioned = passed_variable(APPLE_SCRIPT.read_text(), "knowledge_sync_password")
+    assert provisioned is not None
+    assert default_of(provisioned, SYNC_PASSWORD_VAR) == default_of(
+        dsn.group("password"), SYNC_PASSWORD_VAR
+    )
 
 
 def test_the_published_compose_file_carries_no_sync_credential_at_all() -> None:
