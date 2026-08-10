@@ -1,27 +1,8 @@
-"""Google OAuth for the corpus reader, as a refresh token and no key on disk.
+"""OAuth token loop for the corpus reader. Refresh token only, no key on disk.
 
-**Why not a service account.** ``company-knowledge.md`` 2.1 specified a
-dedicated service account, and this deployment's Google organisation enforces
-``iam.disableServiceAccountKeyCreation``. That policy is correct and this module
-exists rather than a request to disable it: a downloadable service-account key
-does not expire, does not rotate, and leaks silently.
-
-**Why this shape instead.** ``agent-drive.md`` already chose an OAuth client and
-a refresh token for the *write* identity, held in one process's environment, and
-this is the same shape for the *read* identity. The containment property the
-service account was chosen for survives whole: a Workspace account that owns
-nothing and that no human logs into sees exactly what has been shared to it,
-which is what ``drive.readonly`` then reaches.
-
-**The account must not be the agent's.** ``agent-drive.md`` 4.4.1's inbound
-canary asserts ``sharedWithMe`` stays empty on ``agent.control@earlycore.dev``
-forever, and treats non-empty as evidence the scope was widened. Sharing the
-company corpus with the agent account would latch the Drive server off - the
-correct outcome for the signal it is, and the reason the reader is a second
-account.
-
-Nothing here reads a file. This module turns credentials into a bearer token
-and nothing else; the Drive walk is Phase 2 and lands beside it.
+The reader is the agent's own account under a separate ``drive.readonly``
+client, and it reaches exactly one shared root. See ``company-knowledge.md``
+2.1 for the identity decision and 5.7 for the scope.
 """
 
 from __future__ import annotations

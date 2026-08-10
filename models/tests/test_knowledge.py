@@ -53,6 +53,33 @@ def test_a_sibling_heading_replaces_rather_than_deepens() -> None:
     assert paths == ["Handbook > Laptops", "Handbook > Phones"]
 
 
+def test_a_document_whose_top_heading_is_level_two_still_reads_siblings_as_siblings() -> None:
+    """A GitHub README that opens at ``##`` has no ``#`` for its sections to hang off."""
+    text = (
+        f"## Install\n\n{_paragraph(400, 'install')}\n\n"
+        f"## Usage\n\n{_paragraph(400, 'usage')}\n"
+    )
+    paths = [chunk.heading_path for chunk in chunk_markdown(text)]
+    assert paths == ["Install", "Usage"]
+
+
+def test_a_skipped_heading_level_does_not_bury_what_follows() -> None:
+    """``#`` then ``###`` leaves level 2 empty; the two ``###`` are still siblings."""
+    text = (
+        f"# Handbook\n\n{_paragraph(400, 'intro')}\n\n"
+        f"### Laptops\n\n{_paragraph(400, 'laptop')}\n\n"
+        f"### Phones\n\n{_paragraph(400, 'phone')}\n\n"
+        f"## Travel\n\n{_paragraph(400, 'travel')}\n"
+    )
+    paths = [chunk.heading_path for chunk in chunk_markdown(text)]
+    assert paths == [
+        "Handbook",
+        "Handbook > Laptops",
+        "Handbook > Phones",
+        "Handbook > Travel",
+    ]
+
+
 def test_preamble_before_the_first_heading_carries_no_path() -> None:
     text = f"{_paragraph(400, 'intro')}\n\n# Onboarding\n\n{_paragraph(400)}\n"
     chunks = chunk_markdown(text)
