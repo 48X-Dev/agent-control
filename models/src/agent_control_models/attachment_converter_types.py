@@ -1,14 +1,7 @@
 """What a conversion result *is*, separated from the machinery that fills it in.
 
-Split out of ``attachment_converter`` for one reason: that module carries the
-measurements and the reasoning behind every escalation decision, and the two
-together outgrew a file anyone wants to read. Nothing here makes a decision.
-These are the vocabulary and the shapes, and they are the whole of what a
-caller needs to store a result or render a descriptor from one.
-
-Import from ``attachment_converter``, not from here. Every name below is
-re-exported there, so the pipeline and its contract stay one import for callers
-while remaining two files on disk.
+Nothing here makes a decision. Import from ``attachment_converter``, not from
+here: every name below is re-exported there.
 """
 
 from __future__ import annotations
@@ -23,31 +16,8 @@ from .attachment_converter_backends import ConverterKind
 LOW_TEXT_THRESHOLD_CHARS = 40
 """Below this many meaningful characters, a converter's read triggers the next one.
 
-**An escalation trigger and not a delivery floor.** It answers one question -
-"is this thin enough to be worth twenty seconds of OCR" - and it stops
-mattering once there is nothing left to escalate to. A converter that has run
-last and found something is reported as having found it however little it is,
-because the alternative is a result that carries text under a status saying
-none was found. See :func:`_degraded_status` for the measurement that settled
-this.
-
-Not a tuned number. It is the plan's own ``attachment_low_text_page_chars``,
-the count under which a page is already defined to carry no usable text, read
-here as a whole-document floor. Forty characters is shorter than most filenames
-and no agent can act on it.
-
-Against the measured corpus it separates cleanly: the carousel PDF's text layer
-is 733 characters, eighteen times the threshold, and every PNG is zero. There
-is no near-miss on either side of it, so the exact value is not load-bearing
-anywhere in the range 1 to 700 - which is the argument for choosing one that
-already means something rather than inventing a constant.
-
-**What it does not catch, stated rather than discovered.** A PDF whose text
-layer holds a 200-character title page in front of twenty scanned pages clears
-this threshold and never escalates. That is the plan's section 2.5 gap in its
-converter form: this module measures text, and text is not coverage. Per-page
-counters are the mechanism that would close it and they need a page-aware
-converter, which is a later phase."""
+An escalation trigger and not a delivery floor: it stops mattering once there
+is nothing left to escalate to."""
 
 DEFAULT_TEXT_MAX_CHARS = 2_560_000
 """The plan's ``attachment_text_max_chars``. A cap, not a policy: exceeding it
@@ -68,16 +38,9 @@ DEFAULT_CONVERTIBLE_MIMES = frozenset(
 )
 """The types this library will hand to a parser.
 
-The same set the plan admits, restated as a default argument rather than read
-from configuration, because this module reads no configuration. A caller with a
-different accepted set passes it in.
-
-**This set and ``settings.attachment_accepted_mimes`` must be changed together.**
-Nothing in the server constructs ``ConversionOptions`` from settings today, so
-they are two independent lists of the same policy: admitting a type upstream and
-not here stores a file and then refuses to read it, which is a worse answer than
-refusing the upload. If a deployment ever needs to configure this, the fix is to
-build the options from settings rather than to widen this default."""
+Must change together with ``settings.attachment_accepted_mimes`` and the
+``text-extraction`` extras: admitting a type without a parser stores a file and
+then refuses to read it."""
 
 FAILURE_TYPE_NOT_CONVERTIBLE = "type_not_convertible"
 FAILURE_EMPTY_INPUT = "empty_input"
@@ -133,10 +96,7 @@ class AttemptOutcome(StrEnum):
 class ConverterAttempt:
     """One converter's run, kept whether or not its output was used.
 
-    The losing attempt is the interesting one. "MarkItDown returned zero
-    characters and Docling returned 552" is the sentence that explains a
-    twenty-second conversion, and a result that reported only the winner would
-    make every OCR run look unexplained.
+    The losing attempt is what explains a twenty-second conversion.
     """
 
     name: str
@@ -184,10 +144,7 @@ class ConversionResult:
     meaningful_chars: int = 0
     """Readable characters in :attr:`text` as delivered, counted after any cut.
 
-    The count a caller's delivery floor is meant to be computed on, which is
-    why it describes the string the caller received rather than the one the
-    converter produced. ``attempts`` still carries the pre-cut count per
-    converter, and ``text_truncated`` says a cut happened."""
+    ``attempts`` still carries the pre-cut count per converter."""
 
     @property
     def text_chars(self) -> int:
@@ -197,18 +154,8 @@ class ConversionResult:
     def has_text(self) -> bool:
         """Whether any readable text came back. Not a synonym for success.
 
-        Answered from the text rather than from the status, because the
-        pipeline carries the best text any converter produced under *every*
-        status. A thin text-layer read followed by a missing OCR extra is
-        ``converter_unavailable`` and still holds the title page it found; the
-        same read followed by an OCR pass that broke is ``failed`` and still
-        holds it. Deriving this from the status told the caller nothing was
-        found while the text sat in :attr:`text` unread, which is the same
-        inversion the escalation threshold used to make.
-
-        The division is: ``status`` says how the text was obtained and how far
-        to trust it, this says whether there is any. Counted on the delivered
-        string, so a cap that cuts everything readable is not called text."""
+        Answered from the text rather than the status, because every status
+        carries the best text any converter produced."""
         return self.meaningful_chars > 0
 
 
@@ -220,11 +167,8 @@ def content_sha256(data: bytes) -> str:
 def meaningful_chars(text: str) -> int:
     """Count characters an agent could actually read.
 
-    HTML comments go first because Docling collapses every visual it cannot
-    read into ``<!-- image -->``. Thirty of those is 450 characters of nothing,
-    and a threshold that counted them would call an unreadable document
-    extracted. Whitespace goes next, so a document that is mostly line breaks
-    is measured on its words.
+    HTML comments go first: Docling collapses every unreadable visual into
+    ``<!-- image -->``, and counting those calls an empty document extracted.
     """
     stripped = _HTML_COMMENT.sub(" ", text)
     return len(_WHITESPACE.sub("", stripped))

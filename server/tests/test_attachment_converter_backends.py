@@ -18,15 +18,14 @@ import io
 import os
 
 import pytest
-
-from agent_control_server.services.attachment_converter import (
+from agent_control_models.attachment_converter import (
     LOW_TEXT_THRESHOLD_CHARS,
     AttemptOutcome,
     ConversionStatus,
     convert_attachment,
     meaningful_chars,
 )
-from agent_control_server.services.attachment_converter_backends import (
+from agent_control_models.attachment_converter_backends import (
     ConverterFailedError,
     ConverterKind,
     DoclingBackend,
@@ -167,7 +166,7 @@ class TestTheDoclingBuildIsPaidOnce:
     def test_a_failed_build_is_remembered_rather_than_repeated(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from agent_control_server.services import attachment_converter_backends as mod
+        from agent_control_models import attachment_converter_backends as mod
 
         builds: list[int] = []
         self._fake_docling(monkeypatch, builds)
@@ -184,7 +183,7 @@ class TestTheDoclingBuildIsPaidOnce:
     def test_resetting_the_caches_forgets_the_failure_too(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from agent_control_server.services import attachment_converter_backends as mod
+        from agent_control_models import attachment_converter_backends as mod
 
         builds: list[int] = []
         self._fake_docling(monkeypatch, builds)
@@ -318,7 +317,7 @@ class TestDocling:
         assert "board review" in result.text
 
     def test_the_converter_is_built_once_per_process(self) -> None:
-        from agent_control_server.services import attachment_converter_backends as mod
+        from agent_control_models import attachment_converter_backends as mod
 
         reset_backend_caches()
         first = mod._docling_converter()

@@ -36,11 +36,9 @@ from dataclasses import fields, replace
 from pathlib import Path
 
 import pytest
-from agent_control_models.files import sniff_mime
-
-from agent_control_server.services import attachment_converter as public
-from agent_control_server.services import attachment_converter_backends as backend_module
-from agent_control_server.services.attachment_converter import (
+from agent_control_models import attachment_converter as public
+from agent_control_models import attachment_converter_backends as backend_module
+from agent_control_models.attachment_converter import (
     DEFAULT_CONVERTIBLE_MIMES,
     LOW_TEXT_THRESHOLD_CHARS,
     AttemptOutcome,
@@ -52,7 +50,7 @@ from agent_control_server.services.attachment_converter import (
     convert_attachment,
     convert_attachment_async,
 )
-from agent_control_server.services.attachment_converter_backends import (
+from agent_control_models.attachment_converter_backends import (
     _EXTENSION_BY_MIME,
     ConverterFailedError,
     ConverterKind,
@@ -60,15 +58,18 @@ from agent_control_server.services.attachment_converter_backends import (
     MarkItDownBackend,
     _module_installed,
 )
-from agent_control_server.services.attachment_converter_cache import (
-    CONVERSION_CONTRACT_VERSION,
-    conversion_cache_key,
-)
-from agent_control_server.services.attachment_converter_containers import (
+from agent_control_models.attachment_converter_containers import (
     OOXML_DOCUMENT,
     OOXML_PRESENTATION,
     OOXML_SHEET,
     refine_container_mime,
+)
+from agent_control_models.files import sniff_mime
+
+from agent_control_server.services import attachment_converter_cache as cache_module
+from agent_control_server.services.attachment_converter_cache import (
+    CONVERSION_CONTRACT_VERSION,
+    conversion_cache_key,
 )
 
 PDF = b"%PDF-1.7\n" + b"trailer\n" * 8
@@ -108,6 +109,11 @@ CONVERTER_SOURCES = (
     "attachment_converter_backends.py",
     "attachment_converter_cache.py",
     "attachment_converter_containers.py",
+)
+
+CONVERTER_DIRECTORIES = (
+    Path(public.__file__).parent,
+    Path(cache_module.__file__).parent,
 )
 
 BANNED_IMPORT_ROOTS = frozenset(
@@ -178,7 +184,12 @@ def ocr(**kwargs: object) -> FakeBackend:
 
 
 def converter_source(name: str) -> Path:
-    return Path(public.__file__).parent / name
+    """The library lives in models; the cache key stays beside its caller."""
+    for directory in CONVERTER_DIRECTORIES:
+        candidate = directory / name
+        if candidate.exists():
+            return candidate
+    raise AssertionError(f"no converter source named {name}")
 
 
 def stable(result: ConversionResult) -> ConversionResult:

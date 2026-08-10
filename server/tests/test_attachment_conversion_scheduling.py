@@ -28,6 +28,7 @@ import uuid
 from typing import Any
 
 import pytest
+from agent_control_models.attachment_converter import ConversionStatus
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
@@ -39,7 +40,6 @@ from agent_control_server.services.attachment_conversions import (
     ConversionScheduler,
     schedule_conversion,
 )
-from agent_control_server.services.attachment_converter import ConversionStatus
 from agent_control_server.services.attachment_converter_cache import (
     conversion_cache_key,
 )

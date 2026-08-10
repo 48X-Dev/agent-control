@@ -55,11 +55,11 @@ from typing import Any, Protocol
 from urllib.parse import urljoin, urlsplit
 
 import httpx
+from agent_control_models.attachment_converter_containers import refine_container_mime
 from agent_control_models.attachments import AttachmentRefusalCode
 from agent_control_models.files import sniff_mime
 
 from ..config import LinearSettings
-from .attachment_converter_containers import refine_container_mime
 from .executor_metrics import LINEAR_ATTACHMENT_BYTES, LINEAR_ATTACHMENT_FETCHES, LINEAR_FETCH_OK
 from .linear_attachment_discovery import (
     DiscoveredFile,

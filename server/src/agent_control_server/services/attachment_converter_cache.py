@@ -16,8 +16,8 @@ from __future__ import annotations
 
 import hashlib
 
-from .attachment_converter import DEFAULT_OPTIONS, ConversionOptions
-from .attachment_converter_backends import ConverterBackend, default_backends
+from agent_control_models.attachment_converter import DEFAULT_OPTIONS, ConversionOptions
+from agent_control_models.attachment_converter_backends import ConverterBackend, default_backends
 
 CONVERSION_CONTRACT_VERSION = 1
 """Bumped when a change to the conversion pipeline makes a cached result wrong.

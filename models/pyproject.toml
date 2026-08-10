@@ -14,6 +14,16 @@ authors = [
 readme = "README.md"
 license = {text = "Apache-2.0"}
 
+[project.optional-dependencies]
+# MarkItDown (MIT), ~253MB. Optional: attachment_converter imports it inside the
+# call that needs it and reports `converter_unavailable` without it.
+#
+# The extras list is one half of one policy, DEFAULT_CONVERTIBLE_MIMES the other.
+# Admitting a type without installing its parser has shipped here before: the
+# OOXML types were added after this line said pdf-only, and the first real .pptx
+# was stored and then reported unreadable. Change one, change the other.
+text-extraction = ["markitdown[pdf,pptx,docx,xlsx]>=0.1.7"]
+
 [dependency-groups]
 dev = [
     "pytest>=8.0.0",

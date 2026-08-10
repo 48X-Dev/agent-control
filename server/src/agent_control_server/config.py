@@ -881,8 +881,8 @@ class KnowledgeSettings(BaseSettings):
     it and what ceilings it enforces on the way back out.
 
     Nothing in this class can start a sync, and nothing here holds a source
-    credential. The Drive service-account key and the GitHub token exist in
-    exactly one container's environment and it is not this one.
+    credential. The Drive refresh token and the GitHub token exist in exactly
+    one container's environment and it is not this one.
 
     ``db_url`` is the ``knowledge_read`` DSN, which holds SELECT and nothing
     else. It gets its own small engine rather than sharing the control plane's:

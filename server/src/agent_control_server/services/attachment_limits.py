@@ -27,6 +27,7 @@ import datetime as dt
 import math
 from typing import NoReturn
 
+from agent_control_models.attachment_converter_containers import refine_container_mime
 from agent_control_models.attachments import AttachmentStatus
 from agent_control_models.errors import ErrorCode, ErrorReason
 from agent_control_models.files import sniff_mime
@@ -36,7 +37,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..config import ExecutorSettings
 from ..errors import APIError
 from ..models import AgentSessionAttachment
-from .attachment_converter_containers import refine_container_mime
 from .attachment_quota import get_attachment_quota
 from .executor_metrics import (
     ATTACHMENT_UPLOAD_QUOTA,

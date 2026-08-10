@@ -15,8 +15,7 @@ that would break the real corpus breaks a test first.
 from __future__ import annotations
 
 import pytest
-
-from agent_control_server.services.attachment_converter import (
+from agent_control_models.attachment_converter import (
     DEFAULT_CONVERTIBLE_MIMES,
     LOW_TEXT_THRESHOLD_CHARS,
     AttemptOutcome,
@@ -27,13 +26,14 @@ from agent_control_server.services.attachment_converter import (
     convert_attachment_async,
     meaningful_chars,
 )
-from agent_control_server.services.attachment_converter_backends import (
+from agent_control_models.attachment_converter_backends import (
     ConverterFailedError,
     ConverterKind,
     ConverterUnavailableError,
     ConverterUnsupportedError,
     EncryptedDocumentError,
 )
+
 from agent_control_server.services.attachment_converter_cache import (
     CONVERSION_CONTRACT_VERSION,
     conversion_cache_key,
@@ -624,10 +624,9 @@ class TestHashing:
 
 def test_every_failure_code_fits_the_column() -> None:
     """``ATTACHMENT_FAILURE_CODE_MAX_LENGTH`` is 32 and this is where it bites."""
+    from agent_control_models import attachment_converter as conv
+    from agent_control_models import attachment_converter_backends as backends
     from agent_control_models.attachments import ATTACHMENT_FAILURE_CODE_MAX_LENGTH
-
-    from agent_control_server.services import attachment_converter as conv
-    from agent_control_server.services import attachment_converter_backends as backends
 
     codes = [
         value
@@ -662,8 +661,8 @@ def test_the_contract_types_are_re_exported_rather_than_copied() -> None:
     distinct objects, an ``is`` comparison or an ``isinstance`` check would
     start failing depending on which module the caller happened to import.
     """
-    from agent_control_server.services import attachment_converter as public
-    from agent_control_server.services import attachment_converter_types as types
+    from agent_control_models import attachment_converter as public
+    from agent_control_models import attachment_converter_types as types
 
     exported = [name for name in public.__all__ if hasattr(types, name)]
 

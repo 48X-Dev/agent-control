@@ -53,6 +53,11 @@ import logging
 import time
 from dataclasses import dataclass
 
+from agent_control_models.attachment_converter import (
+    ConversionResult,
+    ConversionStatus,
+    convert_attachment_async,
+)
 from agent_control_models.attachments import AttachmentVariant
 from sqlalchemy import and_, delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -63,11 +68,6 @@ from sqlalchemy.orm import undefer
 from ..db import AsyncSessionLocal
 from ..models import AgentAttachmentConversion
 from .attachment_blobs import AttachmentBlobStore, get_attachment_blob_store
-from .attachment_converter import (
-    ConversionResult,
-    ConversionStatus,
-    convert_attachment_async,
-)
 from .attachment_converter_cache import conversion_cache_key
 from .executor_metrics import (
     ATTACHMENT_CONVERSION_DROPPED,
