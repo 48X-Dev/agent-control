@@ -1311,3 +1311,45 @@ export type KnowledgeRecentRequest = {
   days?: number;
   max_results?: number;
 };
+
+/**
+ * One configured source, as the operator's view of the mirror reports it.
+ *
+ * `kind` is a union because the sync knows two channels today, and a reader
+ * that meets a third should print it rather than crash on it.
+ */
+export type KnowledgeSourceStatus = {
+  source_id: string;
+  kind: 'drive' | 'github';
+  enabled: boolean;
+  /** When the credential last exchanged, zero-change runs included. */
+  last_verified_at: string | null;
+  /** When the cursor last moved. A quiet source is not a dead sync. */
+  cursor_advanced_at: string | null;
+  stale_seconds: number | null;
+  document_count: number;
+  /** The server's conclusion that somebody has to act. Not derived from the code. */
+  failing: boolean;
+  /** What the sync recorded, or null. The server never invents one. */
+  last_failure_code: string | null;
+  /** Per-item refusals from the last run, keyed by the sync's own codes. */
+  refusals_by_code: Record<string, number>;
+};
+
+/**
+ * What `GET /company-knowledge/status` answers.
+ *
+ * `schema_supported` is corpus-wide and outranks everything below it: when the
+ * sync and the reader disagree about the schema, every search is answering
+ * `knowledge_unavailable` however healthy the per-source rows look.
+ */
+export type KnowledgeStatus = {
+  schema_version: number | null;
+  schema_supported: boolean;
+  document_count: number;
+  chunk_count: number;
+  stale_seconds: number | null;
+  staleness_warn_seconds: number;
+  sources_failing: number;
+  sources: KnowledgeSourceStatus[];
+};

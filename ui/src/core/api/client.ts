@@ -31,6 +31,7 @@ import type {
   KnowledgeRecentRequest,
   KnowledgeSearchRequest,
   KnowledgeSearchResponse,
+  KnowledgeStatus,
   ListAgentConfigVersionsQueryParams,
   ListAgentConfigVersionsResponse,
   ListAgentModelsResponse,
@@ -795,6 +796,11 @@ export const api = {
         '/api/v1/company-knowledge/recent',
         body
       ),
+    // A GET, unlike the two above, because it carries no question: what is
+    // configured and whether it still moves. Nothing here writes, and there is
+    // deliberately no connect or re-auth call beside it - linking happens once
+    // out of band, and a button would move a live credential into Postgres.
+    status: () => getJson<KnowledgeStatus>('/api/v1/company-knowledge/status'),
   },
   observability: {
     getStats: (params: {

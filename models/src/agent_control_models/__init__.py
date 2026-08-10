@@ -204,6 +204,10 @@ from .knowledge_search import (
     KnowledgeSearchResponse,
     KnowledgeSnippet,
 )
+from .knowledge_status import (
+    KnowledgeSourceStatus,
+    KnowledgeStatus,
+)
 from .linear import (
     LINEAR_TEAM_KEY_MAX_LENGTH,
     LINEAR_TEAM_KEY_PATTERN,
@@ -484,6 +488,8 @@ __all__ = [
     "KnowledgeSearchRequest",
     "KnowledgeSearchResponse",
     "KnowledgeSnippet",
+    "KnowledgeSourceStatus",
+    "KnowledgeStatus",
     "empty_sentence",
     "neutralize",
     "neutralize_header_field",

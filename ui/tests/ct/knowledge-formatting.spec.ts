@@ -16,10 +16,15 @@ import { expect, test } from '@playwright/experimental-ct-react';
 import type {
   KnowledgeCorpus,
   KnowledgeSearchResponse,
+  KnowledgeSourceStatus,
 } from '../../src/core/api/types';
 import {
+  exclusionSummary,
   externalAuthorNote,
+  failureSentence,
   freshnessStrip,
+  sourceAgeSeconds,
+  sourceHealth,
 } from '../../src/core/page-components/knowledge/formatting';
 
 const HOUR = 60 * 60;
@@ -217,5 +222,163 @@ test.describe('externalAuthorNote', () => {
 
     expect(note).toContain('1 of these was');
     expect(note).toContain('who wrote it.');
+  });
+});
+
+function source(
+  overrides: Partial<KnowledgeSourceStatus> = {}
+): KnowledgeSourceStatus {
+  return {
+    source_id: 'Ops Handbook',
+    kind: 'drive',
+    enabled: true,
+    last_verified_at: '2026-08-06T09:15:00Z',
+    cursor_advanced_at: '2026-08-06T08:40:00Z',
+    stale_seconds: 480,
+    document_count: 412,
+    failing: false,
+    last_failure_code: null,
+    refusals_by_code: {},
+    ...overrides,
+  };
+}
+
+const DAY = 24 * HOUR;
+
+/**
+ * Which of a row's states wins, which is an ordering rather than a rendering
+ * and is cheaper to prove here than by reading a border colour in a browser.
+ */
+test.describe('sourceHealth', () => {
+  test('a source somebody switched off is not an alarm, whatever else is true', () => {
+    const off = source({
+      enabled: false,
+      failing: true,
+      document_count: 0,
+      stale_seconds: 30 * DAY,
+    });
+
+    expect(sourceHealth(off, 30 * DAY, DAY)).toBe('disabled');
+  });
+
+  test('a named failure outranks an empty index, because it explains it', () => {
+    const broken = source({
+      failing: true,
+      last_failure_code: 'root_unreachable',
+      document_count: 0,
+    });
+
+    expect(sourceHealth(broken, 480, DAY)).toBe('failing');
+  });
+
+  /**
+   * The server sets `failing` for an enabled source holding nothing as well as
+   * for a run that stopped, and leaves the code null on the first because the
+   * sync recorded none. So the flag alone cannot decide this row: read at face
+   * value it would put every empty source behind "this stopped syncing",
+   * losing the one sentence that helps.
+   */
+  test('an empty source keeps its own state even though the server flags it failing', () => {
+    const empty = source({
+      failing: true,
+      last_failure_code: null,
+      document_count: 0,
+    });
+
+    expect(sourceHealth(empty, 480, DAY)).toBe('no_documents');
+  });
+
+  test('a real failure code on an empty source still names the failure', () => {
+    const broken = source({
+      failing: true,
+      last_failure_code: 'root_unreachable',
+      document_count: 0,
+    });
+
+    expect(sourceHealth(broken, 480, DAY)).toBe('failing');
+  });
+
+  test('an enabled source holding nothing is its own state, not a healthy one', () => {
+    expect(sourceHealth(source({ document_count: 0 }), 480, DAY)).toBe(
+      'no_documents'
+    );
+  });
+
+  /** A run that finished and logged an error is not a source that stopped. */
+  test('a partial run is reported without being called a stopped source', () => {
+    const partial = source({
+      failing: false,
+      last_failure_code: 'unreadable_folder',
+    });
+
+    expect(sourceHealth(partial, 480, DAY)).toBe('partial');
+  });
+
+  test('the deployment decides when an age becomes stale, not this console', () => {
+    const row = source();
+
+    expect(sourceHealth(row, 2 * DAY, DAY)).toBe('stale');
+    expect(sourceHealth(row, 2 * DAY, 7 * DAY)).toBe('ok');
+  });
+
+  test('an age nobody could compute is not silently treated as fresh or stale', () => {
+    expect(sourceHealth(source(), null, DAY)).toBe('ok');
+  });
+});
+
+test.describe('sourceAgeSeconds', () => {
+  test('time on the page is added to the age the server measured', () => {
+    expect(sourceAgeSeconds(source({ stale_seconds: 480 }), 120)).toBe(600);
+  });
+
+  /**
+   * The fallback matters on a source the server could not age. It reads the
+   * browser's clock, which is why it is the fallback and not the first choice.
+   */
+  test('with no measured age, a verification time still yields one', () => {
+    const age = sourceAgeSeconds(
+      source({ stale_seconds: null, last_verified_at: '2020-01-01T00:00:00Z' })
+    );
+
+    expect(age).not.toBeNull();
+    expect(age!).toBeGreaterThan(0);
+  });
+
+  test('a source that never verified has no age to report', () => {
+    const never = source({ stale_seconds: null, last_verified_at: null });
+
+    expect(sourceAgeSeconds(never)).toBeNull();
+  });
+});
+
+test.describe('exclusionSummary and failureSentence', () => {
+  test('exclusions are ordered by weight and keep their codes', () => {
+    const summary = exclusionSummary({ secret_file: 1, oversize: 3 });
+
+    expect(summary).toBe(
+      '3 over the size ceiling (oversize), 1 named like a secret (secret_file)'
+    );
+  });
+
+  test('a code from a newer sync is still counted and still named', () => {
+    expect(exclusionSummary({ unheard_of: 2 })).toBe(
+      '2 excluded as unheard_of'
+    );
+  });
+
+  test('a source excluding nothing says nothing', () => {
+    expect(exclusionSummary({})).toBeNull();
+    expect(exclusionSummary(undefined)).toBeNull();
+    expect(exclusionSummary({ oversize: 0 })).toBeNull();
+  });
+
+  /**
+   * The sentence is what an operator acts on; the code, rendered beside it, is
+   * what they grep for. An unknown code loses the first and keeps the second.
+   */
+  test('an unknown failure code gets a sentence that admits it is unknown', () => {
+    expect(failureSentence('root_unreachable')).toContain('did not resolve');
+    expect(failureSentence('corpus_on_fire')).toContain('no sentence');
+    expect(failureSentence(null)).toBeNull();
   });
 });

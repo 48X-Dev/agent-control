@@ -91,7 +91,11 @@ def test_the_console_routes_ask_for_no_session_key_at_all() -> None:
 
     paths = {route.path for route in router.routes}  # type: ignore[attr-defined]
 
-    assert paths == {"/company-knowledge/search", "/company-knowledge/recent"}
+    assert paths == {
+        "/company-knowledge/search",
+        "/company-knowledge/recent",
+        "/company-knowledge/status",
+    }
     assert not any("{" in path for path in paths)
 
 

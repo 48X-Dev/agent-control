@@ -1,7 +1,10 @@
 import { useQuery } from '@tanstack/react-query';
 
 import { api } from '@/core/api/client';
-import type { KnowledgeSearchResponse } from '@/core/api/types';
+import type {
+  KnowledgeSearchResponse,
+  KnowledgeStatus,
+} from '@/core/api/types';
 
 /**
  * The console's two reads of the company-knowledge mirror.
@@ -81,6 +84,40 @@ export function useKnowledgeRecent() {
         days: RECENT_DAYS,
         max_results: PAGE_SIZE,
       });
+      if (error) throw error;
+      return data!;
+    },
+  });
+}
+
+export const knowledgeStatusQueryKey = ['company-knowledge', 'status'] as const;
+
+/**
+ * How often the sources view re-reads the status, and the only reason it is
+ * this slow: unlike search and recent, the route is not rate limited, so
+ * nothing server-side would stop a tighter loop.
+ */
+const STATUS_POLL_MS = 60_000;
+
+/**
+ * What is configured to sync, asked only once somebody opens the sources view.
+ *
+ * The other two verbs answer "is this mirror current" from the corpus block
+ * they already carry, so a page nobody has navigated into has no reason to ask
+ * a third time. Somebody watching for a sync to land does want the age to move
+ * on its own, hence the poll - foreground only, and no retry on error, because
+ * a status that fails once will fail the same way a hundred times a minute.
+ */
+export function useKnowledgeStatus(enabled: boolean) {
+  return useQuery<KnowledgeStatus>({
+    queryKey: knowledgeStatusQueryKey,
+    enabled,
+    staleTime: 30_000,
+    retry: false,
+    refetchInterval: STATUS_POLL_MS,
+    refetchIntervalInBackground: false,
+    queryFn: async () => {
+      const { data, error } = await api.companyKnowledge.status();
       if (error) throw error;
       return data!;
     },

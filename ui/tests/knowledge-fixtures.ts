@@ -5,6 +5,8 @@ import type {
   KnowledgeRefusalCode,
   KnowledgeSearchResponse,
   KnowledgeSnippet,
+  KnowledgeSourceStatus,
+  KnowledgeStatus,
 } from '@/core/api/types';
 
 /**
@@ -209,9 +211,55 @@ export function refusal(
   });
 }
 
+/**
+ * A source that is working, so the specs below only state what they change.
+ *
+ * Healthy on purpose: every state the sources panel calls out is a deviation
+ * from this row, and a fixture that started broken would let a panel which
+ * shows the same warning on everything pass every case.
+ */
+export function sourceStatus(
+  overrides: Partial<KnowledgeSourceStatus> = {}
+): KnowledgeSourceStatus {
+  return {
+    // The source's own ref, which is what an operator sees in config: a Drive
+    // folder id or `owner/repo`. There is no display name on this contract.
+    source_id: '1AbC-opsHandbook-folderId',
+    kind: 'drive',
+    enabled: true,
+    last_verified_at: '2026-08-06T09:15:00Z',
+    cursor_advanced_at: '2026-08-06T08:40:00Z',
+    stale_seconds: 480,
+    document_count: 412,
+    failing: false,
+    last_failure_code: null,
+    refusals_by_code: {},
+    ...overrides,
+  };
+}
+
+export function statusBody(
+  overrides: Partial<KnowledgeStatus> = {}
+): KnowledgeStatus {
+  return {
+    schema_version: 3,
+    schema_supported: true,
+    document_count: 412,
+    chunk_count: 3910,
+    stale_seconds: 480,
+    staleness_warn_seconds: 86400,
+    sources_failing: 0,
+    sources: [sourceStatus()],
+    ...overrides,
+  };
+}
+
 type KnowledgeMocks = {
   search?: KnowledgeSearchResponse;
   recent?: KnowledgeSearchResponse;
+  status?: KnowledgeStatus;
+  /** For the specs about where an operator is sent when status will not load. */
+  statusStatus?: number;
   /**
    * Status for the search call, when the point is what the status means.
    *
@@ -236,9 +284,15 @@ export type SubmittedBodies = Array<Record<string, unknown>>;
 export async function mockKnowledgeRoutes(
   page: Page,
   mocks: KnowledgeMocks = {}
-): Promise<{ searches: SubmittedBodies; recents: SubmittedBodies }> {
+): Promise<{
+  searches: SubmittedBodies;
+  recents: SubmittedBodies;
+  /** The methods the status route was called with, so a POST here is loud. */
+  statuses: string[];
+}> {
   const searches: SubmittedBodies = [];
   const recents: SubmittedBodies = [];
+  const statuses: string[] = [];
 
   await page.route(
     '**/api/v1/company-knowledge/search',
@@ -273,5 +327,22 @@ export async function mockKnowledgeRoutes(
     }
   );
 
-  return { searches, recents };
+  await page.route(
+    '**/api/v1/company-knowledge/status',
+    async (route, request) => {
+      statuses.push(request.method());
+      const code = mocks.statusStatus ?? 200;
+      await route.fulfill({
+        status: code,
+        contentType: 'application/json',
+        body: JSON.stringify(
+          code >= 400
+            ? { title: 'Request refused', status: code }
+            : (mocks.status ?? statusBody())
+        ),
+      });
+    }
+  );
+
+  return { searches, recents, statuses };
 }

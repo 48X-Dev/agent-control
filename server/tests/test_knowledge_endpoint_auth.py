@@ -27,6 +27,7 @@ neither can be mistaken for the other.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from typing import Any
 
 import pytest
@@ -299,25 +300,93 @@ def test_the_corpus_has_no_route_that_lists_it(app: FastAPI) -> None:
     """Proof by absence, checked against the app rather than the prose.
 
     A list endpoint plus a loop is the whole corpus in a transcript, so the
-    refusal has to be structural. Two things are asserted, and the second is
-    the one that survives a new surface being added: every route into the
-    corpus ends in one of the two verbs, and the full inventory is spelled out
-    so a third verb has to be typed here on purpose rather than appearing.
+    refusal has to be structural, and the full inventory is spelled out so a
+    new route has to be typed here on purpose rather than appearing.
 
     The console pair is a second door onto the same two verbs at a different
-    tier, not a third verb. Surfaces may multiply; the verbs may not.
+    tier, not a third verb. Surfaces may multiply; the verbs may not. Phase 4's
+    ``status`` is a third path and still not a third verb, which the next test
+    is what actually holds: it counts the corpus and names its sources, and no
+    field on it can carry a document.
     """
     paths = set(app.openapi()["paths"])
 
     knowledge_paths = {path for path in paths if "knowledge" in path}
     assert all(
-        path.endswith(("/search", "/recent")) for path in knowledge_paths
+        path.endswith(("/search", "/recent", "/status")) for path in knowledge_paths
     ), sorted(knowledge_paths)
     assert knowledge_paths == {
         "/api/v1/agent-sessions/{session_key}/knowledge/search",
         "/api/v1/agent-sessions/{session_key}/knowledge/recent",
         "/api/v1/company-knowledge/search",
         "/api/v1/company-knowledge/recent",
+        "/api/v1/company-knowledge/status",
+    }
+
+
+def _referenced_schemas(node: Any) -> Iterator[str]:
+    """Every schema name under a node, however deeply the generator nested it."""
+    if isinstance(node, dict):
+        ref = node.get("$ref")
+        if isinstance(ref, str):
+            yield ref.rsplit("/", 1)[-1]
+        for value in node.values():
+            yield from _referenced_schemas(value)
+    elif isinstance(node, list):
+        for value in node:
+            yield from _referenced_schemas(value)
+
+
+def _reachable_fields(schemas: dict[str, Any], root: str) -> set[str]:
+    """``Model.field`` for everything the response reaches, nested models included."""
+    fields: set[str] = set()
+    seen: set[str] = set()
+    pending = [root]
+    while pending:
+        name = pending.pop()
+        if name in seen:
+            continue
+        seen.add(name)
+        for field, definition in schemas[name].get("properties", {}).items():
+            fields.add(f"{name}.{field}")
+            pending.extend(_referenced_schemas(definition))
+    return fields
+
+
+def test_the_status_read_cannot_carry_a_document(app: FastAPI) -> None:
+    """What keeps the third path from being a third verb.
+
+    An oversight read that grew a document field would be the list route the
+    test above refuses, arriving through the one surface nobody was watching.
+
+    An allowlist, and every field the response can reach rather than two named
+    models, because both halves of that are load-bearing. A denylist of the
+    words a snippet uses today passes ``recent_document_titles`` and
+    ``sample_text`` without noticing, and a model nested one level down is not
+    read at all. Here a new field fails until somebody types it in beside the
+    others, which is the same discipline as the route inventory above.
+    """
+    fields = _reachable_fields(app.openapi()["components"]["schemas"], "KnowledgeStatus")
+
+    assert fields == {
+        "KnowledgeStatus.schema_version",
+        "KnowledgeStatus.schema_supported",
+        "KnowledgeStatus.document_count",
+        "KnowledgeStatus.chunk_count",
+        "KnowledgeStatus.stale_seconds",
+        "KnowledgeStatus.staleness_warn_seconds",
+        "KnowledgeStatus.sources_failing",
+        "KnowledgeStatus.sources",
+        "KnowledgeSourceStatus.source_id",
+        "KnowledgeSourceStatus.kind",
+        "KnowledgeSourceStatus.enabled",
+        "KnowledgeSourceStatus.last_verified_at",
+        "KnowledgeSourceStatus.cursor_advanced_at",
+        "KnowledgeSourceStatus.stale_seconds",
+        "KnowledgeSourceStatus.document_count",
+        "KnowledgeSourceStatus.failing",
+        "KnowledgeSourceStatus.last_failure_code",
+        "KnowledgeSourceStatus.refusals_by_code",
     }
 
 
