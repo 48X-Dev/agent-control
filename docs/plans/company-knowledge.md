@@ -79,15 +79,14 @@ What is genuinely given up, stated so nobody rediscovers it as a surprise:
    of using it. Every such share is now visible to a `drive.readonly` client and, unless the
    allowlist excludes it, indexable. With a dedicated reader, `sharedWithMe` is a list nobody else
    has a reason to add to. **The mitigation is that the allowlist is the gate, not the sharing:**
-   `knowledge.yaml` names folder ids explicitly (section 6), so a newly shared folder is invisible to
-   the sync until somebody adds it in a reviewed diff. That was always true; it now carries more
-   weight, and section 11's loader check is what enforces it.
-2. **`agent-drive.md`'s inbound canary loses its invariant.** It asserts `sharedWithMe` is empty on
-   this account forever and reads non-empty as evidence the scope was widened. That assertion is now
-   false by construction, so it must become "contains exactly the allowlisted corpus roots" - an
-   allowlist to maintain rather than an invariant to check, and an allowlist fails differently. That
-   amendment is recorded in `agent-drive.md` beside the canary itself, because a plan whose canary
-   contradicts a live deployment is worse than one with a weaker canary.
+   **the single shared root (5.7) is the gate**: a folder shared to this account for any other
+   reason is not under that root, so the sync never sees it. This replaces the folder-id allowlist an
+   earlier draft relied on, and it is a stronger answer, because it needs no list to stay correct.
+2. **`agent-drive.md`'s inbound canary changes shape, but stays an invariant.** It asserted
+   `sharedWithMe` is empty on this account forever. That is now false by construction, so it becomes
+   "`sharedWithMe` is exactly the one corpus root id" - still a fixed assertion that maintains
+   itself, because 5.7 makes the root singular. An earlier draft of this section accepted a
+   maintained allowlist here; 5.7 removed the need for one.
 
 The way back, if the corpus grows or the share list does: create the second account, mint a token for
 it with the same bootstrap, move the folder share, and restore the canary's invariant. Nothing in the
@@ -345,6 +344,62 @@ Zero rows back means somebody holds it, and the loser exits saying who. The rene
 At index time, after conversion, before storage, every chunk passes a deny-list: the credential shapes from `memory-controls.md` 3.1's shipped control (`sk-` keys, `AKIA` AWS ids, `-----BEGIN ... PRIVATE KEY-----`, `password\s*[:=]`), plus high-entropy hex/base64 runs over 32 characters adjacent to assignment syntax. A matching chunk is dropped and counted (`secrets_skipped`), and a document whose *filename* matches the file deny-list (`.env`, `*.pem`, `id_rsa*`, `credentials.json`, `*.key`) is skipped whole with `tombstone_reason='secret_file'`. Both counts appear in `sync_runs`, in `status`, and in a metric, because a silent scrub is indistinguishable from a broken one. This applies to Drive docs and GitHub files alike; secret-looking strings in a policy doc are exactly as indexable as ones in a repo, per the edge list. The residual, stated: a deny-list misses what it does not name, an operator can extend `scrub.py`'s pattern set, and the honest claim is "known credential shapes do not enter the index", never "no secret can".
 
 ---
+
+## 5.7 Drive scope: one shared root, indexed whole (operator decision, 2026-08-06)
+
+Earlier drafts made Drive an explicit list of folder ids in `knowledge.yaml`, matching the GitHub
+repo allowlist below. The operator asked the obvious question - why not simply index everything
+shared to the account - and the answer changed the design, because both the original and the
+literal version of that question are worse than a third option.
+
+**Indexing everything under `sharedWithMe` is refused, and the reason is specific to this
+deployment's account choice.** 2.1 records that the corpus is read with `agent.control@earlycore.dev`,
+whose *purpose* is producing deliverables people are then granted access to. Shares accumulate on
+that account from workflows that have nothing to do with knowledge: a document shared so the agent
+can write to it would become a document every agent can search. That is not a hypothetical failure
+mode, it is the account's normal use.
+
+**A folder-id allowlist is also refused, and this is the correction.** It is a second gate, invisible
+to the people using the first one. Somebody shares a folder, nothing appears, and Drive gives them no
+way to discover that a checked-in YAML file is why. A gate that silently disagrees with the
+permission model beside it produces exactly the "I shared it, why can't the agent see it" failure,
+and the maintenance burden falls on whoever least expects it.
+
+**What ships instead: one shared root, descended recursively.** A single folder - `Company
+Knowledge` - is shared to the reader identity, and everything beneath it is corpus. Its id is
+`AGENT_KNOWLEDGE_DRIVE_ROOT_FOLDER_ID`, one value rather than a list.
+
+Four properties, each of which is why this beats both alternatives:
+
+- **Adding knowledge is a Drive action.** Drop a file in the folder. No config change, no reviewed
+  diff, no folder ids to collect, and the permission model people already use is the one that
+  decides.
+- **Unrelated shares cannot leak in.** A document shared to the account for the write-side workflow
+  is not under the root, so the sync never sees it. The two capabilities stay separated by folder
+  structure rather than by anyone's discipline.
+- **`agent-drive.md`'s inbound canary regains most of its invariant.** Not "`sharedWithMe` is empty"
+  but "`sharedWithMe` is exactly one known id" - a fixed assertion again rather than a list to
+  maintain, which is materially stronger than the amendment 2.1 was about to accept. That plan's
+  canary section is updated to this form.
+- **Subtree filtering already exists.** The changes-feed walk in 5.1 filters by walking parents to
+  the allowlisted root; with one root that walk gets simpler, not more complex.
+
+What it costs, stated: knowledge has to live *under one tree*. A doc somebody keeps in their own My
+Drive is not corpus until it moves or a shortcut to it does - and whether a Drive **shortcut** under
+the root resolves to its target for a `drive.readonly` client is exactly the kind of thing this plan
+does not assert without evidence, so it joins **K1** as a probe with both branches named: if
+shortcuts resolve, they are the low-friction way to include a document without moving it; if they do
+not, the runbook says to move or copy, and the loader reports a shortcut it cannot follow rather
+than skipping it silently.
+
+**Nested sharing is not a hole, and one sentence says why.** A folder inside the root that is *also*
+shared more widely is still corpus - the root is what the sync reads, and outward sharing of a child
+is a fact about who else can see it, not about what the agent indexes. The reverse, a child the
+reader cannot read despite the root being shared, is possible in Drive and surfaces as a per-item
+refusal counted in the run summary rather than a silent gap.
+
+**Trust and its preconditions are unchanged** (section 7): they now attach to the single root and are
+recorded against it rather than against a list.
 
 ## 6. GitHub scope (design question 3)
 
