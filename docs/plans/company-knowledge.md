@@ -52,13 +52,47 @@ The reconciliation is a strict ownership split, and no sentence of `agent-drive.
 
 | | Output tree (`agent-drive.md`) | Input corpus (this plan) |
 |---|---|---|
-| Identity | `agent.control@earlycore.dev`, OAuth client | A second dedicated **Workspace account**, e.g. `knowledge-sync@earlycore.dev`, its own OAuth client |
+| Identity | `agent.control@earlycore.dev`, OAuth client (`drive.file`) | **The same account**, a *separate* OAuth client (`drive.readonly`) - see the operator decision below |
 | Scope | `drive.file`, write into an app-created tree | `drive.readonly`, sees only what is explicitly shared **to the reader account** |
 | Credential lives in | The executor process, only | The `knowledge-sync` container, only |
 | Direction | Agent writes deliverables | Sync reads human documents |
 | What the model touches | Its own subtree, via Drive tools | Snippets, via a server endpoint; never Drive |
 
 The company folder is shared with the **service account**, never with `agent.control@earlycore.dev`. That keeps `agent-drive.md`'s inbound canary green by construction rather than by exception: if somebody shares the corpus with the agent account instead, that canary fires and latches, which is the correct outcome, and the runbook line for it is "you shared with the wrong identity; share with the sync's service account". The reverse mistake is detected too: sharing any node of the **agent's** tree to the service account adds a permission entry on that node, and `agent-drive.md` 4.4.1's outbound canary asserts the exact permission set on every node and latches the Drive server off when it changes. The two plans' canaries back each other, one per wrong direction, and section 11 adds this plan's own loader check on top. The executor still cannot read a human's Drive file. It can only ask the control plane a question and receive bounded text the control plane already evaluated.
+
+**Operator decision (2026-08-06): one account, two OAuth clients.** The design above wanted a
+second Workspace account. The operator chose to share the corpus from `paul@earlycore.dev` to
+`agent.control@earlycore.dev` and read it with that identity, and this section records the choice
+with what it costs rather than restating the preference.
+
+What survives, and it is most of the point: the two capabilities remain **separate OAuth clients
+with separate refresh tokens and separate scopes**. The write client holds `drive.file` and lives in
+the executor; the read client holds `drive.readonly` and lives in the sync container alone. A leaked
+read token cannot write; a leaked write token cannot see the corpus. Credential separation never
+required two accounts - that argument was overstated in an earlier draft of this correction and is
+withdrawn here.
+
+What is genuinely given up, stated so nobody rediscovers it as a surprise:
+
+1. **The agent account is a destination for shares by design.** Its purpose is producing deliverables
+   people are then granted access to, and colleagues will share things *to* it in the ordinary course
+   of using it. Every such share is now visible to a `drive.readonly` client and, unless the
+   allowlist excludes it, indexable. With a dedicated reader, `sharedWithMe` is a list nobody else
+   has a reason to add to. **The mitigation is that the allowlist is the gate, not the sharing:**
+   `knowledge.yaml` names folder ids explicitly (section 6), so a newly shared folder is invisible to
+   the sync until somebody adds it in a reviewed diff. That was always true; it now carries more
+   weight, and section 11's loader check is what enforces it.
+2. **`agent-drive.md`'s inbound canary loses its invariant.** It asserts `sharedWithMe` is empty on
+   this account forever and reads non-empty as evidence the scope was widened. That assertion is now
+   false by construction, so it must become "contains exactly the allowlisted corpus roots" - an
+   allowlist to maintain rather than an invariant to check, and an allowlist fails differently. That
+   amendment is recorded in `agent-drive.md` beside the canary itself, because a plan whose canary
+   contradicts a live deployment is worse than one with a weaker canary.
+
+The way back, if the corpus grows or the share list does: create the second account, mint a token for
+it with the same bootstrap, move the folder share, and restore the canary's invariant. Nothing in the
+sync's code depends on which account the refresh token belongs to, which is what keeps that door
+cheap.
 
 **Correction (2026-08-06): the identity is an OAuth account, not a service account.** The
 design above specified a service account with a downloadable key. This deployment's Google

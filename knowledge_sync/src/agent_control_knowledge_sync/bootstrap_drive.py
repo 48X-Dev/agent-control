@@ -13,12 +13,15 @@ remains and what Desktop clients are for: this binds an ephemeral port on
 127.0.0.1, opens the consent page, and catches the redirect. Nothing listens
 afterwards.
 
-**Log in as the reader account, not the agent's.** The consent page will offer
-whichever Google session the browser already has. `agent-drive.md` 4.4.1's
-inbound canary asserts `sharedWithMe` stays empty on the agent account forever,
-so consenting as the agent and then sharing the corpus to it would latch the
-Drive server off. The script prints which account it ended up as, because a
-browser that was already signed in is the easy way to get this wrong.
+**Which account you consent as is a design decision, not a detail.** The consent
+page offers whichever Google session the browser already has, and the script
+prints the result because a signed-in browser is how somebody authorizes the
+wrong identity without noticing. `company-knowledge.md` 2.1 records what this
+deployment chose: the agent's own account, under this separate `drive.readonly`
+client, with `agent-drive.md`'s inbound canary amended from an invariant to an
+allowlist as the stated cost. A deployment that wants the invariant back mints
+this token for a dedicated reader account instead; nothing in the sync depends
+on which account it belongs to.
 """
 
 from __future__ import annotations
@@ -88,6 +91,28 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Print the URL instead of opening it, for a machine with no browser.",
     )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=0,
+        help=(
+            "Fixed loopback port. Only needed for a WEB APPLICATION client, "
+            "which accepts a redirect URI only if it was registered exactly - "
+            "so register http://localhost:<port>/ and pass the same port here. "
+            "A Desktop app client needs none of this: Google accepts any "
+            "127.0.0.1 port for it, which is why Desktop is the recommended type."
+        ),
+    )
+    parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        choices=["127.0.0.1", "localhost"],
+        help=(
+            "Loopback spelling. Google treats 127.0.0.1 and localhost as "
+            "different redirect URIs, so this has to match the registration "
+            "character for character."
+        ),
+    )
     args = parser.parse_args(argv)
 
     if not args.client_id or not args.client_secret:
@@ -102,8 +127,8 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
-    port = _free_port()
-    redirect_uri = f"http://127.0.0.1:{port}/"
+    port = args.port or _free_port()
+    redirect_uri = f"http://{args.host}:{port}/"
     state = secrets.token_urlsafe(24)
 
     consent = f"{GOOGLE_AUTH_URL}?" + urllib.parse.urlencode(
@@ -137,7 +162,20 @@ def main(argv: list[str] | None = None) -> int:
     server.server_close()
     query = _Catcher.query
     if not query:
-        print("No redirect arrived within five minutes.", file=sys.stderr)
+        print(
+            "No redirect arrived within five minutes.\n\n"
+            "If the browser showed Google's own 400 page, nothing ever reached "
+            "this listener and the error is in the client, not here. Open "
+            "'Error details' on that page:\n"
+            "  redirect_uri_mismatch -> the client is a Web application, which "
+            "accepts only pre-registered redirect URIs. Either recreate it as a "
+            "Desktop app, or register "
+            f"{redirect_uri} exactly and re-run with --port {port}.\n"
+            "  access_blocked / org policy -> the consent screen is not "
+            "published Internal, or the account is outside the org.\n"
+            "  invalid_client -> the id and secret are not from the same client.",
+            file=sys.stderr,
+        )
         return 1
     if query.get("state", [""])[0] != state:
         print("State mismatch; refusing the response.", file=sys.stderr)
@@ -192,7 +230,12 @@ def main(argv: list[str] | None = None) -> int:
 
     print("\n" + "=" * 68)
     print(f"Authorized as: {who}")
-    print("If that is the agent's account, STOP: revoke it and redo as the reader.")
+    print(
+        "Check that against company-knowledge.md 2.1. This deployment reads the\n"
+        "corpus with the agent's own account under a separate read-only client,\n"
+        "so agent.control@ is expected here - but the allowlist, not the sharing,\n"
+        "is what decides which folders are indexed."
+    )
     print("=" * 68)
     print("\nAdd to .env at the repo root:\n")
     print(f"{_CLIENT_ID_ENV}={args.client_id}")
