@@ -1,10 +1,6 @@
 """The two invocations Phase 2 ships, met the way an operator meets them.
 
-``once`` and ``status`` are tested through :func:`main`, because what an
-operator actually reads is an exit code and a few lines on a terminal. The
-exit codes carry meaning worth pinning: a refused document is not a failed run,
-a held lease is, and a stale mirror is something a cron wrapper must be able to
-notice without parsing prose.
+Through :func:`main`, because the exit code is what a cron wrapper reads.
 """
 
 from __future__ import annotations

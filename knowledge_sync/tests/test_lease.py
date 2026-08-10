@@ -1,10 +1,4 @@
-"""The claim, the fence and the release, without a database.
-
-What these pin is the shape section 5.5 argues for and nothing else: the claim
-is one statement carrying its own guard, the renewal and the release are both
-fenced on the holder, and the token is not derived from anything a recycled pid
-could reproduce.
-"""
+"""The claim, the fence and the release, without a database."""
 
 from __future__ import annotations
 
@@ -56,13 +50,7 @@ class _Session:
         return None
 
     async def execute(self, statement: Any, params: dict[str, Any] | None = None) -> _Result:
-        """Compiles with the parameter keys bound, which is where a fence collides.
-
-        A bare ``str(statement)`` compiles with no keys at all, and a fence bind
-        parameter named after a column of the table under UPDATE only raises
-        once the keys are there. This fake compiled the other way for a while,
-        and a renewal that could not compile passed every test in here.
-        """
+        """Compiles with the keys bound: a bare ``str(statement)`` never sees a fence collide."""
         bound = params or {}
         sql = str(statement.compile(dialect=postgresql.dialect(), column_keys=list(bound)))
         self.log.append((sql, bound))

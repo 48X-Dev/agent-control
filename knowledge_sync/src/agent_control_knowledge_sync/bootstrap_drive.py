@@ -1,22 +1,6 @@
-"""One-time: turn an OAuth client into a refresh token a human can paste.
+"""One-time: print a refresh token for the operator to paste into ``.env``.
 
-Run by a person, once, on a machine with a browser. It prints a refresh token
-and writes nothing: the operator puts it in `.env`, which is the only place this
-deployment keeps secrets, and this script never learns where that is.
-
-    uv run --package agent-control-knowledge-sync agent-knowledge-sync-bootstrap
-
-**The loopback flow, not the device flow and not a pasted code.** Google
-deprecated the out-of-band `urn:ietf:wg:oauth:2.0:oob` copy-paste flow, and the
-device flow is not offered to Desktop clients for Drive scopes. Loopback is what
-remains and what Desktop clients are for: this binds an ephemeral port on
-127.0.0.1, opens the consent page, and catches the redirect. Nothing listens
-afterwards.
-
-The consent page offers whichever Google session the browser already has, so
-the script prints which account authorized. This deployment reads the corpus
-with the agent's own account under this separate `drive.readonly` client
-(`company-knowledge.md` 2.1), scoped to one shared root (5.7).
+Loopback flow: Google deprecated OOB copy-paste and offers Desktop clients no device flow.
 """
 
 from __future__ import annotations

@@ -75,21 +75,15 @@ services:
       # Models an agent may be configured to run on. Empty list keeps the model
       # half of agent configuration inert; the system prompt works regardless.
       AGENT_CONTROL_MODELS_ALLOWLIST: ${AGENT_CONTROL_MODELS_ALLOWLIST:-[]}
-      # Attachments. Off by default like the executor above, and the flag has to
-      # reach the container or the whole path is inert: the server starts, the
-      # fetch never runs, and an agent reports it could not see a file that is
-      # sitting on the issue. Every other ceiling keeps its default; this is the
-      # switch, not a tuning surface.
+      # Attachments, off by default. The flag has to reach the container or the whole
+      # path is inert: the server starts and the fetch never runs.
       AGENT_CONTROL_EXECUTOR_ATTACHMENTS_ENABLED: ${AGENT_CONTROL_EXECUTOR_ATTACHMENTS_ENABLED:-false}
       AGENT_CONTROL_EXECUTOR_ATTACHMENT_MAX_BYTES: ${AGENT_CONTROL_EXECUTOR_ATTACHMENT_MAX_BYTES:-20971520}
       AGENT_CONTROL_EXECUTOR_ATTACHMENT_MAX_PER_TURN: ${AGENT_CONTROL_EXECUTOR_ATTACHMENT_MAX_PER_TURN:-3}
       AGENT_CONTROL_EXECUTOR_ATTACHMENT_DELIVERY_MAX_CHARS: ${AGENT_CONTROL_EXECUTOR_ATTACHMENT_DELIVERY_MAX_CHARS:-48000}
-      # Second half of the file-ingress switch. The EXECUTOR flag above turns
-      # attachments on at all (operator uploads included); this one lets a
-      # dispatched step fetch the files sitting on its Linear issue. Both have
-      # to reach the container: with only the first, a linear task's steps
-      # write no files summary and the agent is told nothing about files that
-      # are on the issue - found the hard way, twice.
+      # Second half of the file-ingress switch: the EXECUTOR flag above turns attachments
+      # on at all, this one lets a dispatched step fetch its Linear issue's files. Both
+      # have to reach the container or a step writes no files summary.
       AGENT_CONTROL_LINEAR_ATTACHMENTS_ENABLED: ${AGENT_CONTROL_LINEAR_ATTACHMENTS_ENABLED:-false}
       AGENT_CONTROL_LINEAR_API_KEY: ${AGENT_CONTROL_LINEAR_API_KEY:-}
       AGENT_CONTROL_LINEAR_TIMEOUT_SECONDS: ${AGENT_CONTROL_LINEAR_TIMEOUT_SECONDS:-10}

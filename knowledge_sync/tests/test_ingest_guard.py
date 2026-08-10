@@ -1,11 +1,4 @@
-"""Section 11's guard, which an earlier draft shipped as a sentence.
-
-The refusal has to be ancestry rather than equality, because the realistic
-accident is not somebody allowlisting the executor root: it is one deliverables
-folder shared three levels down. These pin that, the memoisation that keeps a
-ten-thousand-file corpus from being ten thousand parent walks, and the limit the
-plan states out loud rather than hiding.
-"""
+"""Section 11's guard: ancestry rather than equality, memoised, and its stated limit."""
 
 from __future__ import annotations
 
@@ -229,11 +222,7 @@ def _corpus_config(corpus: Any) -> SyncConfig:
 async def test_a_shortcut_into_the_agent_tree_is_refused_by_a_real_run(
     drive: FakeDrive, corpus: Any
 ) -> None:
-    """The accident section 11 names: one deliverables folder, three levels down.
-
-    The walk follows the shortcut, so the document arrives looking like any
-    other. Only its ancestry says otherwise.
-    """
+    """The accident section 11 names: one deliverables folder, three levels down."""
     config = _corpus_config(corpus)
     drive.folder(CORPUS_ROOT, "Company Knowledge")
     drive.markdown("file-laptops", "laptops.md", HANDBOOK, CORPUS_ROOT)

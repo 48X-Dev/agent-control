@@ -28,6 +28,7 @@ from typing import Any
 import httpx
 import pytest
 from agent_control_knowledge_sync import github_client as github_client_module
+from agent_control_knowledge_sync import github_transport as github_transport_module
 from agent_control_knowledge_sync.allowlist import RepoConfig, RepoRef
 from agent_control_knowledge_sync.config import SyncConfig
 from agent_control_knowledge_sync.drive_auth import DriveCredentials
@@ -213,7 +214,7 @@ def slept(monkeypatch: pytest.MonkeyPatch) -> list[float]:
     async def fake_sleep(seconds: float) -> None:
         waits.append(seconds)
 
-    monkeypatch.setattr(github_client_module, "_sleep", fake_sleep)
+    monkeypatch.setattr(github_transport_module, "_sleep", fake_sleep)
     return waits
 
 

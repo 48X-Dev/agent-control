@@ -1,10 +1,4 @@
-"""What reaches the corpus, without a corpus.
-
-The session is a fake that records statements and hands back canned rows, so
-these pin the decisions rather than Postgres: which items are refused before
-anything is converted, when a replay writes nothing, and that a document whose
-conversion failed still gets a row and still gets no chunks.
-"""
+"""What reaches the corpus, without a corpus: a fake session records the statements."""
 
 from __future__ import annotations
 
@@ -53,11 +47,7 @@ class Item:
 
 @dataclass(frozen=True, slots=True)
 class Fetched:
-    """Stands in for ``drive_client.FetchedContent``.
-
-    The media type is the fetch's, not the item's, because an export replaces
-    it: a Google Doc arrives here as markdown under a Drive-native ``mime_type``.
-    """
+    """Stands in for ``drive_client.FetchedContent``; the media type is the fetch's."""
 
     data: bytes
     media_type: str = "text/markdown"
@@ -99,11 +89,7 @@ class FakeSession:
 
 
 class Row:
-    """One ``documents`` row as ``_existing`` reads it.
-
-    The metadata defaults are what ``Item()`` produces, so a plain ``Row`` is a
-    document that has not drifted and a drifted one is spelled out per test.
-    """
+    """One ``documents`` row as ``_existing`` reads it; a plain ``Row`` has not drifted."""
 
     def __init__(
         self,
@@ -237,12 +223,7 @@ async def test_unchanged_content_writes_nothing() -> None:
 
 @pytest.mark.asyncio
 async def test_a_rename_updates_the_citation_without_rewriting_the_chunks() -> None:
-    """`Q3 review.pptx` renamed to `Q3 review FINAL.pptx` hashes the same.
-
-    Comparing content alone skips the row, and every future snippet cites a
-    filename that no longer exists. The chunks are the same bytes under a new
-    name, so they are not rewritten.
-    """
+    """`Q3 review.pptx` renamed to `Q3 review FINAL.pptx` hashes the same."""
     ingestor, session = build([], [42])
     await ingestor.ingest(Item(), Fetched(HANDBOOK))
     digest = params(statements(session, sa.Insert)[0])["content_sha256"]

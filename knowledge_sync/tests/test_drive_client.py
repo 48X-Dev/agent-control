@@ -1,27 +1,16 @@
-"""The Drive read path, against stubbed transports, with no account and no network.
-
-The flags are the point. A call missing supportsAllDrives on a Shared Drive returns
-404 and a list missing includeItemsFromAllDrives returns zero rows, and both look
-exactly like a folder nobody shared, so both are asserted rather than assumed.
-"""
+"""What the sync asks Drive for: the root, the subtree, the changes, the bytes."""
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from datetime import UTC, datetime
 from typing import Any
 
 import httpx
 import pytest
 from agent_control_knowledge_sync import drive_transport as drive_transport_module
-from agent_control_knowledge_sync.config import SyncConfig
-from agent_control_knowledge_sync.drive_auth import DriveCredentials, DriveTokenProvider
 from agent_control_knowledge_sync.drive_client import (
     FOLDER_MIME,
     SHORTCUT_MIME,
-    DriveClient,
     DriveError,
-    DriveItem,
     DriveRefusalError,
     DriveRootUnreachableError,
     LocationUnknown,
@@ -30,25 +19,22 @@ from agent_control_knowledge_sync.drive_client import (
 )
 from agent_control_knowledge_sync.drive_transport import MAX_ATTEMPTS
 
-ROOT_ID = "0ABsharedDriveRoot"
-PPTX_MIME = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
-XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-
-CREDS = DriveCredentials(
-    client_id="123456789012-abcdefg.apps.googleusercontent.com",
-    client_secret="GOCSPX-not-a-real-secret",
-    refresh_token="1//0e-not-a-real-refresh-token",
+from tests.drive_support import (
+    PPTX_MIME,
+    ROOT_ID,
+    XLSX_MIME,
+    Handler,
+    _client,
+    _file,
+    _item,
+    _root_folder,
+    _tree_handler,
 )
-
-Handler = Callable[[httpx.Request], httpx.Response]
 
 
 @pytest.fixture(autouse=True)
 def slept(monkeypatch: pytest.MonkeyPatch) -> list[float]:
-    """Backoff without the wait, and a record of what would have been waited.
-
-    Patched on the transport, which is where the retry loop lives.
-    """
+    """Backoff without the wait, patched on the transport, which is where the retry loop lives."""
     waits: list[float] = []
 
     async def fake_sleep(seconds: float) -> None:
@@ -58,92 +44,7 @@ def slept(monkeypatch: pytest.MonkeyPatch) -> list[float]:
     return waits
 
 
-def _provider() -> tuple[DriveTokenProvider, list[str]]:
-    issued: list[str] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        issued.append(f"at-{len(issued) + 1}")
-        return httpx.Response(200, json={"access_token": issued[-1], "expires_in": 3600})
-
-    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-    return DriveTokenProvider(credentials=CREDS, client=client), issued
-
-
-def _config(**overrides: Any) -> SyncConfig:
-    base: dict[str, Any] = {
-        "credentials": CREDS,
-        "root_folder_id": ROOT_ID,
-        "database_url": "postgresql+psycopg://knowledge_sync@localhost/agent_knowledge",
-    }
-    base.update(overrides)
-    return SyncConfig(**base)
-
-
-def _client(handler: Handler, **overrides: Any) -> tuple[DriveClient, list[httpx.Request]]:
-    seen: list[httpx.Request] = []
-
-    def recorded(request: httpx.Request) -> httpx.Response:
-        seen.append(request)
-        return handler(request)
-
-    provider, _ = _provider()
-    transport = httpx.MockTransport(recorded)
-    drive = DriveClient(provider, httpx.AsyncClient(transport=transport), _config(**overrides))
-    return drive, seen
-
-
-def _file(file_id: str, name: str, mime: str, **extra: Any) -> dict[str, Any]:
-    payload: dict[str, Any] = {
-        "id": file_id,
-        "name": name,
-        "mimeType": mime,
-        "modifiedTime": "2026-08-01T09:30:00.000Z",
-    }
-    payload.update(extra)
-    return payload
-
-
-def _item(**overrides: Any) -> DriveItem:
-    base: dict[str, Any] = {
-        "id": "file-1",
-        "name": "Q3 review.pptx",
-        "mime_type": PPTX_MIME,
-        "modified_time": datetime(2026, 8, 1, tzinfo=UTC),
-        "size": 2048,
-        "md5_checksum": "d41d8cd98f00b204e9800998ecf8427e",
-        "trashed": False,
-        "shortcut_target_id": None,
-    }
-    base.update(overrides)
-    return DriveItem(**base)
-
-
-def _root_folder() -> dict[str, Any]:
-    return _file(ROOT_ID, "Company Knowledge", FOLDER_MIME)
-
-
 # --- the root -----------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_the_root_resolves_and_the_call_carries_the_shared_drive_flag() -> None:
-    drive, seen = _client(lambda request: httpx.Response(200, json=_root_folder()))
-    root = await drive.resolve_root()
-    assert root.id == ROOT_ID
-    assert root.mime_type == FOLDER_MIME
-    assert seen[0].url.params["supportsAllDrives"] == "true"
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("status", [403, 404])
-async def test_an_unreachable_root_refuses_loudly_and_names_the_flag(status: int) -> None:
-    """A missing flag presents as a successful sync of zero documents. Not here."""
-    drive, _ = _client(lambda request: httpx.Response(status, json={"error": {"code": status}}))
-    with pytest.raises(DriveRootUnreachableError) as caught:
-        await drive.resolve_root()
-    message = str(caught.value)
-    assert "supportsAllDrives" in message
-    assert ROOT_ID in message
 
 
 @pytest.mark.asyncio
@@ -157,35 +58,6 @@ async def test_a_root_that_is_not_a_folder_is_refused() -> None:
 
 
 # --- the walk -----------------------------------------------------------------
-
-
-def _tree_handler(pages: dict[str, list[dict[str, Any]]]) -> Handler:
-    """Serves a folder id to its children, one page each."""
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        path = request.url.path
-        if path == f"/drive/v3/files/{ROOT_ID}" and "q" not in request.url.params:
-            return httpx.Response(200, json=_root_folder())
-        if path == "/drive/v3/files":
-            query = request.url.params["q"]
-            folder_id = query.split("'")[1]
-            return httpx.Response(200, json={"files": pages.get(folder_id, [])})
-        return httpx.Response(404, json={"error": {"code": 404}})
-
-    return handler
-
-
-@pytest.mark.asyncio
-async def test_every_list_call_carries_include_items_from_all_drives() -> None:
-    """Without it a Shared Drive lists zero rows and reports success."""
-    drive, seen = _client(_tree_handler({ROOT_ID: [_file("d1", "Plan.pdf", "application/pdf")]}))
-    items = [item async for item in drive.walk_subtree()]
-    listings = [request for request in seen if request.url.path == "/drive/v3/files"]
-    assert [item.id for item in items] == ["d1"]
-    assert listings, "the walk made no list call"
-    for request in listings:
-        assert request.url.params["includeItemsFromAllDrives"] == "true"
-        assert request.url.params["supportsAllDrives"] == "true"
 
 
 @pytest.mark.asyncio
@@ -229,11 +101,7 @@ async def test_the_walk_stops_at_the_run_ceiling() -> None:
 
 @pytest.mark.asyncio
 async def test_a_corpus_of_exactly_the_ceiling_is_not_a_truncated_walk() -> None:
-    """A count alone cannot tell a ceiling from a corpus that happens to be that big.
-
-    Reported as truncated it would store no cursor, re-walk in full every run
-    and read `partial`/`source_ceiling` forever, with nothing to fix.
-    """
+    """A count alone cannot tell a ceiling from a corpus that happens to be that big."""
     children = [_file(f"d{index}", f"{index}.pdf", "application/pdf") for index in range(3)]
     drive, _ = _client(_tree_handler({ROOT_ID: children}), max_documents_per_run=3)
     items = [item async for item in drive.walk_subtree()]
@@ -265,9 +133,7 @@ async def test_a_shortcut_resolves_to_its_target() -> None:
 @pytest.mark.asyncio
 async def test_an_unreadable_shortcut_target_is_named_not_skipped() -> None:
     """Plan 5.7: a shortcut the loader cannot follow is reported, never a silent gap."""
-    shortcut = _file(
-        "sc1", "Board pack", SHORTCUT_MIME, shortcutDetails={"targetId": "target-1"}
-    )
+    shortcut = _file("sc1", "Board pack", SHORTCUT_MIME, shortcutDetails={"targetId": "target-1"})
     sibling = _file("d1", "Notes.pdf", "application/pdf")
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -421,11 +287,7 @@ async def test_a_file_directly_under_the_root_still_names_the_root() -> None:
 
 @pytest.mark.asyncio
 async def test_a_parent_walk_drive_would_not_answer_is_unknown_rather_than_outside() -> None:
-    """A 5xx that outlives every retry says nothing about where the file lives.
-
-    Read as `outside` it tombstones a live document and deletes its chunks,
-    and the run still reports `ok` because a tombstone is not a refusal.
-    """
+    """A 5xx that outlives every retry says nothing about where the file lives."""
     drive, seen = _client(lambda request: httpx.Response(503, json={"error": {"code": 503}}))
 
     location = await drive.resolve_folder_path("d1")
@@ -570,79 +432,3 @@ async def test_fetch_content_follows_a_shortcut_to_its_target() -> None:
     shortcut = _item(mime_type=SHORTCUT_MIME, shortcut_target_id="target-1", size=None)
     assert (await drive.fetch_content(shortcut)).data == b"%PDF-1.7"
     assert seen[-1].url.path == "/drive/v3/files/target-1"
-
-
-# --- retries ------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_a_rate_limit_backs_off_for_as_long_as_google_asks(slept: list[float]) -> None:
-    replies = [
-        httpx.Response(429, headers={"Retry-After": "7"}, json={}),
-        httpx.Response(200, json=_root_folder()),
-    ]
-    drive, seen = _client(lambda request: replies.pop(0))
-    assert (await drive.resolve_root()).id == ROOT_ID
-    assert slept == [7.0]
-    assert len(seen) == 2
-
-
-@pytest.mark.asyncio
-async def test_a_server_error_is_retried_with_backoff(slept: list[float]) -> None:
-    replies = [
-        httpx.Response(503, json={}),
-        httpx.Response(500, json={}),
-        httpx.Response(200, json=_root_folder()),
-    ]
-    drive, _ = _client(lambda request: replies.pop(0))
-    assert (await drive.resolve_root()).id == ROOT_ID
-    assert slept == [0.5, 1.0]
-
-
-@pytest.mark.asyncio
-async def test_a_401_forgets_the_cached_token_once_and_retries() -> None:
-    """A token can stop being valid before it stops being unexpired."""
-    provider, issued = _provider()
-    replies = [httpx.Response(401, json={}), httpx.Response(200, json=_root_folder())]
-    seen: list[httpx.Request] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        seen.append(request)
-        return replies.pop(0)
-
-    drive = DriveClient(
-        provider, httpx.AsyncClient(transport=httpx.MockTransport(handler)), _config()
-    )
-    assert (await drive.resolve_root()).id == ROOT_ID
-    assert issued == ["at-1", "at-2"], "the second call must carry a freshly minted token"
-    assert seen[0].headers["Authorization"] == "Bearer at-1"
-    assert seen[1].headers["Authorization"] == "Bearer at-2"
-
-
-@pytest.mark.asyncio
-async def test_a_second_401_gives_up_rather_than_looping() -> None:
-    drive, seen = _client(lambda request: httpx.Response(401, json={}))
-    with pytest.raises(DriveError):
-        await drive.resolve_root()
-    assert len(seen) == 2
-
-
-@pytest.mark.asyncio
-async def test_a_persistent_rate_limit_gives_up(slept: list[float]) -> None:
-    drive, seen = _client(lambda request: httpx.Response(429, json={}))
-    with pytest.raises(DriveError):
-        await drive.resolve_root()
-    assert len(seen) == 5
-    assert len(slept) == 4
-
-
-@pytest.mark.asyncio
-async def test_an_unreachable_drive_is_an_error_not_a_hang(slept: list[float]) -> None:
-    def handler(request: httpx.Request) -> httpx.Response:
-        raise httpx.ConnectError("no route")
-
-    drive, _ = _client(handler)
-    with pytest.raises(DriveError) as caught:
-        await drive.resolve_root()
-    assert "unreachable" in str(caught.value)
-    assert len(slept) == 4

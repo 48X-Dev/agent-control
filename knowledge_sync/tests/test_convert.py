@@ -1,10 +1,4 @@
-"""What the chunker is handed, on the shapes real files actually convert to.
-
-Measured 2026-08-10: a PDF comes back with zero headings and the page's hard
-wrapping intact, a ``.pptx`` comes back with its slides marked only by an HTML
-comment. Both are invisible to a splitter that reads ``#``, and these pin the
-two fixes plus the structures that must survive them untouched.
-"""
+"""What the chunker is handed, on the shapes real files actually convert to."""
 
 from __future__ import annotations
 

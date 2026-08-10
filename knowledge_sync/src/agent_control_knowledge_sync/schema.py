@@ -1,10 +1,6 @@
-"""Write-side table metadata for ``agent_knowledge``.
+"""Write-side table metadata for ``agent_knowledge``; the migrations are the source of truth.
 
-The migrations in ``server/knowledge_alembic/versions/`` are the source of
-truth. This file declares only the tables the sync writes, hand-kept in step,
-with autogenerate off: the generated ``tsvector`` column, the GIN operator
-classes and the seeded singleton have no faithful Core spelling. ``synonyms``
-is absent on purpose - it is operator-curated and the sync never writes it.
+Autogenerate is off: the generated ``tsvector`` and GIN opclasses have no Core spelling.
 """
 
 from __future__ import annotations

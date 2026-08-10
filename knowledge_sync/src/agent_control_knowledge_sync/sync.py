@@ -1,11 +1,4 @@
-"""One pass over the Drive corpus: claim the lease, walk or replay, ingest, release.
-
-Plan sections 5.1 and 10. Two properties hold the design up and both are tested:
-the cursor advances only after its batch has committed, so a death mid-run
-replays at most one batch into idempotent writes; and every completed run stamps
-``last_verified_at``, zero-change runs included, because a quiet source is not a
-dead sync and staleness keys on that column rather than on cursor movement.
-"""
+"""One pass over the Drive corpus: claim the lease, walk or replay, ingest, release."""
 
 from __future__ import annotations
 

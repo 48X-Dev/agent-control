@@ -1,8 +1,6 @@
 """Bytes in, text out, and an honest name for how honest the text is.
 
-A library and nothing else: no database, no socket, no settings. There is no
-``ok`` status on purpose, because a text-layer read is not a clean read, and
-conversion runs out of band because OCR costs tens of seconds per file.
+A library and nothing else: no database, no socket, no settings, and no ``ok`` status.
 """
 
 from __future__ import annotations
@@ -81,12 +79,7 @@ def convert_attachment(
     options: ConversionOptions = DEFAULT_OPTIONS,
     backends: tuple[ConverterBackend, ...] | None = None,
 ) -> ConversionResult:
-    """Convert one attachment's bytes to text.
-
-    The declared type is advisory: the magic bytes decide which parser runs,
-    and a disagreement is reported rather than resolved silently. Never raises
-    for a bad document; every failure is a status and a code.
-    """
+    """Convert one attachment's bytes to text; the magic bytes decide, never the declared type."""
     active = default_backends() if backends is None else backends
     sniffed = refine_container_mime(data, sniff_mime(data))
     base = ConversionResult(
@@ -116,11 +109,7 @@ async def convert_attachment_async(
     options: ConversionOptions = DEFAULT_OPTIONS,
     backends: tuple[ConverterBackend, ...] | None = None,
 ) -> ConversionResult:
-    """Run :func:`convert_attachment` off the event loop.
-
-    Conversion is CPU-bound for tens of seconds. A thread is not isolation; it
-    is the difference between a slow conversion and a stopped server.
-    """
+    """Run :func:`convert_attachment` off the event loop; it is CPU-bound for tens of seconds."""
     return await asyncio.to_thread(
         convert_attachment,
         data,
@@ -183,12 +172,7 @@ def _winner(passes: list[_Pass]) -> _Pass | None:
 
 
 def _degraded_status(passes: list[_Pass], winner: _Pass | None) -> ConversionStatus:
-    """Name what happened once no pass cleared the escalation threshold.
-
-    Ordered so the most actionable answer wins: a remedy an operator can act on
-    outranks a fact about the file. Thin text still counts as text, named after
-    the converter that found it, and it travels in the result either way.
-    """
+    """Name what happened once no pass cleared the escalation threshold, remedy first."""
     outcomes = {p.attempt.outcome for p in passes}
     if not passes or AttemptOutcome.UNAVAILABLE in outcomes:
         return ConversionStatus.CONVERTER_UNAVAILABLE
@@ -212,11 +196,7 @@ def _attempt(
     mime: str,
     options: ConversionOptions,
 ) -> _Pass:
-    """Run one converter and describe what it did, without ever raising.
-
-    ``available()`` is inside the guard too: a third-party backend is not
-    covered by what the shipped two happen to do.
-    """
+    """Run one converter and describe what it did, without ever raising."""
     started = time.monotonic()
     try:
         ready = backend.available()
@@ -280,12 +260,7 @@ def _ascii_skeleton(raw: bytes) -> bytes:
 
 
 def _is_source_echoed(text: str, data: bytes) -> bool:
-    """Whether a converter handed back its input instead of converting it.
-
-    Compared on the printable ASCII skeleton of both sides rather than on the
-    raw bytes, which three attacker-chosen bytes defeat. Narrow on purpose: the
-    output must *begin with* the input's own opening bytes.
-    """
+    """Whether a converter echoed its input, compared on the printable ASCII skeleton."""
     if not data:
         return False
     head = text[:_ECHO_TEXT_WINDOW]
@@ -338,12 +313,7 @@ def _finish(
     *,
     status: ConversionStatus,
 ) -> ConversionResult:
-    """Assemble the result, carrying the best text any converter produced.
-
-    "Best" is the most meaningful characters, not the last run, so a failed OCR
-    escalation does not discard what the first pass found. The reported count is
-    recomputed after the cut; ``attempts`` keeps the per-converter ones.
-    """
+    """Assemble the result, carrying the most meaningful characters any pass produced."""
     winner = _winner(passes)
     text = winner.text if winner else ""
     truncated = len(text) > options.text_max_chars
@@ -367,10 +337,7 @@ def _finish(
 
 
 def _result_failure_code(status: ConversionStatus, passes: list[_Pass]) -> str | None:
-    """The code belonging to the attempt the status was decided on.
-
-    Taking the last code instead sends whoever reads it to the wrong remedy.
-    """
+    """The code belonging to the attempt the status was decided on, never the last one."""
     wanted = _STATUS_OUTCOME.get(status)
     if wanted is None:
         return None

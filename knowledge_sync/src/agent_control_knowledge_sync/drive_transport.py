@@ -1,10 +1,6 @@
 """How the sync talks to Drive: the flags, the retries and one token refresh.
 
-Split out of ``drive_client.py`` along the seam between how a call is made and
-what it asks for. The shared-drive flags are attached here, on every request,
-because 5.7 measured what their absence does: ``files.get`` answers 404 and
-``files.list`` answers zero rows, and both read exactly like a folder nobody
-shared. A flag attached per call site is a flag one call site can forget.
+Without the shared-drive flags ``files.get`` answers 404 and ``files.list`` zero rows.
 """
 
 from __future__ import annotations

@@ -8,9 +8,7 @@ dependencies = [
     "httpx>=0.27.0",
     "pyyaml>=6.0",
     "SQLAlchemy[asyncio]>=2.0.0",
-    # Two drivers because the DSN chooses, not this file: compose and
-    # server/.env.example both say postgresql+psycopg://, and asyncpg is here
-    # for a deployment that says postgresql+asyncpg:// instead.
+    # Two drivers because the DSN chooses, not this file.
     "psycopg>=3.1",
     "asyncpg>=0.29.0",
 ]
@@ -18,14 +16,9 @@ authors = [{name = "Agent Control Team"}]
 license = {text = "Apache-2.0"}
 
 [project.optional-dependencies]
-# MarkItDown (MIT), ~253MB. convert.py imports it lazily and reports
-# `converter_unavailable` without it, so the sync starts either way.
-#
-# The extras list is the second half of one policy: convert.py's MIME table
-# admits a type and this line installs its parser. server/pyproject.toml
-# records what happens when the two drift - pdf-only was correct when written,
-# the OOXML types were admitted later, and the first real .pptx died naming the
-# wrong failure. Change one, change the other.
+# MarkItDown (MIT), ~253MB, imported lazily and reported as `converter_unavailable` without it.
+# Second half of a policy whose first half is convert.py's MIME table: change one, change the
+# other, or a type is admitted with no parser installed.
 text-extraction = ["markitdown[pdf,pptx,docx,xlsx]>=0.1.7"]
 
 [project.scripts]

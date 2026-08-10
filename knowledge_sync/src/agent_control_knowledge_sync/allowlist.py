@@ -1,9 +1,6 @@
 """The repo allowlist, which under a classic PAT is the only thing enforcing scope.
 
-Section 6 and its 2026-08-10 amendment. The credential reaches 62 repositories
-with push on 61, and GitHub refuses none of them, so every ambiguity in this
-file is resolved by refusing: unknown keys, wildcards, and anything that is not
-an explicit ``owner/name``. A missing or empty list indexes nothing.
+Every ambiguity refuses: unknown keys, wildcards, anything not an explicit ``owner/name``.
 """
 
 from __future__ import annotations

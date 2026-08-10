@@ -15,7 +15,7 @@ from typing import Any
 
 import httpx
 import pytest
-from agent_control_knowledge_sync import github_client as github_client_module
+from agent_control_knowledge_sync import github_transport as github_transport_module
 from agent_control_knowledge_sync.allowlist import RepoConfig, RepoRef
 from agent_control_knowledge_sync.config import SyncConfig
 from agent_control_knowledge_sync.drive_auth import DriveCredentials
@@ -55,7 +55,7 @@ def slept(monkeypatch: pytest.MonkeyPatch) -> list[float]:
     async def fake_sleep(seconds: float) -> None:
         waits.append(seconds)
 
-    monkeypatch.setattr(github_client_module, "_sleep", fake_sleep)
+    monkeypatch.setattr(github_transport_module, "_sleep", fake_sleep)
     return waits
 
 
@@ -447,7 +447,7 @@ class TestTheRateLimit:
     ) -> None:
         hub, _ = _hub("README.md")
         client = _client(hub)
-        monkeypatch.setattr(github_client_module, "time", SimpleNamespace(time=lambda: 1_000.0))
+        monkeypatch.setattr(github_transport_module, "time", SimpleNamespace(time=lambda: 1_000.0))
         hub.rate_limit = {"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "1010"}
         await client.default_branch(REPO)
         hub.rate_limit = {"X-RateLimit-Remaining": "4999", "X-RateLimit-Reset": "1010"}
@@ -460,7 +460,7 @@ class TestTheRateLimit:
     ) -> None:
         hub, _ = _hub("README.md")
         client = _client(hub)
-        monkeypatch.setattr(github_client_module, "time", SimpleNamespace(time=lambda: 1_000.0))
+        monkeypatch.setattr(github_transport_module, "time", SimpleNamespace(time=lambda: 1_000.0))
         hub.rate_limit = {"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "3600"}
         await client.default_branch(REPO)
         with pytest.raises(GitHubRateLimitedError) as caught:

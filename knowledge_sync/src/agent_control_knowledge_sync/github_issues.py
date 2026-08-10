@@ -1,22 +1,6 @@
 """Phase 6: issue and PR text, private repos only, dark until a repo opts in.
 
-Section 6 names this the one channel where arbitrary strangers write directly
-into the corpus, so three rules hold it shut rather than one. A repo whose
-``private`` flag comes back false is refused by name and none of its text is
-read: a filter over stranger-authored prose has to be right every time, and a
-refusal has to be right once. A repo that has not set ``github_issues_enabled``
-makes no API call and creates no source row. And every author who is not a
-confirmed organisation member lands as ``author_kind='external'``, including
-every author whose membership this token cannot determine, because section 7
-hands that field to the fence header and to a post control, and a field that
-guesses "workspace" while blind is the one failure here that would matter.
-
-Every call here goes out on ``GitHubClient``: the retry ladder, the Retry-After
-wait and the ``X-RateLimit-Remaining`` accounting are that object's, and the two
-channels share one hourly budget, so one object has to be the thing counting it.
-The allowlist is asserted from the same object for the same reason.
-
-What the corpus does with all of it is ``github_issue_ingest.py``.
+A non-private repo is refused by name, and any author not confirmed a member is external.
 """
 
 from __future__ import annotations
@@ -132,14 +116,7 @@ def _readable(subject: str) -> Iterator[None]:
 
 
 class OrgMembership:
-    """Membership per author login, cached for one run; undetermined reads external.
-
-    GitHub answers 204 for a member and 404 for a non-member, but it answers 302
-    when the caller is not itself an organisation member, and a classic
-    ``repo``-scoped token carries no ``read:org``. So "this token cannot see"
-    and "this author is a stranger" arrive as one observation, and both are
-    external. The blind case logs, because it is a token to widen, not a fact.
-    """
+    """Membership per login, cached per run; undetermined reads external (GitHub 302s if blind)."""
 
     def __init__(self, client: GitHubClient, *, org: str) -> None:
         self._client = client
@@ -162,7 +139,7 @@ class OrgMembership:
     async def _probe(self, login: str) -> AuthorKind:
         path = f"/orgs/{_seg(self._org)}/members/{_seg(login)}"
         try:
-            response = await self._client.request(path, {})
+            response = await self._client.transport.request(path, {})
         except GitHubUnreachableError as exc:
             return self._blind(login, type(exc).__name__)
         if response.status_code == 204:
@@ -290,7 +267,7 @@ class GitHubIssueReader:
         """One list endpoint on the shared ladder, asserted against the allowlist first."""
         self._client.assert_allowed(repo)
         with _readable(path):
-            return await self._client.paginate(path, params, limit=limit)
+            return await self._client.transport.paginate(path, params, limit=limit)
 
 
 async def sync_issue_channels(
@@ -300,14 +277,7 @@ async def sync_issue_channels(
     client: GitHubClient,
     max_documents: int = MAX_DOCUMENTS_DEFAULT,
 ) -> list[IssueSyncOutcome]:
-    """Every opted-in repo, one refusal never stopping the rest.
-
-    Section 6 makes ``knowledge.yaml`` the sole enforcement boundary under the
-    credential in use, and a sweep that accepted a bare repo would be a second
-    way in. The client carries that allowlist and asserts it, so both channels
-    enforce it from one place. A refusal here is recorded rather than raised,
-    but it is recorded by code in the outcome that repo returns, not swallowed.
-    """
+    """Every opted-in repo, one refusal never stopping the rest."""
     outcomes: list[IssueSyncOutcome] = []
     for repo_config in repos:
         try:

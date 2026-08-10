@@ -1,10 +1,6 @@
 """The GitHub half of a run, driven directly rather than through ``run_once``.
 
-The adapter is not wired into the run loop yet, so these exercise it against a
-fake writer and the stubbed host. The cases that carry the most weight are the
-ones where a wrong answer deletes live content: a repo that could not be
-reached, a tree that was cut short, and a walk stopped by a ceiling must all
-tombstone nothing, because none of them is evidence that a document is gone.
+The adapter is not wired into the run loop yet, so these drive it against a fake writer.
 """
 
 from __future__ import annotations

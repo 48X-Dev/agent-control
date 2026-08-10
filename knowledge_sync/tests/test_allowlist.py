@@ -1,10 +1,4 @@
-"""The allowlist refuses, because under a classic PAT nothing downstream of it does.
-
-Section 6's amendment made this file the whole enforcement boundary, so the cases
-that matter are the ones where a permissive parser would have said yes: a typo'd
-key, a wildcard, a bare owner, an empty list. Each asserts the refusal code, not
-just that something was raised.
-"""
+"""The allowlist refuses, because under a classic PAT nothing downstream of it does."""
 
 from __future__ import annotations
 
