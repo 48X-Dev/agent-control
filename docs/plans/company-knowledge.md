@@ -52,15 +52,38 @@ The reconciliation is a strict ownership split, and no sentence of `agent-drive.
 
 | | Output tree (`agent-drive.md`) | Input corpus (this plan) |
 |---|---|---|
-| Identity | `agent.control@earlycore.dev`, OAuth client | A dedicated service account, e.g. `knowledge-sync@<project>.iam.gserviceaccount.com` |
-| Scope | `drive.file`, write into an app-created tree | `drive.readonly`, sees only what is explicitly shared **to the service account** |
+| Identity | `agent.control@earlycore.dev`, OAuth client | A second dedicated **Workspace account**, e.g. `knowledge-sync@earlycore.dev`, its own OAuth client |
+| Scope | `drive.file`, write into an app-created tree | `drive.readonly`, sees only what is explicitly shared **to the reader account** |
 | Credential lives in | The executor process, only | The `knowledge-sync` container, only |
 | Direction | Agent writes deliverables | Sync reads human documents |
 | What the model touches | Its own subtree, via Drive tools | Snippets, via a server endpoint; never Drive |
 
 The company folder is shared with the **service account**, never with `agent.control@earlycore.dev`. That keeps `agent-drive.md`'s inbound canary green by construction rather than by exception: if somebody shares the corpus with the agent account instead, that canary fires and latches, which is the correct outcome, and the runbook line for it is "you shared with the wrong identity; share with the sync's service account". The reverse mistake is detected too: sharing any node of the **agent's** tree to the service account adds a permission entry on that node, and `agent-drive.md` 4.4.1's outbound canary asserts the exact permission set on every node and latches the Drive server off when it changes. The two plans' canaries back each other, one per wrong direction, and section 11 adds this plan's own loader check on top. The executor still cannot read a human's Drive file. It can only ask the control plane a question and receive bounded text the control plane already evaluated.
 
-Two Google-side facts about the service-account choice, one verified in kind and one probed. Sharing a folder with a service account's email address makes the subtree readable to it under `drive.readonly`, the same mechanism as sharing with a person; K1 in Phase 0 proves it against a real folder rather than trusting the docs. And **domain-wide delegation is refused** (section 13): a delegated service account can impersonate any user in the domain, which converts "reads one shared folder" into "reads everyone's Drive", and no feature in this plan needs it. The Phase 0 admin checklist asserts DWD is not granted, in writing, beside the checks `agent-drive.md` 4.1 already demands.
+**Correction (2026-08-06): the identity is an OAuth account, not a service account.** The
+design above specified a service account with a downloadable key. This deployment's Google
+organisation enforces `iam.disableServiceAccountKeyCreation`, and that policy is right: a
+downloadable key does not expire, does not rotate, and leaks silently. The plan changes rather than
+the policy.
+
+The replacement keeps every property the service account was chosen for, and it is the shape
+`agent-drive.md` already chose for the write identity: a **second dedicated Workspace account** with
+its own OAuth client, `drive.readonly`, and a refresh token living in the sync container's
+environment only. Containment survives whole - an account that owns nothing and that no human signs
+into sees exactly what has been shared to it, which is the property, not the credential type.
+
+Three consequences, recorded because each is a way to get this wrong. The reader **must not** be
+`agent.control@earlycore.dev`: `agent-drive.md` 4.4.1's inbound canary asserts `sharedWithMe` stays
+empty on that account forever and latches the Drive server off when it does not, so sharing the
+corpus there breaks the write side by design. The OAuth consent screen's publishing status **must be
+Internal**: a Testing app's refresh tokens expire after seven days, which would turn the sync into a
+weekly outage, and `knowledge_sync/src/agent_control_knowledge_sync/drive_auth.py` puts that sentence
+in the refusal message where an operator will actually meet it. And K1's probe is unchanged in
+substance but now runs against a shared-to-a-user subtree rather than a shared-to-an-SA one; the
+`permissions.list` branch it decides is if anything more likely to work for a user principal, which
+section 7 will confirm rather than assume.
+
+Two Google-side facts about the reader-account choice, one verified in kind and one probed. Sharing a folder with the reader account's email address makes the subtree readable to it under `drive.readonly`, the ordinary Workspace mechanism; K1 in Phase 0 proves it against a real folder rather than trusting the docs. And **domain-wide delegation stays refused** (section 13) should anyone revisit a service account: a delegated service account can impersonate any user in the domain, which converts "reads one shared folder" into "reads everyone's Drive", and no feature in this plan needs it. The Phase 0 admin checklist asserts DWD is not granted, in writing, beside the checks `agent-drive.md` 4.1 already demands.
 
 ### 2.2 The sync runs outside the server, and the credential matrix is the design
 
@@ -85,8 +108,8 @@ Who holds what, and this table is the security design more than any control is:
 
 | Process | Holds | Never holds |
 |---|---|---|
-| `knowledge-sync` | Drive service-account key, GitHub read token, `knowledge_sync` DB credential | Any Agent Control API key, the executor's Drive OAuth, the Linear key, the model endpoint |
-| `server` | `knowledge_read` DB credential (SELECT only) | Drive SA key, GitHub token |
+| `knowledge-sync` | Drive OAuth client + refresh token, GitHub read token, `knowledge_sync` DB credential | Any Agent Control API key, the executor's Drive OAuth, the Linear key, the model endpoint |
+| `server` | `knowledge_read` DB credential (SELECT only) | Drive refresh token, GitHub token |
 | executor | session-bound runtime token | Every source credential, both knowledge DB credentials |
 | dispatcher | its ordinary API key, unchanged | Everything above |
 
@@ -632,7 +655,7 @@ The exists-versus-reaches lesson hit four times this session, so this section is
     stop_grace_period: 120s
 ```
 
-The server service gains its side: `AGENT_CONTROL_KNOWLEDGE_ENABLED` (default `false`), `AGENT_CONTROL_KNOWLEDGE_DB_URL` (the `knowledge_read` DSN), `AGENT_CONTROL_KNOWLEDGE_SEARCH_MAX_RESULTS`, `AGENT_CONTROL_KNOWLEDGE_SNIPPET_MAX_CHARS`, `AGENT_CONTROL_KNOWLEDGE_SEARCHES_PER_MINUTE`, `AGENT_CONTROL_KNOWLEDGE_STALENESS_WARN_SECONDS`, each with an `.env.example` line. Routes register only when the flag is true, inheriting the executor-router precedent.
+The server service gains its side: `AGENT_CONTROL_KNOWLEDGE_ENABLED` (default `false`), `AGENT_CONTROL_KNOWLEDGE_DB_URL` (the `knowledge_read` DSN), `AGENT_CONTROL_KNOWLEDGE_SEARCH_MAX_RESULTS`, `AGENT_CONTROL_KNOWLEDGE_SNIPPET_MAX_CHARS`, `AGENT_CONTROL_KNOWLEDGE_SEARCHES_PER_MINUTE`, `AGENT_CONTROL_KNOWLEDGE_STALENESS_WARN_SECONDS`, each with an `.env.example` line. ~~Routes register only when the flag is true, inheriting the executor-router precedent.~~ **Superseded in build.** The routes register unconditionally and a disabled deployment answers a stated `knowledge_disabled` refusal. Conditional registration would answer 404, which is a code the tool would have to guess the meaning of where the contract promises a refusal an agent can read; and it would make the generated OpenAPI spec, and therefore every SDK built from it, depend on one deployment's environment. The executor-router precedent does not carry here because nothing is built from that router's shape.
 
 `scripts/apple-container-up.sh` gains, in the same commit: `KNOWLEDGE_NAME=ac-knowledge`, a provisioning exec running `server/scripts/knowledge_db_init.sql` right after the adk one (idempotent, every up, because the fresh-volume provisioning lesson applies to this database identically), the new server `-e` lines, and a fourth `container run` block pointed at `$PG_IP`. **"Mirror the dispatcher block" is not the instruction, because the dispatcher block has no volume mounts at all** (verified: its run block is `-e` lines only), and a faithful mirror would produce a sync with no sources and no credential that starts cleanly and does nothing. The knowledge block names its mounts explicitly:
 
@@ -650,7 +673,7 @@ plus every `-e` from the compose block including `AGENT_CONTROL_EXECUTOR_DRIVE_R
 ## 13. What this refuses to do
 
 - **No write path from agents to any source.** No Drive write, no GitHub write, no PR, no comment, nothing. The sync's credentials are read-only and the executor has no source credentials at all. The write side of Drive stays `agent-drive.md`'s, untouched.
-- **No source credential outside the sync process.** Not the server, not the executor, not the dispatcher, not the browser. The service-account key and the GitHub token exist in exactly one container's environment, `task-dispatcher.md` 13.6's rule applied to two new secrets.
+- **No source credential outside the sync process.** Not the server, not the executor, not the dispatcher, not the browser. The Drive refresh token and the GitHub token exist in exactly one container's environment, `task-dispatcher.md` 13.6's rule applied to two new secrets.
 - **No domain-wide delegation on the service account.** Delegation converts one shared folder into every user's Drive. The Phase 0 checklist asserts its absence in writing.
 - **No org-wide repo discovery, no wildcard folder crawling.** `knowledge.yaml` is an explicit allowlist and adding to it is a reviewed diff.
 - **No secrets in the index.** The scrub refuses known credential shapes with a stated count, never silence (5.6), and never claims more than "known shapes".
@@ -751,6 +774,19 @@ link opens the original under the HUMAN's own Google or GitHub login, which is
 exactly the separation the matrix wants. Playwright coverage follows the
 dispatch panel's pattern, including one test that a snippet containing markup
 renders inert. The MCP surface (8.7) is unscheduled behind its demand gate.
+
+**As built, with two deviations and their reasons.** The panel calls
+`POST /api/v1/company-knowledge/{search,recent}` at the `company_knowledge.status`
+tier, which is what finally gives that operation a route; the freshness strip
+reads the `corpus` block every response already carries, so the panel does not
+wait on Phase 4's per-source status endpoint and Phase 4 keeps it. And there is
+**no link per result**: the corpus schema carries no URL column, the sync that
+would populate one is Phase 2, and a Drive link guessed from a path is a link
+that mostly 404s. The full path renders as text instead, which is what a person
+searches their own Drive for. `safeHttpUrl` returns when there is a URL to pass
+through it. The console reads are metered on their own bucket, keyed on a
+hashed caller composed server-side: an unmetered surface beside a metered one
+is not a convenience, it is the way around the ceiling.
 
 **Phase 4: `serve`, status endpoint, staleness. 1 week. Depends on Phase 3.** The loop with jitter and SIGTERM discipline, `GET /company-knowledge/status`, `last_verified_at` and the staleness line, the startup half-on log lines, `.env.example` completion, the parity CI grep (env vars and mount paths, per section 12).
 
