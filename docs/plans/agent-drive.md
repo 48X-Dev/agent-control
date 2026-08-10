@@ -282,6 +282,17 @@ client, so `sharedWithMe` is no longer empty by construction and the assertion a
 forever - a canary that always fires is one nobody reads. It becomes **"`sharedWithMe` is exactly
 one entry, and its id is `AGENT_KNOWLEDGE_DRIVE_ROOT_FOLDER_ID`"**.
 
+**The query has to opt into shared drives, or this canary is blind.** Measured 2026-08-10: the corpus
+root lives in a shared drive, and `files.list` with `q: "sharedWithMe = true"` returned **zero
+entries** for an account that demonstrably held the share. The same call with
+`supportsAllDrives=true` and `includeItemsFromAllDrives=true` returned the one expected entry. Both
+flags are part of the assertion rather than tuning, and the reason is not the false alarm. It is that
+anything shared to this account *through a shared drive* is precisely the widening this canary
+exists to catch, and precisely what the flagless query cannot see. A canary that returns the empty
+set for two unrelated reasons, one of them "the thing you are watching for happened", is not a
+canary. The integration test covering this canary treats the flagless call as its own case, distinct
+from a genuine empty set.
+
 That is still a fixed assertion rather than a list to maintain, and it is `company-knowledge.md` 5.7
 that keeps it so: the corpus is one shared root descended recursively, not a set of separately shared
 folders. Adding knowledge happens *inside* that tree, where it changes nothing this canary looks at.
