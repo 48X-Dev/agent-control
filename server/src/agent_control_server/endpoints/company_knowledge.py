@@ -38,9 +38,15 @@ from agent_control_models.knowledge_search import (
     KnowledgeSearchRequest,
     KnowledgeSearchResponse,
 )
+from agent_control_models.knowledge_status import (
+    KnowledgeSourceStatus,
+    KnowledgeStatus,
+)
 from fastapi import APIRouter, Depends
 
 from ..auth_framework import Operation, Principal, require_operation
+from ..config import knowledge_settings
+from ..knowledge.status import CorpusStatus, SourceStatus, read_status
 from ..services import knowledge_search
 from ..services.caller_identity import hash_caller_id
 
@@ -114,4 +120,51 @@ async def recent_company_knowledge(
         meter_key=_meter_key(principal),
         days=request.days,
         max_results=request.max_results,
+    )
+
+
+@router.get(
+    "/status",
+    response_model=KnowledgeStatus,
+    summary="Report the knowledge mirror's freshness and per-source health",
+    response_description="Per-source freshness, or a stated inability to read the corpus",
+    dependencies=[Depends(require_operation(Operation.COMPANY_KNOWLEDGE_STATUS))],
+)
+async def company_knowledge_status() -> KnowledgeStatus:
+    """Oversight. Whether the mirror is current, and which source is not.
+
+    A GET where its two neighbours are POSTs, because it carries no query.
+    Never an error status either: an unreachable or unreadable corpus answers
+    200 with ``schema_supported`` false, so the panel built to show a broken
+    sync keeps working when there is one.
+    """
+    return _status_model(await read_status(), knowledge_settings.staleness_warn_seconds)
+
+
+def _status_model(status: CorpusStatus, staleness_warn_seconds: int) -> KnowledgeStatus:
+    """The domain reading, plus the one number that is configuration."""
+    return KnowledgeStatus(
+        schema_version=status.schema_version,
+        schema_supported=status.schema_supported,
+        document_count=status.document_count,
+        chunk_count=status.chunk_count,
+        stale_seconds=status.stale_seconds,
+        staleness_warn_seconds=staleness_warn_seconds,
+        sources_failing=status.sources_failing,
+        sources=[_source_model(source) for source in status.sources],
+    )
+
+
+def _source_model(source: SourceStatus) -> KnowledgeSourceStatus:
+    return KnowledgeSourceStatus(
+        source_id=source.source_id,
+        kind=source.kind,
+        enabled=source.enabled,
+        last_verified_at=source.last_verified_at,
+        cursor_advanced_at=source.cursor_advanced_at,
+        stale_seconds=source.stale_seconds,
+        document_count=source.document_count,
+        failing=source.failing,
+        last_failure_code=source.last_failure_code,
+        refusals_by_code=source.refusals_by_code,
     )

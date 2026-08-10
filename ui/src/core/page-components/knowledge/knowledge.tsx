@@ -16,9 +16,11 @@ import { getErrorStatus, isForbiddenError } from '@/core/api/errors';
 import {
   useKnowledgeRecent,
   useKnowledgeSearch,
+  useKnowledgeStatus,
 } from '@/core/hooks/query-hooks/use-company-knowledge';
 
 import { FreshnessStripView, KnowledgeResults } from './knowledge-results';
+import { KnowledgeSourcesView } from './knowledge-sources';
 
 /**
  * The company-knowledge panel: the same corpus an agent reads, for a person.
@@ -37,6 +39,7 @@ import { FreshnessStripView, KnowledgeResults } from './knowledge-results';
 
 const SEARCH_TAB = 'search';
 const RECENT_TAB = 'recent';
+const SOURCES_TAB = 'sources';
 
 /**
  * Something went wrong before the corpus was consulted, and which something
@@ -84,6 +87,7 @@ const KnowledgePage = () => {
 
   const search = useKnowledgeSearch(submitted);
   const recent = useKnowledgeRecent();
+  const status = useKnowledgeStatus(tab === SOURCES_TAB);
 
   // Whichever view is in front owns the strip, so the footer describes the
   // response above it rather than whichever request happened to finish last.
@@ -122,6 +126,9 @@ const KnowledgePage = () => {
           </Tabs.Tab>
           <Tabs.Tab value={SEARCH_TAB} data-testid="knowledge-tab-search">
             Ask
+          </Tabs.Tab>
+          <Tabs.Tab value={SOURCES_TAB} data-testid="knowledge-tab-sources">
+            Sources
           </Tabs.Tab>
         </Tabs.List>
 
@@ -201,14 +208,42 @@ const KnowledgePage = () => {
             )}
           </Stack>
         </Tabs.Panel>
+
+        <Tabs.Panel value={SOURCES_TAB} pt="md">
+          <Stack gap="md">
+            <Text size="sm" c="dimmed">
+              What the mirror is built from, and whether each part of it still
+              moves. Read-only.
+            </Text>
+            {status.isLoading ? (
+              <Group gap="xs">
+                <Loader size="xs" />
+                <Text size="sm" c="dimmed">
+                  Reading the sources
+                </Text>
+              </Group>
+            ) : status.error ? (
+              <RequestError error={status.error} what="source status" />
+            ) : (
+              <KnowledgeSourcesView
+                status={status.data}
+                dataUpdatedAt={status.dataUpdatedAt}
+              />
+            )}
+          </Stack>
+        </Tabs.Panel>
       </Tabs>
 
-      <FreshnessStripView
-        response={showing?.data}
-        dataUpdatedAt={showing?.dataUpdatedAt}
-        onRecheck={showing ? () => void showing.refetch() : undefined}
-        rechecking={showing?.isFetching}
-      />
+      {/* The sources view carries its own, richer version of this footer, so
+          showing both would print the same age twice under one page. */}
+      {tab === SOURCES_TAB ? null : (
+        <FreshnessStripView
+          response={showing?.data}
+          dataUpdatedAt={showing?.dataUpdatedAt}
+          onRecheck={showing ? () => void showing.refetch() : undefined}
+          rechecking={showing?.isFetching}
+        />
+      )}
     </Stack>
   );
 };

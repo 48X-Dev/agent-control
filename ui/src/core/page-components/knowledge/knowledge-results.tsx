@@ -98,7 +98,7 @@ function Result({
  */
 const AGE_TICK_MS = 30_000;
 
-function useSecondsOnScreen(since: number | undefined): number {
+export function useSecondsOnScreen(since: number | undefined): number {
   const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {

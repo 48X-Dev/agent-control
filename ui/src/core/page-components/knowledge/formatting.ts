@@ -15,6 +15,7 @@
 import type {
   KnowledgeRefusalCode,
   KnowledgeSearchResponse,
+  KnowledgeSourceStatus,
 } from '@/core/api/types';
 
 const REFUSALS: Record<KnowledgeRefusalCode, string> = {
@@ -44,7 +45,7 @@ const MINUTE_SECONDS = 60;
  * `staleness_warn_seconds` rides on the corpus block, so an operator who
  * shortens it changes what this page colours yellow.
  */
-const FALLBACK_STALENESS_WARN_SECONDS = DAY_SECONDS;
+export const FALLBACK_STALENESS_WARN_SECONDS = DAY_SECONDS;
 
 export function refusalSentence(
   code: KnowledgeRefusalCode | null | undefined,
@@ -167,4 +168,130 @@ export function externalAuthorNote(
   const count = response?.external_author_count;
   if (typeof count !== 'number' || count < 1) return null;
   return `${count} of these ${count === 1 ? 'was' : 'were'} not written inside the workspace, or the sync could not tell who wrote ${count === 1 ? 'it' : 'them'}.`;
+}
+
+// =============================================================================
+// The sources view
+// =============================================================================
+
+/** Codes a run records when a whole source stops working, not one item in it. */
+const SOURCE_FAILURES: Record<string, string> = {
+  root_unreachable:
+    'The configured root did not resolve. A shared-drive folder read without shared-drive support answers 404, which looks exactly like a folder nobody shared.',
+  unreadable_folder:
+    'A folder under the root could not be listed. The reader can see it and not read it.',
+  schema_unsupported:
+    'The sync and the store disagree about the corpus schema. Migrations have run on one of them and not the other.',
+  lease_lost:
+    'Another sync took the lease mid-run. That run was abandoned; the next one should finish.',
+  run_failed:
+    'The run did not finish, and the sync did not name a reason. Its log has one.',
+  drive_error:
+    'Drive refused the read. The sync log carries the status it answered with.',
+};
+
+/**
+ * Why documents on this source are out of the corpus.
+ *
+ * A standing total, not a tally from the last run: these are the tombstone
+ * reasons currently on the source's rows, so "3 oversize" means three
+ * documents are excluded today, not that three were refused this morning.
+ */
+const EXCLUSIONS: Record<string, string> = {
+  unshared: 'no longer shared with the reader',
+  excluded: 'ruled out by the sync config',
+  oversize: 'over the size ceiling',
+  secret_file: 'named like a secret',
+};
+
+/**
+ * What a failure code means, for an operator deciding where to go next. The
+ * code itself is rendered beside this rather than replaced by it: an unknown
+ * code with no sentence is still the string to search the sync's log for.
+ */
+export function failureSentence(
+  code: string | null | undefined
+): string | null {
+  if (!code) return null;
+  return (
+    SOURCE_FAILURES[code] ??
+    'This console has no sentence for that code. The sync log is where it came from.'
+  );
+}
+
+/** "3 over the size ceiling (oversize), 1 named like a secret (secret_file)". */
+export function exclusionSummary(
+  excluded: Record<string, number> | null | undefined
+): string | null {
+  const counted = Object.entries(excluded ?? {}).filter(
+    ([, count]) => typeof count === 'number' && count > 0
+  );
+  if (counted.length === 0) return null;
+
+  return counted
+    .sort(([codeA, a], [codeB, b]) => b - a || codeA.localeCompare(codeB))
+    .map(([code, count]) => {
+      const reason = EXCLUSIONS[code];
+      return reason
+        ? `${count} ${reason} (${code})`
+        : `${count} excluded as ${code}`;
+    })
+    .join(', ');
+}
+
+/**
+ * How long since this source last verified, in seconds.
+ *
+ * Server-measured where possible, for the reason the freshness strip prefers
+ * the same field: a browser with a wrong clock would otherwise report an age
+ * nobody measured. `elapsedSeconds` keeps it counting while the tab sits open.
+ */
+export function sourceAgeSeconds(
+  source: KnowledgeSourceStatus,
+  elapsedSeconds = 0
+): number | null {
+  if (typeof source.stale_seconds === 'number') {
+    return source.stale_seconds + Math.max(0, elapsedSeconds);
+  }
+  if (!source.last_verified_at) return null;
+  const verified = new Date(source.last_verified_at).getTime();
+  if (Number.isNaN(verified)) return null;
+  return Math.max(0, (Date.now() - verified) / 1000);
+}
+
+/**
+ * The one state a row is in, in the order an operator should read them.
+ *
+ * A source somebody switched off outranks everything: it is not failing, it is
+ * not indexing, and colouring it red would train a reader to ignore red.
+ */
+export type SourceHealth =
+  | 'disabled'
+  | 'failing'
+  | 'no_documents'
+  | 'partial'
+  | 'stale'
+  | 'ok';
+
+export function sourceHealth(
+  source: KnowledgeSourceStatus,
+  ageSeconds: number | null,
+  warnAfterSeconds: number
+): SourceHealth {
+  if (!source.enabled) return 'disabled';
+
+  const code = source.last_failure_code;
+
+  // A reason the sync recorded explains an empty source better than its
+  // emptiness does.
+  if (source.failing && code) return 'failing';
+  // `failing` is also set for an enabled source holding nothing, which the
+  // contract leaves without a code, so this precedes the bare flag or the
+  // emptiness loses its own sentence.
+  if (source.document_count === 0) return 'no_documents';
+  if (source.failing) return 'failing';
+  // A run that finished and recorded an error is not a source that stopped.
+  if (code) return 'partial';
+  if (ageSeconds !== null && ageSeconds > warnAfterSeconds) return 'stale';
+  return 'ok';
 }

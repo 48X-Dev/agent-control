@@ -39,3 +39,39 @@
   padding-top: var(--mantine-spacing-sm);
   border-top: 1px solid var(--jds-color-border);
 }
+
+/* One configured source. Same card as a result, different left edge: the
+   three states below all read as success in a plain table of counts. */
+.source {
+  padding: var(--mantine-spacing-sm) var(--mantine-spacing-md);
+  border: 1px solid var(--jds-color-border);
+  border-left: 3px solid var(--mantine-color-green-6);
+  border-radius: var(--mantine-radius-sm);
+  background-color: var(--mantine-color-white);
+}
+
+[data-mantine-color-scheme='dark'] .source {
+  background-color: var(--mantine-color-dark-7);
+  border-color: var(--mantine-color-dark-4);
+  border-left-color: var(--mantine-color-green-6);
+}
+
+.sourceFailing,
+[data-mantine-color-scheme='dark'] .sourceFailing {
+  border-left-color: var(--mantine-color-red-6);
+}
+
+.sourceWarning,
+[data-mantine-color-scheme='dark'] .sourceWarning {
+  border-left-color: var(--mantine-color-yellow-5);
+}
+
+.sourceDisabled,
+[data-mantine-color-scheme='dark'] .sourceDisabled {
+  border-left-color: var(--mantine-color-gray-5);
+}
+
+.code {
+  font-family: var(--mantine-font-family-monospace);
+  overflow-wrap: anywhere;
+}
