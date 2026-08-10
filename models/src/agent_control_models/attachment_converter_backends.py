@@ -1,8 +1,6 @@
 """The two converters, behind one interface, each importable or absent.
 
-Neither is a hard dependency: both are imported inside the call that needs them
-and absence is a stated status. No upstream text ever leaves this module, and
-routing is by sniffed type rather than by the caller's filename.
+Neither is a hard dependency: imported inside the call, and absence is a stated status.
 """
 
 from __future__ import annotations
@@ -106,11 +104,7 @@ def _looks_encrypted(error: BaseException) -> bool:
 
 
 class MarkItDownBackend:
-    """MarkItDown 0.1.7 (MIT), the text-layer pass.
-
-    Plugins are disabled explicitly, so the parser set does not depend on what
-    else the image happens to carry.
-    """
+    """MarkItDown 0.1.7 (MIT), the text-layer pass; plugins are disabled explicitly."""
 
     name = MARKITDOWN_BACKEND_NAME
     kind = ConverterKind.TEXT_LAYER
@@ -148,11 +142,7 @@ class MarkItDownBackend:
 
 
 class DoclingBackend:
-    """Docling (MIT), the OCR and layout pass.
-
-    The layout model is loaded once per process, and extraction is serialized
-    on a module lock because Docling's thread safety is undocumented.
-    """
+    """Docling (MIT), the OCR pass; serialized on a module lock, its thread safety undocumented."""
 
     name = DOCLING_BACKEND_NAME
     kind = ConverterKind.OCR
@@ -194,12 +184,7 @@ _docling_build_failure: str | None = None
 
 
 def _docling_converter() -> Any:
-    """Build the shared Docling converter on first use, or repeat why it failed.
-
-    The failure is remembered too: loading the torch layout model takes about a
-    minute and every other conversion waits behind it. One slow failure, then
-    fast ones. ``reset_backend_caches`` clears both.
-    """
+    """Build the shared Docling converter on first use, or repeat why it failed."""
     global _docling_converter_instance, _docling_build_failure
     with _docling_build_lock:
         if _docling_build_failure is not None:

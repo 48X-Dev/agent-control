@@ -1,9 +1,4 @@
-"""OAuth token loop for the corpus reader. Refresh token only, no key on disk.
-
-The reader is the agent's own account under a separate ``drive.readonly``
-client, and it reaches exactly one shared root. See ``company-knowledge.md``
-2.1 for the identity decision and 5.7 for the scope.
-"""
+"""OAuth token loop for the corpus reader. Refresh token only, no key on disk."""
 
 from __future__ import annotations
 
@@ -56,14 +51,7 @@ class _CachedToken:
 
 @dataclass(slots=True)
 class DriveTokenProvider:
-    """Exchanges a refresh token for access tokens, once per expiry window.
-
-    Deliberately not a Google client library. The exchange is one form POST and
-    one JSON field; taking ``google-auth`` for it would add a transitive tree to
-    the one container holding source credentials, and ``agent-drive.md`` 1.4's
-    reasoning about owning the token loop rather than brokering it applies here
-    unchanged.
-    """
+    """Exchanges a refresh token for access tokens, once per expiry window."""
 
     credentials: DriveCredentials
     client: httpx.AsyncClient
@@ -122,11 +110,5 @@ class DriveTokenProvider:
         return str(token)
 
     def forget(self) -> None:
-        """Drop the cached token so the next call refreshes.
-
-        For the 401-mid-walk case: a token can stop being valid before it stops
-        being unexpired (a revoked grant, a changed password), and retrying the
-        same cached string forever is how that becomes an infinite loop instead
-        of one refused run.
-        """
+        """Drop the cached token so the next call refreshes: a token can stop being valid early."""
         self._cached = None

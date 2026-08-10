@@ -1,14 +1,6 @@
-"""Section 11: agent output enters the corpus through a human hand, never through the walk.
+"""Section 11: agent output enters the corpus through a human hand, never the walk.
 
-An agent writes a speculation into its deliverables tree, the sync indexes it,
-and a week later a different agent cites it as company knowledge that nobody
-agreed to. The refusal is ancestry, not equality, because the realistic accident
-is one deliverables folder shared three levels down rather than the root itself.
-
-Its limit is stated rather than hidden: the reader account can walk only as high
-as its own visibility reaches, so a chain that truncates above the shared node is
-only partially checked. `agent-drive.md` 4.4.1's outbound permission canary is
-the enforced backstop for what this cannot see.
+The refusal is ancestry, not equality, and reaches only as high as the reader can see.
 """
 
 from __future__ import annotations

@@ -1,7 +1,6 @@
 """What the sync asks Drive for: the root, the subtree, the changes, the bytes.
 
-How those calls are made, with the shared-drive flags and the retries, is
-``drive_transport.py``.
+How those calls are made is ``drive_transport.py``.
 """
 
 from __future__ import annotations
@@ -183,12 +182,7 @@ class DriveClient:
         """Set only when the ceiling stopped a walk that still had documents to give."""
 
     async def resolve_root(self) -> DriveItem:
-        """The corpus root, or a typed refusal naming the shared-drive cause.
-
-        Held after the first success: its name is the first segment of every
-        citation this client produces, and a run resolves it before anything
-        else, so both the walk and the changes replay read it for free.
-        """
+        """The corpus root, or a typed refusal naming the shared-drive cause. Held per run."""
         if self._root is not None:
             return self._root
         folder_id = self._config.root_folder_id
@@ -220,11 +214,7 @@ class DriveClient:
         return str(token)
 
     async def walk_subtree(self) -> AsyncIterator[DriveItem]:
-        """Every document under the root, breadth first, stopping at the run ceiling.
-
-        The ceiling is tested against a document in hand, so a corpus holding
-        exactly the ceiling ends on its own and is not reported as truncated.
-        """
+        """Every document under the root, breadth first, stopping at the run ceiling."""
         self.walk_truncated = False
         root = await self.resolve_root()
         ceiling = self._config.max_documents_per_run
@@ -284,12 +274,7 @@ class DriveClient:
             return changes, str(new_cursor)
 
     async def fetch_content(self, item: DriveItem) -> FetchedContent:
-        """Exports a Google-native file, downloads everything else, refuses the oversize.
-
-        The media type travels with the bytes because an export replaces it: a
-        Doc's own type is a Drive-native one no converter accepts, and reading
-        it off the item would refuse every Doc in the corpus.
-        """
+        """Exports Google-native files, downloads the rest; the media type comes with the bytes."""
         target = await self._shortcut_target(item)
         ceiling = self._config.max_file_bytes
         if target.size is not None and target.size > ceiling:
@@ -330,12 +315,7 @@ class DriveClient:
         return _parse_item(response.json())
 
     async def resolve_folder_path(self, file_id: str) -> FolderLocation:
-        """Where a changed file sits: under the root, outside it, or not determinable.
-
-        The changes feed carries no path, so this walk is the only citation a
-        change has. The root's own name leads, because the fence header prints
-        this path alone.
-        """
+        """Where a changed file sits: under the root, outside it, or not determinable."""
         root_id = self._config.root_folder_id
         folders: list[str] = []
         current = file_id

@@ -1,7 +1,6 @@
 """What a conversion result *is*, separated from the machinery that fills it in.
 
-Nothing here makes a decision. Import from ``attachment_converter``, not from
-here: every name below is re-exported there.
+Import from ``attachment_converter``: every name below is re-exported there.
 """
 
 from __future__ import annotations
@@ -94,10 +93,7 @@ class AttemptOutcome(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class ConverterAttempt:
-    """One converter's run, kept whether or not its output was used.
-
-    The losing attempt is what explains a twenty-second conversion.
-    """
+    """One converter's run, kept whether or not its output was used."""
 
     name: str
     kind: ConverterKind
@@ -152,10 +148,7 @@ class ConversionResult:
 
     @property
     def has_text(self) -> bool:
-        """Whether any readable text came back. Not a synonym for success.
-
-        Answered from the text rather than the status, because every status
-        carries the best text any converter produced."""
+        """Whether any readable text came back, answered from the text and not the status."""
         return self.meaningful_chars > 0
 
 
@@ -165,10 +158,6 @@ def content_sha256(data: bytes) -> str:
 
 
 def meaningful_chars(text: str) -> int:
-    """Count characters an agent could actually read.
-
-    HTML comments go first: Docling collapses every unreadable visual into
-    ``<!-- image -->``, and counting those calls an empty document extracted.
-    """
+    """Count characters an agent could read; Docling's ``<!-- image -->`` placeholders go first."""
     stripped = _HTML_COMMENT.sub(" ", text)
     return len(_WHITESPACE.sub("", stripped))

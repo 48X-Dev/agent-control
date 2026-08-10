@@ -42,12 +42,7 @@ def test_a_full_environment_builds_the_config() -> None:
 
 
 def test_the_defaults_are_the_documented_ceilings() -> None:
-    """Compose and the Apple script both pass empty, so the code default is what runs.
-
-    Plan 5.4 and section 12 both say 20,971,520, matching `attachment_max_bytes`'s
-    reasoning. Anything larger is hostile bytes reaching MarkItDown that nothing
-    sanctioned.
-    """
+    """Compose and the Apple script both pass empty, so the code default is what runs."""
     config = SyncConfig.from_env(FULL_ENV)
     assert config.max_file_bytes == 20_971_520
     assert config.max_documents_per_run == 10_000

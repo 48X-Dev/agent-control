@@ -1,24 +1,22 @@
 """What the sync asks GitHub for, inside the allowlist and nowhere else.
 
-The retry ladder, the backoff cap and the Retry-After reading are
-``drive_transport.py``'s, imported rather than restated. Two behaviours here are
-not the Drive client's, and both are deliberate. Every call asserts its repo
-against the allowlist the client was built with, because under the classic PAT
-in use GitHub enforces no scope of its own (section 6, 2026-08-10). And an
-upstream that could not be reached raises: a transport failure and a genuine
-404 never arrive at the caller as the same value, so nothing downstream can
-read "the network broke" as "the file is gone".
+How a call is made is ``github_transport.py``'s: the retry ladder, the hourly
+budget, and the error family both layers raise. What stays here is the reading
+itself, and the one rule that is not the Drive client's. Every call asserts its
+repo against the allowlist this client was built with, because under the classic
+PAT in use GitHub enforces no scope of its own (section 6, 2026-08-10). An
+upstream that could not be reached still raises rather than answering, so
+nothing downstream can read "the network broke" as "the file is gone".
 
-``request``, ``paginate``, ``repo_metadata`` and ``assert_allowed`` are public
-because the issue channel reads through this same client. Both channels spend
-one hourly budget, so one object counts it and one asserts the allowlist.
+``transport``, ``repo_metadata`` and ``assert_allowed`` are public because the
+issue channel reads through this same client. Both channels spend one hourly
+budget, so one object counts it and one asserts the allowlist. The error classes
+are re-exported here for the same reason: this is the module the channels import.
 """
 
 from __future__ import annotations
 
-import asyncio
 import base64
-import time
 from collections import Counter
 from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass
@@ -30,7 +28,17 @@ from agent_control_models.knowledge import is_secret_filename
 
 from .allowlist import REFUSED_PATH_SEGMENTS, RepoConfig, RepoRef
 from .config import SyncConfig
-from .drive_transport import BACKOFF_SECONDS, MAX_ATTEMPTS, MAX_BACKOFF_SECONDS, retry_after
+from .github_transport import (
+    GitHubError,
+    GitHubRateLimitedError,
+    GitHubRefusalError,
+    GitHubRepoError,
+    GitHubResyncError,
+    GitHubScopeError,
+    GitHubTransport,
+    GitHubTreeTruncatedError,
+    GitHubUnreachableError,
+)
 
 __all__ = [
     "GitHubClient",
@@ -49,19 +57,9 @@ __all__ = [
     "path_refusal",
 ]
 
-GITHUB_API_BASE = "https://api.github.com"
-GITHUB_API_VERSION = "2022-11-28"
-
-# GitHub's own ceiling for `per_page` on every list endpoint this sync reads.
-MAX_PAGE_SIZE = 100
-
 # Compare answers with at most this many files however it is paged, so hitting
 # it means the diff is not the whole diff and the repo is walked again instead.
 COMPARE_FILE_CAP = 300
-
-# 5,000/hour measured on this credential (K4). A run waits out a short reset and
-# refuses a long one rather than sleeping through most of an hour holding the lease.
-MAX_RATE_LIMIT_WAIT_SECONDS = 60.0
 
 _REFUSED_SUFFIXES = (
     ".lock",
@@ -75,60 +73,6 @@ _REFUSED_FILENAMES = frozenset(
 _DOCS_PREFIX = "docs/"
 _README_PREFIX = "readme"
 _MARKDOWN_SUFFIXES = (".md", ".markdown")
-
-
-class GitHubError(RuntimeError):
-    """Anything the GitHub read path gives up on, always with a named code."""
-
-    code: str = "github_error"
-
-
-class GitHubUnreachableError(GitHubError):
-    """The API could not be reached. Never a statement about whether anything exists."""
-
-    code = "github_unreachable"
-
-
-class GitHubScopeError(GitHubError):
-    """A call was made for a repo the allowlist does not name."""
-
-    code = "repo_not_allowlisted"
-
-
-class GitHubTreeTruncatedError(GitHubError):
-    """GitHub truncated the tree, so indexing it would be silently partial (K4)."""
-
-    code = "tree_truncated"
-
-
-class GitHubRateLimitedError(GitHubError):
-    """The hourly budget is spent and its reset is further out than a run will wait."""
-
-    code = "rate_limited"
-
-
-class GitHubRepoError(GitHubError):
-    """One repo the run cannot read, by a named cause."""
-
-    def __init__(self, code: str, message: str) -> None:
-        super().__init__(message)
-        self.code = code
-
-
-class GitHubRefusalError(GitHubError):
-    """One file refused by name, so a run counts it instead of losing it."""
-
-    def __init__(self, code: str, message: str) -> None:
-        super().__init__(message)
-        self.code = code
-
-
-class GitHubResyncError(GitHubError):
-    """The stored cursor cannot yield a diff; this repo must be walked whole again."""
-
-    def __init__(self, code: str, message: str) -> None:
-        super().__init__(message)
-        self.code = code
 
 
 @dataclass(frozen=True, slots=True)
@@ -185,11 +129,6 @@ def is_indexable_path(path: str, include_paths: Sequence[str] = ()) -> bool:
     return any(path == prefix or path.startswith(f"{prefix}/") for prefix in include_paths)
 
 
-async def _sleep(seconds: float) -> None:
-    """Indirection so the retry and rate-limit paths are testable without waiting."""
-    await asyncio.sleep(seconds)
-
-
 class GitHubClient:
     """Reads allowlisted repos. A repo absent from ``repos`` cannot be requested at all."""
 
@@ -201,19 +140,26 @@ class GitHubClient:
         *,
         repos: Sequence[RepoConfig] = (),
     ) -> None:
-        self._token = token
-        self._client = client
+        self.transport = GitHubTransport(token, client, config)
         self._config = config
         self._admitted = {item.repo.full_name.lower(): item for item in repos}
         self._heads: dict[str, tuple[str, datetime | None]] = {}
         self.refusals: Counter[str] = Counter()
-        self.rate_limit_remaining: int | None = None
-        self.rate_limit_reset_at: float | None = None
+
+    @property
+    def rate_limit_remaining(self) -> int | None:
+        """What the last answer said was left of the budget the two channels share."""
+        return self.transport.rate_limit_remaining
+
+    @property
+    def rate_limit_reset_at(self) -> float | None:
+        """When that budget refills, in epoch seconds, or ``None`` if nothing said."""
+        return self.transport.rate_limit_reset_at
 
     async def repo_metadata(self, repo: RepoRef) -> RepoMetadata:
         """One ``/repos/{full_name}`` call, since both channels read from that answer."""
         self.assert_allowed(repo)
-        payload = await self._json(f"/repos/{repo.full_name}", {}, subject=repo.full_name)
+        payload = await self.transport.json(f"/repos/{repo.full_name}", {}, subject=repo.full_name)
         return RepoMetadata(
             default_branch=str(payload.get("default_branch") or ""),
             private=bool(payload.get("private")),
@@ -231,7 +177,7 @@ class GitHubClient:
     async def head_sha(self, repo: RepoRef, branch: str) -> str:
         """The commit this run pins, and the date its files are last known good at."""
         self.assert_allowed(repo)
-        payload = await self._json(
+        payload = await self.transport.json(
             f"/repos/{repo.full_name}/commits",
             {"sha": branch, "per_page": "1"},
             subject=f"{repo.full_name}@{branch}",
@@ -260,7 +206,7 @@ class GitHubClient:
         """Every indexable blob at the head commit, or a refusal if the tree was cut."""
         self.assert_allowed(repo)
         sha = await self._resolved_head(repo)
-        payload = await self._json(
+        payload = await self.transport.json(
             f"/repos/{repo.full_name}/git/trees/{sha}",
             {"recursive": "1"},
             subject=f"{repo.full_name}@{sha}",
@@ -294,7 +240,7 @@ class GitHubClient:
         if head == base_sha:
             return [], [], head
         subject = f"{repo.full_name} {base_sha}...{head}"
-        response = await self.request(
+        response = await self.transport.request(
             f"/repos/{repo.full_name}/compare/{base_sha}...{head}", {"per_page": "100"}
         )
         if response.status_code in (404, 422):
@@ -304,7 +250,7 @@ class GitHubClient:
                 "base is no longer an ancestor, which is what a force push looks like. The "
                 "repo is walked whole rather than diffed against a history that moved.",
             )
-        payload = self._payload(response, subject)
+        payload = self.transport.payload(response, subject)
         if payload.get("status") == "diverged":
             raise GitHubResyncError(
                 "force_push_relist",
@@ -330,7 +276,7 @@ class GitHubClient:
                 f"{file.external_id} is {file.size} bytes, over the {ceiling}-byte ceiling; "
                 "it was refused rather than downloaded.",
             )
-        response = await self.request(
+        response = await self.transport.request(
             f"/repos/{file.repo.full_name}/git/blobs/{file.sha}", {}
         )
         if response.status_code in (403, 404):
@@ -339,7 +285,7 @@ class GitHubClient:
                 f"GitHub answered HTTP {response.status_code} for {file.external_id}; its "
                 "bytes are not in the corpus.",
             )
-        payload = self._payload(response, file.external_id)
+        payload = self.transport.payload(response, file.external_id)
         data = _decode_blob(payload, file.external_id)
         if len(data) > ceiling:
             raise GitHubRefusalError(
@@ -348,6 +294,15 @@ class GitHubClient:
                 f"{ceiling}-byte ceiling.",
             )
         return data
+
+    def assert_allowed(self, repo: RepoRef) -> None:
+        """At the call site, not only at load time: GitHub will not refuse this for us."""
+        if repo.full_name.lower() not in self._admitted:
+            raise GitHubScopeError(
+                f"{repo.full_name} is not in the allowlist, so this sync does not read it. "
+                "The credential in use would have answered, which is why this is asserted "
+                "here and not left to GitHub."
+            )
 
     def _admit(self, repo: RepoRef, path: str, entry: Mapping[str, Any]) -> GitHubFile | None:
         """One tree or compare entry through the filters, counting what they refuse."""
@@ -397,145 +352,6 @@ class GitHubClient:
             return cached[0]
         return await self.head_sha(repo, await self.default_branch(repo))
 
-    def assert_allowed(self, repo: RepoRef) -> None:
-        """At the call site, not only at load time: GitHub will not refuse this for us."""
-        if repo.full_name.lower() not in self._admitted:
-            raise GitHubScopeError(
-                f"{repo.full_name} is not in the allowlist, so this sync does not read it. "
-                "The credential in use would have answered, which is why this is asserted "
-                "here and not left to GitHub."
-            )
-
-    async def paginate(
-        self,
-        path: str,
-        params: Mapping[str, str],
-        *,
-        limit: int,
-        page_size: int = MAX_PAGE_SIZE,
-    ) -> list[dict[str, Any]]:
-        """One list endpoint, paged on the shared ladder until it runs short or `limit` lands."""
-        collected: list[dict[str, Any]] = []
-        page = 1
-        while len(collected) < limit:
-            query = dict(params, per_page=str(page_size), page=str(page))
-            rows = (await self._json(path, query, subject=path, expect_list=True))["items"]
-            collected.extend(row for row in rows if isinstance(row, dict))
-            if len(rows) < page_size:
-                break
-            page += 1
-        return collected[:limit]
-
-    async def _json(
-        self,
-        path: str,
-        params: Mapping[str, str],
-        *,
-        subject: str,
-        expect_list: bool = False,
-    ) -> dict[str, Any]:
-        response = await self.request(path, params)
-        if response.status_code in (403, 404):
-            raise GitHubRepoError(
-                "repo_unreachable",
-                f"GitHub answered HTTP {response.status_code} for {subject}. Under the "
-                "credential in use this means the repository or ref does not exist, or the "
-                "token cannot see it.",
-            )
-        return self._payload(response, subject, expect_list=expect_list)
-
-    def _payload(
-        self, response: httpx.Response, subject: str, *, expect_list: bool = False
-    ) -> dict[str, Any]:
-        if response.status_code != 200:
-            raise GitHubError(f"GitHub answered HTTP {response.status_code} for {subject}.")
-        try:
-            body = response.json()
-        except ValueError as exc:
-            raise GitHubError(f"GitHub answered {subject} with a body that is not JSON.") from exc
-        if expect_list:
-            if not isinstance(body, list):
-                raise GitHubError(f"GitHub answered {subject} with a body that is not a list.")
-            return {"items": body}
-        if not isinstance(body, dict):
-            raise GitHubError(f"GitHub answered {subject} with a body that is not an object.")
-        return body
-
-    async def request(self, path: str, params: Mapping[str, str]) -> httpx.Response:
-        """One call on ``drive_transport``'s ladder; exhaustion raises, never returns."""
-        # Repo-scoped callers assert the allowlist; the membership probe this also
-        # serves is an /orgs/ path. A 302 is an answer that path reads, so it stands.
-        await self._await_rate_limit()
-        headers = {
-            "Authorization": f"Bearer {self._token}",
-            "Accept": "application/vnd.github+json",
-            "X-GitHub-Api-Version": GITHUB_API_VERSION,
-        }
-        delay = BACKOFF_SECONDS
-        failure: Exception | None = None
-        status: int | None = None
-        for attempt in range(1, MAX_ATTEMPTS + 1):
-            try:
-                response = await self._client.get(
-                    f"{GITHUB_API_BASE}{path}",
-                    params=dict(params),
-                    headers=headers,
-                    timeout=self._config.request_timeout_seconds,
-                    follow_redirects=False,
-                )
-            except httpx.HTTPError as exc:
-                failure = exc
-                if attempt >= MAX_ATTEMPTS:
-                    break
-                await _sleep(delay)
-                delay = min(delay * 2, MAX_BACKOFF_SECONDS)
-                continue
-            self._read_rate_limit(response)
-            if _is_retryable(response):
-                status = response.status_code
-                if attempt >= MAX_ATTEMPTS:
-                    break
-                await _sleep(retry_after(response, delay))
-                delay = min(delay * 2, MAX_BACKOFF_SECONDS)
-                await self._await_rate_limit()
-                continue
-            return response
-        raise GitHubUnreachableError(
-            f"GitHub was unreachable for {path} after {MAX_ATTEMPTS} attempts "
-            f"({type(failure).__name__ if failure is not None else f'HTTP {status}'}). This is "
-            "a transport failure, not an answer about whether anything exists."
-        )
-
-    def _read_rate_limit(self, response: httpx.Response) -> None:
-        self.rate_limit_remaining = _header_int(response, "X-RateLimit-Remaining")
-        reset = _header_int(response, "X-RateLimit-Reset")
-        self.rate_limit_reset_at = None if reset is None else float(reset)
-
-    async def _await_rate_limit(self) -> None:
-        """Spend the last of the budget waiting, not burning; refuse a long reset."""
-        if self.rate_limit_remaining is None or self.rate_limit_remaining > 0:
-            return
-        reset_at = self.rate_limit_reset_at
-        wait = 0.0 if reset_at is None else reset_at - time.time()
-        if wait <= 0:
-            self.rate_limit_remaining = None
-            return
-        if wait > MAX_RATE_LIMIT_WAIT_SECONDS:
-            raise GitHubRateLimitedError(
-                f"The GitHub rate limit is spent and resets in {wait:.0f}s, over the "
-                f"{MAX_RATE_LIMIT_WAIT_SECONDS:.0f}s a run will hold the lease waiting. "
-                "The cursor stays where the last committed batch left it."
-            )
-        await _sleep(wait)
-        self.rate_limit_remaining = None
-
-
-def _is_retryable(response: httpx.Response) -> bool:
-    """429, 5xx, and the 403 GitHub uses for a spent budget rather than a refusal."""
-    if response.status_code >= 500 or response.status_code == 429:
-        return True
-    return response.status_code == 403 and _header_int(response, "X-RateLimit-Remaining") == 0
-
 
 def _decode_blob(payload: Mapping[str, Any], subject: str) -> bytes:
     encoding = str(payload.get("encoding") or "")
@@ -572,13 +388,3 @@ def _commit_time(head: Mapping[str, Any]) -> datetime | None:
     except ValueError:
         return None
     return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
-
-
-def _header_int(response: httpx.Response, name: str) -> int | None:
-    raw = response.headers.get(name)
-    if raw is None:
-        return None
-    try:
-        return int(raw)
-    except ValueError:
-        return None

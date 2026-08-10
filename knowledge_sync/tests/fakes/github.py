@@ -1,11 +1,6 @@
 """A GitHub that answers over httpx, in the JSON shapes the real API returns.
 
-Stubbed at the transport and not at the client, so the URLs, query parameters and
-headers the client builds are what these tests exercise. Two shapes here are
-deliberately unforgiving. A recursive tree can answer ``truncated: true`` with a
-200 and a partial list, because that is what GitHub does and refusing it is the
-assertion K4 added. And a repo this fake does not hold answers 404 rather than an
-empty tree, because an empty tree is what an out-of-scope read would look like.
+Stubbed at the transport; a missing repo answers 404 and a cut tree ``truncated: true``.
 """
 
 from __future__ import annotations

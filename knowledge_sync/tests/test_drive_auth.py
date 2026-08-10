@@ -1,10 +1,4 @@
-"""The token loop, without a network and without a Google account.
-
-What these pin is the behaviour a live credential would only reveal at 3am: the
-cache refreshing early rather than mid-walk, a refused refresh naming the cause
-instead of the secret, and forget() being the way out of a token that is
-unexpired and no longer valid.
-"""
+"""The token loop, without a network and without a Google account."""
 
 from __future__ import annotations
 

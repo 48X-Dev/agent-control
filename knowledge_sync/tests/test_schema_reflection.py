@@ -1,14 +1,6 @@
 """The sync's write-side metadata against the database the migrations made.
 
-One schema has three spellings in this repo: the migrations own it, the server
-declares the read side, and the sync declares the write side it inserts
-through. Nothing but this file stops the three drifting, and the drift is
-invisible until a deployment: a column added to a migration and not to the
-sync's metadata is an INSERT that omits it, and a column added to the metadata
-and not to the migration is an INSERT that fails on a machine no test ran on.
-
-Reflection is the arbiter throughout, never one hand-written list against
-another, because a list somebody has to keep in step is the thing being tested.
+Reflection is the arbiter throughout, never one hand-written list against another.
 """
 
 from __future__ import annotations
@@ -98,12 +90,7 @@ def test_the_declared_primary_key_is_the_migrated_primary_key(corpus: Any, table
 
 
 def test_the_generated_tsvector_is_declared_generated() -> None:
-    """A plain column here is every chunk INSERT failing, on the first real run.
-
-    ``body_tsv`` is filled by the database. Declared as an ordinary column,
-    SQLAlchemy includes it in the INSERT and Postgres refuses the statement,
-    which is a failure mode no unit test with a stubbed session ever sees.
-    """
+    """A plain column here is every chunk INSERT failing, on the first real run."""
     body_tsv = SYNC_METADATA.tables["chunks"].columns["body_tsv"]
 
     assert body_tsv.computed is not None
@@ -111,12 +98,7 @@ def test_the_generated_tsvector_is_declared_generated() -> None:
 
 
 def test_the_sync_and_the_server_declare_the_same_shared_tables() -> None:
-    """The write side and the read side of one row, kept honest against each other.
-
-    Both are checked against the migrations above, so this is redundant until
-    the day somebody adds a table to one and to the migrations and forgets the
-    other. Then it is the only thing that speaks.
-    """
+    """The write side and the read side of one row, kept honest against each other."""
     shared = set(SYNC_METADATA.tables) & set(SERVER_METADATA.tables)
     assert WRITTEN_BY_THE_SYNC <= shared
 

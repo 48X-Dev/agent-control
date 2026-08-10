@@ -1,9 +1,4 @@
-"""``agent-knowledge-sync``: make one pass, or say what the mirror currently holds.
-
-``once`` is the whole of Phase 2's runtime. There is no ``serve`` here and no
-status endpoint: the loop and the HTTP surface are Phase 4, and a container that
-can run ``once`` under cron is already the deployable unit.
-"""
+"""``agent-knowledge-sync``: make one pass, or say what the mirror currently holds."""
 
 from __future__ import annotations
 

@@ -1,12 +1,6 @@
 """Write one Drive item into the corpus, idempotently.
 
-Every write is keyed on ``(source_id, external_id)`` and its chunks are skipped
-when the converted text hashes to what is already stored, because a run that
-dies mid-batch replays that batch. Unchanged content still refreshes changed
-metadata: a rename leaves the digest alone and every future snippet would cite a
-filename that no longer exists. A document whose conversion failed still gets
-its row, with the failure status and zero chunks: it is unfindable on purpose,
-since indexing a title alone lets an agent cite a document nobody can read.
+A failed conversion still gets its row with zero chunks: unfindable on purpose.
 """
 
 from __future__ import annotations
@@ -161,11 +155,7 @@ class Ingestor:
         )
 
     async def refuse_fetch(self, external_id: str, code: str) -> bool:
-        """Bury what the corpus holds for a document the fetch refused, when the code says to.
-
-        A count is not a removal. A deck indexed last week and refused today
-        keeps every stale chunk searchable until this runs.
-        """
+        """Bury what the corpus holds for a document the fetch refused, when the code says to."""
 
         reason = REFUSAL_TOMBSTONES.get(code)
         if reason is None:
@@ -199,11 +189,7 @@ class Ingestor:
             return True
 
     async def _refuse_before_conversion(self, item: DriveItem) -> str | None:
-        """Refuse the items that must never be converted, tombstoning where due.
-
-        Cheapest first: the guard is last of the four because it is the only one
-        that spends Drive calls to answer.
-        """
+        """Refuse the items that must never be converted, cheapest check first."""
 
         if item.trashed:
             await self.tombstone(item.id, reason=TombstoneReason.DELETED)
@@ -237,10 +223,7 @@ class Ingestor:
         item: DriveItem,
         content: FetchedContent,
     ) -> bool:
-        """Unchanged content still moves: a rename must not leave a citation nobody can follow.
-
-        The chunks are the same bytes under a new name, so they are not rewritten.
-        """
+        """A rename moves the citation without rewriting the chunks."""
 
         wanted = _metadata(item, content)
         drifted = {
@@ -317,11 +300,7 @@ def _metadata(item: DriveItem, content: FetchedContent) -> dict[str, Any]:
 
 
 def _index_path(item: DriveItem) -> str:
-    """The citation: the folders under the corpus root, then the file's own name.
-
-    A bare filename does not survive two folders each holding a ``notes.md``,
-    and a citation nobody can follow is not provenance.
-    """
+    """The citation: the folders under the corpus root, then the file's own name."""
 
     return normalize_index_path("/".join((*item.folder_path, item.name))) or item.id
 

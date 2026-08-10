@@ -1,17 +1,6 @@
 """Bytes to markdown the chunker can section, with an honest status attached.
 
-Conversion itself is the shipped ``agent_control_models.attachment_converter``
-library. What this module adds is the step between the converter and the chunker:
-real corpora do not arrive with the heading structure heading-bounded chunking
-wants, and measurement decides both fixes.
-
-Measured 2026-08-10 against MarkItDown 0.1.x. An 89,806-character PDF came back
-with zero ATX headings, 803 lines and eight blank-line paragraph breaks: the
-page's hard wrapping survives, so every newline is soft and the whole document
-is a handful of enormous blocks that the chunker would cut mid-word. A ``.pptx``
-came back with slide boundaries as ``<!-- Slide number: N -->`` HTML comments,
-speaker notes under ``### Notes:`` and nothing else at heading level 1 or 2, so
-its structure is present but invisible to a splitter that reads ``#``.
+Converted output carries no ATX headings, so structure is repaired here before chunking.
 """
 
 from __future__ import annotations
@@ -112,11 +101,7 @@ def convert_document(
 
 
 def shipped_converter(data: bytes, *, declared_mime: str | None) -> Converted:
-    """Run the shipped converter.
-
-    A container without the office extras gets ``converter_unavailable`` on
-    every file naming the missing parser, because the library says so itself.
-    """
+    """Run the shipped converter; without the office extras every file names its missing parser."""
 
     result = convert_attachment(data, declared_mime=declared_mime)
     return Converted(

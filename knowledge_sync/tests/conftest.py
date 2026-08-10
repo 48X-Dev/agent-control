@@ -1,20 +1,6 @@
 """A real corpus and a fake Drive, for the tests in here that want both.
 
-Postgres is provisioned the way a deployment does it, by the shipped init
-script and the shipped migrations, through the server's own helper rather than
-a second copy of it: provisioning *is* the feature these tests check, and two
-copies of it would drift exactly where the schema test says they must not.
-
-Nothing here is autouse. Most of this package's tests want no database at all,
-and a fixture that pulled one in would turn every one of them into a skip on a
-machine without Postgres.
-
-Locally that machine needs telling where Postgres is, because the repo defaults
-do not match it:
-
-    AGENT_CONTROL_DB_HOST=localhost AGENT_CONTROL_DB_PORT=15432 \\
-    AGENT_CONTROL_DB_USER=agent_control AGENT_CONTROL_DB_PASSWORD=... \\
-    uv run --package agent-control-knowledge-sync pytest knowledge_sync/tests/
+Provisioned through the server's own helper; nothing is autouse, so no-database tests stay.
 """
 
 from __future__ import annotations

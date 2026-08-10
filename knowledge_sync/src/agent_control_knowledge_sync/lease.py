@@ -1,9 +1,6 @@
 """The singleton sync lease: one claim statement, a fenced renewal and a fenced release.
 
-Plan section 5.5. The claim is one ``UPDATE ... WHERE lease_expires_at < now()
-RETURNING`` against the row migration k002 seeds, because a read-then-write
-passes every test its author writes and fails under exactly the concurrency it
-exists to prevent.
+One ``UPDATE ... WHERE lease_expires_at < now() RETURNING``; a read-then-write races.
 """
 
 from __future__ import annotations
@@ -25,8 +22,7 @@ SessionFactory = async_sessionmaker[AsyncSession]
 DEFAULT_LEASE_SECONDS = 1800
 """Section 5.5's default. Renewed per batch, so it bounds a death, not a run."""
 
-# The holder is a fence token, so it is never logged: a log line naming it is a
-# log line somebody can steal a lease with.
+# The holder is a fence token and is never logged: a log line naming it steals the lease.
 _LOG = logging.getLogger(__name__)
 
 _EXPIRY = sa.text("now() + make_interval(secs => :lease_seconds)")
@@ -43,9 +39,8 @@ _CURRENT = sa.select(sync_lease.c.holder, sync_lease.c.lease_expires_at).where(
     sync_lease.c.id == 1
 )
 
-# The fence is not called "holder": a bind parameter named for a column of the
-# table under UPDATE is reserved for that column's SET clause, and this
-# statement sets only the expiry, so the collision is a CompileError per batch.
+# Not "holder": a bindparam named for a column of the table under UPDATE is reserved for
+# that column's SET clause, and colliding is a CompileError.
 _RENEW = (
     sa.update(sync_lease)
     .where(sync_lease.c.id == 1, sync_lease.c.holder == sa.bindparam("fence_holder"))

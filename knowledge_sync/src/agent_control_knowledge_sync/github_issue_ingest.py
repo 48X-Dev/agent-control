@@ -1,14 +1,6 @@
 """What the issue channel writes into the corpus, keyed so a replay is free.
 
-Split from ``github_issues.py`` at that module's size ceiling, along the seam
-``drive_client.py`` and ``ingest.py`` already use for Drive: what a source says
-on one side, what the corpus stores on the other. Nothing here talks to GitHub.
-
-The channel gets its own ``sources`` row, ``owner/name#issues``, rather than
-sharing the repo's. ``sources.trust`` is one value per row, and section 7 puts
-issue text at ``external_authors`` while the same repo's files are
-``workspace``; one row cannot be both, and the ceiling that tier buys is only
-worth having if it applies to the text it was chosen for.
+Its own ``owner/name#issues`` source row, because ``sources.trust`` is one value per row.
 """
 
 from __future__ import annotations
@@ -100,13 +92,7 @@ async def ensure_source(sessions: SessionFactory, repo: RepoRef) -> tuple[int, s
 
 
 async def advance_cursor(sessions: SessionFactory, source_id: int, started: datetime) -> None:
-    """Stamp the cursor and the verification clock together, after the writes commit.
-
-    The cursor is the instant taken *before* the read, so an issue edited while
-    the run was in flight is re-read next time rather than missed. Without the
-    verification stamp this source reads as never verified and takes the whole
-    corpus's staleness line down with it (section 10).
-    """
+    """Stamp the cursor and the verification clock together, after the writes commit."""
     async with sessions() as session:
         await session.execute(
             sa.update(sources)

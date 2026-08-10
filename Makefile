@@ -115,24 +115,13 @@ test-models: models-test
 telemetry-test:
 	$(MAKE) -C $(TELEMETRY_DIR) test
 
-# The dispatcher is a workspace member whose suite nothing ran. That mattered
-# once `serve` landed: several of its tests are proofs by absence - that the
-# loop never reaches the import route, never names a scope - and a proof that
-# does not run on every change is a comment.
+# A workspace member whose suite nothing ran, and several of its tests are proofs by absence.
 dispatcher-test:
 	cd $(DISPATCHER_DIR) && uv run pytest --cov=src --cov-report=xml:../coverage-dispatcher.xml -q
 
-# Same gap as dispatcher-test above, one package over. The schema reflection
-# test is the only thing holding the sync's table metadata to the server's
-# migrations, and a drift check nothing runs is a comment.
-#
-# --extra text-extraction because knowledge_sync/Dockerfile installs it: without
-# MarkItDown the conversion tests exercise a different program than the one that
-# ships. Run from the repo root, which is where the conftest resolves its fakes.
-#
-# The database-backed tests SKIP when no Postgres answers. They are keyed on
-# AGENT_CONTROL_DB_HOST/_PORT/_USER/_PASSWORD, which also accept the bare
-# DB_HOST/DB_PORT/DB_USER/DB_PASSWORD aliases the CI workflow already sets.
+# Same gap as dispatcher-test above, one package over. --extra text-extraction because the
+# Dockerfile installs it: without MarkItDown these tests exercise a different program than
+# the one that ships. The database-backed tests skip when no Postgres answers.
 knowledge-sync-test:
 	uv run --package $(PACK_KNOWLEDGE_SYNC) --extra text-extraction \
 		pytest $(KNOWLEDGE_SYNC_DIR)/tests \

@@ -1,18 +1,7 @@
 #!/usr/bin/env python3
 """Fail if a company-knowledge env var is not wired everywhere it has to be.
 
-This repo has shipped the same bug four times: a setting that exists in `.env`
-and never reaches the process. For the knowledge sync the symptom is worse than
-a dead feature - a container that authenticates against nothing reports a
-successful sync of zero documents, which is indistinguishable from an empty
-folder. company-knowledge.md section 12 makes the rule normative: every flag
-ships its compose passthrough, its Apple-script line and its `.env.example`
-entry in the same commit. This is that rule, mechanized.
-
-Two directions are checked:
-
-  parity   the three wiring files declare the same set of variables
-  reached  every variable the sync source reads is in that set
+Parity: the three wiring files declare one set. Reached: the sync reads nothing outside it.
 """
 
 from __future__ import annotations

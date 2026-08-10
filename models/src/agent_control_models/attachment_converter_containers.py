@@ -1,8 +1,6 @@
 """Resolving a ZIP container to the Office document it actually holds.
 
-Structural, not a guess: an OOXML file is a ZIP carrying ``[Content_Types].xml``
-and one well-known root directory, and reading the central directory
-decompresses nothing. The byte ceiling upstream is what bounds the input.
+Structural, not a guess: reading the central directory decompresses nothing.
 """
 
 from __future__ import annotations
@@ -29,11 +27,7 @@ _OOXML_SCAN_ENTRIES = 4096
 
 
 def refine_container_mime(data: bytes | None, sniffed: str | None) -> str | None:
-    """Return the OOXML type a ZIP holds, or ``sniffed`` unchanged.
-
-    Total by construction: anything unreadable leaves ``sniffed`` alone, because
-    refusing a file fails safe and misnaming one does not.
-    """
+    """Return the OOXML type a ZIP holds, or ``sniffed`` unchanged; total by construction."""
     if sniffed != "application/zip" or not data:
         return sniffed
 

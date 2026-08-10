@@ -1,15 +1,6 @@
 """One pass over the allowlisted repos, as a source adapter the run loop drives.
 
-Not wired into ``sync.py``: this module states what it needs of a corpus through
-:class:`KnowledgeWriter` and returns what a run must record, so registering it is
-one call and an adapter rather than GitHub logic spread through the run loop.
-
-Two rules hold the incremental path up. A cursor advances only for a repo whose
-sweep completed, so a run cut short by a ceiling replays rather than stranding
-what it never walked. And a document is tombstoned only on evidence that it is
-gone: compare naming it removed, or a *complete* tree that does not contain it.
-An unreachable repo tombstones nothing, because "the call failed" and "the file
-is gone" are different facts and only one of them is a reason to delete.
+Cursors advance only for completed sweeps, and an unreachable repo tombstones nothing.
 """
 
 from __future__ import annotations
@@ -149,11 +140,7 @@ class GitHubSource:
         cursors: Mapping[str, str | None] | None = None,
         budget: int | None = None,
     ) -> list[RepoSweep]:
-        """Every allowlisted repo under one shared document budget.
-
-        A spent rate limit stops the pass rather than failing each remaining repo
-        in turn: their cursors are untouched, so the next run resumes them.
-        """
+        """Every allowlisted repo under one shared document budget."""
         stored = cursors or {}
         remaining = self._config.max_documents_per_run if budget is None else budget
         results: list[RepoSweep] = []

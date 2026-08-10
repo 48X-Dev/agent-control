@@ -1,9 +1,4 @@
-"""The corpus rows one run owns: its ``sync_runs`` entry and its source's cursor.
-
-Split out of ``sync.py`` when that module reached its size ceiling. The shapes
-a run reports in (:class:`RunCounters`, :class:`Tally`) live here rather than
-with the orchestration because ``sync_runs`` is where they are written down.
-"""
+"""The corpus rows one run owns: its ``sync_runs`` entry and its source's cursor."""
 
 from __future__ import annotations
 
@@ -118,11 +113,7 @@ class SyncJournal:
         return version
 
     async def lapse_orphans(self, holder: str) -> int:
-        """A ``running`` row belonging to somebody else died with its process.
-
-        Fenced on the holder: the sweep must never close the row of the run
-        making it, which is the one process known to be alive.
-        """
+        """Close a ``running`` row whose process died; fenced on the holder, never our own."""
         async with self._sessions() as session:
             rows = (
                 await session.execute(

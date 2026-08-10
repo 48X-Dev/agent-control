@@ -1,12 +1,6 @@
 """A Drive that answers over httpx, in the JSON shapes the real API returns.
 
-Stubbed at the transport and not at the client, so the URLs and query
-parameters the client builds are what these tests exercise. Two of the shapes
-here are the ones 5.7 measured and they are deliberately unforgiving: a root
-the reader cannot see answers 404 with Drive's own error body, and a query this
-fake cannot parse answers 400 rather than an empty list, because an empty list
-is what a missing ``supportsAllDrives`` looks like and a stub that produced one
-would hide the bug the tests are for.
+Stubbed at the transport, and unforgiving: an unparseable query answers 400, never [].
 """
 
 from __future__ import annotations

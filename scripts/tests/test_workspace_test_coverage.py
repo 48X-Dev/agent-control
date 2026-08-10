@@ -1,14 +1,6 @@
 """`make test` must run every workspace member, and CI refuses when it does not.
 
-Twice now a workspace member has shipped with a suite nothing ran. The
-dispatcher was first, and `dispatcher-test` carries a comment saying so. Then
-knowledge_sync did the same thing one package later, with 157 tests invisible to
-CI including the only check holding the sync's table metadata to the server's
-migrations.
-
-Both were caught by a person noticing. This is the check that means the third
-one cannot happen: it reads the members out of the root ``pyproject.toml`` and
-asserts that expanding the Makefile's ``test`` target actually reaches each one.
+Expands the Makefile's ``test`` target and checks it reaches every root member.
 """
 
 from __future__ import annotations
@@ -58,12 +50,7 @@ def _expanded_test_target() -> str:
 
 
 def _runs(member: str, expanded: str) -> bool:
-    """True when the member appears as a real path, not inside another word.
-
-    The boundaries matter: `coverage-models.xml` is an artifact name, not proof
-    that anything runs `models`, and counting it would let the check pass on the
-    exact package it is supposed to catch.
-    """
+    """True when the member appears as a real path, not inside another word."""
     return re.search(rf"(?<![\w/-]){re.escape(member)}(?![\w-])", expanded) is not None
 
 
