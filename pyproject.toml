@@ -22,6 +22,7 @@ members = [
     "engine",
     "evaluators/builtin",
     "dispatcher",
+    "knowledge_sync",
     # NOTE: evaluators/contrib/* excluded - install separately when needed
 ]
 
