@@ -91,3 +91,6 @@ Thumbs.db
 rearch_plan.md
 
 node_modules
+
+# Local MCP server config; can embed credentials in URLs.
+.mcp.json
