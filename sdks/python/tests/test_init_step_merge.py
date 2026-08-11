@@ -74,7 +74,7 @@ def test_init_passes_merged_steps_to_register_agent(
     # Then register_agent() receives merged steps with explicit precedence on conflicts.
     assert register_agent_mock.await_count == 1
     assert register_agent_mock.await_args is not None
-    assert register_agent_mock.await_args.kwargs["conflict_mode"] == "overwrite"
+    assert register_agent_mock.await_args.kwargs["conflict_mode"] == "strict"
     merged_steps = register_agent_mock.await_args.kwargs["steps"]
 
     llm_entries = [s for s in merged_steps if (s["type"], s["name"]) == ("llm", "auto_llm")]
@@ -112,7 +112,7 @@ def test_init_uses_auto_discovered_steps_from_control_decorator() -> None:
     # Then register_agent() receives the auto-derived step schema payload.
     assert register_agent_mock.await_count == 1
     assert register_agent_mock.await_args is not None
-    assert register_agent_mock.await_args.kwargs["conflict_mode"] == "overwrite"
+    assert register_agent_mock.await_args.kwargs["conflict_mode"] == "strict"
     merged_steps = register_agent_mock.await_args.kwargs["steps"]
 
     auto_entries = [s for s in merged_steps if (s["type"], s["name"]) == ("llm", "auto_chat")]
@@ -155,7 +155,7 @@ def test_init_logs_fallback_warning_for_unresolved_type_hints(
     # Then initialization continues, using fallback schemas and emitting a warning.
     assert register_agent_mock.await_count == 1
     assert register_agent_mock.await_args is not None
-    assert register_agent_mock.await_args.kwargs["conflict_mode"] == "overwrite"
+    assert register_agent_mock.await_args.kwargs["conflict_mode"] == "strict"
     merged_steps = register_agent_mock.await_args.kwargs["steps"]
 
     unresolved_entries = [
