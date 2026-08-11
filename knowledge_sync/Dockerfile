@@ -25,6 +25,12 @@ COPY pyproject.toml uv.lock* ./
 COPY models/ models/
 COPY knowledge_sync/ knowledge_sync/
 
+# The corpus migrations live under server/ but are not the server's to run: they
+# need CREATE, and the server holds the reader role. env.py imports no server
+# code precisely so this copy works.
+COPY server/knowledge_alembic.ini ./
+COPY server/knowledge_alembic/ knowledge_alembic/
+
 # MarkItDown is required, not optional. Without it every document fails as
 # converter_absent and the run still reports a completed sync.
 ARG CONVERTER_EXTRAS="--extra text-extraction"
@@ -42,6 +48,9 @@ RUN uv sync \
       --no-dev \
       --frozen
 
+COPY knowledge_sync/docker-entrypoint.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
 # Non-root. The corpus is the only thing this writes, and it is in Postgres.
 RUN useradd --create-home --uid 10002 knowledge \
  && chown -R knowledge:knowledge /app
@@ -52,5 +61,5 @@ ENV PATH="/app/.venv/bin:${PATH}" \
 
 # `--help` rather than `once`, matching the dispatcher: `once` reads Drive and
 # writes the corpus, so the working subcommand is supplied by whoever meant it.
-ENTRYPOINT ["agent-knowledge-sync"]
+ENTRYPOINT ["docker-entrypoint.sh"]
 CMD ["--help"]
