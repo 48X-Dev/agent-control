@@ -1,4 +1,4 @@
-.PHONY: help sync openapi-spec openapi-spec-check test test-extras test-all contrib-verify scripts-test models-test dispatcher-test knowledge-sync-test test-models test-sdk lint lint-fix format format-check typecheck check build build-models build-server build-sdk publish publish-models publish-server publish-sdk hooks-install hooks-uninstall prepush evaluators-test evaluators-lint evaluators-lint-fix evaluators-typecheck evaluators-build contrib-test contrib-lint contrib-lint-fix contrib-typecheck contrib-build sdk-ts-generate sdk-ts-overlay-test sdk-ts-name-check sdk-ts-generate-check sdk-ts-build sdk-ts-test sdk-ts-lint sdk-ts-typecheck sdk-ts-release-check sdk-ts-publish-dry-run sdk-ts-publish telemetry-test telemetry-lint telemetry-lint-fix telemetry-typecheck telemetry-build telemetry-publish
+.PHONY: help sync openapi-spec openapi-spec-check test test-extras test-all contrib-verify scripts-test models-test dispatcher-test knowledge-sync-test fleet-test test-models test-sdk lint lint-fix format format-check typecheck check build build-models build-server build-sdk publish publish-models publish-server publish-sdk hooks-install hooks-uninstall prepush evaluators-test evaluators-lint evaluators-lint-fix evaluators-typecheck evaluators-build contrib-test contrib-lint contrib-lint-fix contrib-typecheck contrib-build sdk-ts-generate sdk-ts-overlay-test sdk-ts-name-check sdk-ts-generate-check sdk-ts-build sdk-ts-test sdk-ts-lint sdk-ts-typecheck sdk-ts-release-check sdk-ts-publish-dry-run sdk-ts-publish telemetry-test telemetry-lint telemetry-lint-fix telemetry-typecheck telemetry-build telemetry-publish
 
 # Workspace package names
 PACK_MODELS := agent-control-models
@@ -9,6 +9,8 @@ PACK_TELEMETRY := agent-control-telemetry
 PACK_EVALUATORS := agent-control-evaluators
 PACK_DISPATCHER := agent-control-dispatcher
 PACK_KNOWLEDGE_SYNC := agent-control-knowledge-sync
+PACK_FLEET := agent-control-fleet
+PACK_EXAMPLE_ADK := agent-control-google-adk-plugin-example
 OPENAPI_SPEC_PATH := server/.generated/openapi.json
 
 # Directories
@@ -22,6 +24,7 @@ EVALUATORS_DIR := evaluators/builtin
 CONTRIB_DIR := evaluators/contrib
 DISPATCHER_DIR := dispatcher
 KNOWLEDGE_SYNC_DIR := knowledge_sync
+FLEET_DIR := fleet
 UI_DIR := ui
 
 define run-contrib-target
@@ -50,6 +53,7 @@ help:
 	@echo "  make scripts-test    - run root contrib packaging contract tests"
 	@echo "  make models-test     - run shared model tests with coverage"
 	@echo "  make dispatcher-test - run dispatcher tests with coverage"
+	@echo "  make fleet-test      - run fleet tests with coverage"
 	@echo "  make test-extras     - run tests for all discovered contrib evaluators"
 	@echo "  make test-all        - alias for make test"
 	@echo "  make sdk-ts-test     - run TypeScript SDK tests"
@@ -99,7 +103,7 @@ openapi-spec-check: openapi-spec
 # Test
 # ---------------------------
 
-test: contrib-verify scripts-test models-test telemetry-test server-test engine-test sdk-test evaluators-test dispatcher-test knowledge-sync-test contrib-test
+test: contrib-verify scripts-test models-test telemetry-test server-test engine-test sdk-test evaluators-test dispatcher-test knowledge-sync-test fleet-test contrib-test
 
 contrib-verify:
 	uv run python scripts/contrib_packages.py verify
@@ -128,6 +132,13 @@ knowledge-sync-test:
 		--cov=$(KNOWLEDGE_SYNC_DIR)/src \
 		--cov-report=xml:coverage-knowledge-sync.xml -q
 
+# Same gap again, one package over. No Postgres, no container runtime and no
+# server: every test here is a file fact or a pure function.
+fleet-test:
+	uv run --package $(PACK_FLEET) pytest $(FLEET_DIR)/tests \
+		--cov=$(FLEET_DIR)/src \
+		--cov-report=xml:coverage-fleet.xml -q
+
 # Run tests for discovered contrib evaluators
 test-extras: contrib-test
 
@@ -147,6 +158,8 @@ lint: engine-lint telemetry-lint evaluators-lint contrib-lint
 	uv run --package $(PACK_SDK) ruff check --config pyproject.toml sdks/python/src
 	uv run --package $(PACK_DISPATCHER) ruff check --config pyproject.toml dispatcher/src dispatcher/tests
 	uv run --package $(PACK_KNOWLEDGE_SYNC) ruff check --config pyproject.toml knowledge_sync/src knowledge_sync/tests
+	uv run --package $(PACK_FLEET) ruff check --config pyproject.toml fleet/src fleet/tests
+	uv run --package $(PACK_EXAMPLE_ADK) ruff check --config pyproject.toml examples/google_adk_plugin/my_agent
 
 # `ruff format` was never adopted: it would rewrite 393 of 776 files, and no CI
 # job has ever run it. Packages join this list as they are formatted, so the
@@ -165,6 +178,8 @@ lint-fix: engine-lint-fix telemetry-lint-fix evaluators-lint-fix contrib-lint-fi
 	uv run --package $(PACK_SDK) ruff check --config pyproject.toml --fix sdks/python/src
 	uv run --package $(PACK_DISPATCHER) ruff check --config pyproject.toml --fix dispatcher/src dispatcher/tests
 	uv run --package $(PACK_KNOWLEDGE_SYNC) ruff check --config pyproject.toml --fix knowledge_sync/src knowledge_sync/tests
+	uv run --package $(PACK_FLEET) ruff check --config pyproject.toml --fix fleet/src fleet/tests
+	uv run --package $(PACK_EXAMPLE_ADK) ruff check --config pyproject.toml --fix examples/google_adk_plugin/my_agent
 
 typecheck: engine-typecheck telemetry-typecheck evaluators-typecheck contrib-typecheck
 	uv run --package $(PACK_MODELS) mypy --config-file pyproject.toml models/src
@@ -172,6 +187,8 @@ typecheck: engine-typecheck telemetry-typecheck evaluators-typecheck contrib-typ
 	uv run --package $(PACK_SDK) mypy --config-file pyproject.toml sdks/python/src
 	uv run --package $(PACK_DISPATCHER) mypy --config-file pyproject.toml dispatcher/src
 	uv run --package $(PACK_KNOWLEDGE_SYNC) mypy --config-file pyproject.toml knowledge_sync/src
+	uv run --package $(PACK_FLEET) mypy --config-file pyproject.toml fleet/src
+	uv run --package $(PACK_EXAMPLE_ADK) mypy --config-file pyproject.toml examples/google_adk_plugin/my_agent
 
 telemetry-lint:
 	$(MAKE) -C $(TELEMETRY_DIR) lint
