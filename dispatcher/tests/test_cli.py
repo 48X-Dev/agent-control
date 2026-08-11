@@ -307,9 +307,7 @@ def test_the_help_offers_a_milestone_and_promises_no_write(
     assert "never writes to Linear" in helps["source"]
     assert "--team" in rendered
     assert "409" in helps["team"]
-    assert "Nothing is written back to the source" in " ".join(
-        (once.description or "").split()
-    )
+    assert "Nothing is written back to the source" in " ".join((once.description or "").split())
 
 
 # ---------------------------------------------------------------------------
@@ -379,11 +377,7 @@ def test_the_default_ledger_is_the_server_and_the_flag_opts_out_of_it(
 def test_the_slice_one_flags_all_still_exist_with_the_same_names() -> None:
     """A flag that quietly disappeared is a cron entry that quietly stops."""
     once = build_parser()._subparsers._group_actions[0].choices["once"]  # type: ignore[union-attr]
-    flags = {
-        option
-        for action in once._actions
-        for option in action.option_strings
-    }
+    flags = {option for action in once._actions for option in action.option_strings}
 
     assert {
         "--source",

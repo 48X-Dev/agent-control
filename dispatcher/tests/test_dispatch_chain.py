@@ -238,11 +238,7 @@ class FakeControlPlane:
 
     def _queue(self, request: httpx.Request) -> httpx.Response:
         status = request.url.params.get("status")
-        tasks = (
-            [self._task(key) for key in self.refs]
-            if status == "queued"
-            else []
-        )
+        tasks = [self._task(key) for key in self.refs] if status == "queued" else []
         return httpx.Response(
             200,
             json={

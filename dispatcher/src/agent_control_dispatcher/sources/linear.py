@@ -55,9 +55,7 @@ class LinearMilestoneSource:
 
     kind = "linear"
 
-    def __init__(
-        self, *, reader: MilestoneIssueReader, milestone_id: str, team_slug: str
-    ) -> None:
+    def __init__(self, *, reader: MilestoneIssueReader, milestone_id: str, team_slug: str) -> None:
         self._reader = reader
         self._milestone_id = milestone_id
         self._team_slug = team_slug

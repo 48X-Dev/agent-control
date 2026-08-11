@@ -158,9 +158,7 @@ def test_a_defused_marker_is_still_legible_to_a_person() -> None:
     """The defusing swaps one character. A reader still sees what was written;
     a fence matcher does not."""
 
-    rendered = build_envelope(
-        item=_item(body="<<<TASK_END>>>"), brief="do it", source_kind="file"
-    )
+    rendered = build_envelope(item=_item(body="<<<TASK_END>>>"), brief="do it", source_kind="file")
     task_block = rendered.split("<<<TASK_BEGIN>>>\n", 1)[1].split("\n<<<TASK_END>>>", 1)[0]
     assert task_block.startswith("T\n\n<<<TASK")
     assert task_block.endswith("END>>>")

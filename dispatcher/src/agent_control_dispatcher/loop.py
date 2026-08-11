@@ -342,9 +342,7 @@ async def _claim_and_run(
         ledger.forget(source_kind=source_kind, ref=ref)
 
 
-async def _expired_leases(
-    client: DispatchClient, options: ServeOptions
-) -> list[AgentTaskSummary]:
+async def _expired_leases(client: DispatchClient, options: ServeOptions) -> list[AgentTaskSummary]:
     """Rows whose holder stopped existing, once their lease has lapsed."""
     now = dt.datetime.now(dt.UTC)
     stale: list[AgentTaskSummary] = []

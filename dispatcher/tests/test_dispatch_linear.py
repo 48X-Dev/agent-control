@@ -42,8 +42,7 @@ def _issue(ref: str, *, identifier: str, minutes: int, body: str = "Body") -> Mi
         description=body,
         url=f"https://linear.app/acme/issue/{identifier}",
         created_at=dt.datetime(2026, 8, 1, 14, 56, tzinfo=dt.UTC),
-        updated_at=dt.datetime(2026, 8, 1, 15, 0, tzinfo=dt.UTC)
-        + dt.timedelta(minutes=minutes),
+        updated_at=dt.datetime(2026, 8, 1, 15, 0, tzinfo=dt.UTC) + dt.timedelta(minutes=minutes),
         creator_id="c087560f",
         creator_display_name="Clive Bloggs",
     )
@@ -244,9 +243,7 @@ def test_an_unlinked_team_stops_the_run_before_a_session_exists(
     assert not (tmp_path / "claims.sqlite3").exists(), "no claim for work never read"
 
 
-@pytest.mark.parametrize(
-    "status", [MilestonesStatus.ERROR, MilestonesStatus.NOT_CONFIGURED]
-)
+@pytest.mark.parametrize("status", [MilestonesStatus.ERROR, MilestonesStatus.NOT_CONFIGURED])
 def test_a_failed_read_stops_the_run_rather_than_reporting_nothing_to_do(
     tmp_path: Path, stub: StubClient, status: MilestonesStatus
 ) -> None:
@@ -262,9 +259,7 @@ def test_a_failed_read_stops_the_run_rather_than_reporting_nothing_to_do(
 def test_an_empty_milestone_is_a_clean_run_with_the_counts_shown(
     tmp_path: Path, stub: StubClient
 ) -> None:
-    stub.milestone_response = _response(
-        status=MilestonesStatus.EMPTY, started=2, assigned=1
-    )
+    stub.milestone_response = _response(status=MilestonesStatus.EMPTY, started=2, assigned=1)
 
     report, text = _run(_options(tmp_path))
 

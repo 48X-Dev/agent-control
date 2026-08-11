@@ -74,9 +74,7 @@ class TaskLedger(Protocol):
     ) -> None:
         """Make sure a row exists for each item, without claiming any of them."""
 
-    async def claim(
-        self, *, source_kind: str, ref: str, agent_name: str, dry_run: bool
-    ) -> bool:
+    async def claim(self, *, source_kind: str, ref: str, agent_name: str, dry_run: bool) -> bool:
         """Take one item, or report that this ledger cannot."""
 
     def resume_step_index(self, *, source_kind: str, ref: str) -> int:
@@ -287,9 +285,7 @@ class LocalTaskLedger:
     ) -> None:
         del source_kind, items, dry_run, workflow_key
 
-    async def claim(
-        self, *, source_kind: str, ref: str, agent_name: str, dry_run: bool
-    ) -> bool:
+    async def claim(self, *, source_kind: str, ref: str, agent_name: str, dry_run: bool) -> bool:
         return self._ledger.claim(
             source_kind=source_kind, ref=ref, agent_name=agent_name, dry_run=dry_run
         )
@@ -305,9 +301,7 @@ class LocalTaskLedger:
         step_index: int | None = None,
     ) -> StepFilesSummary | None:
         del agent_name, brief, step_index
-        self._ledger.record_session(
-            source_kind=source_kind, ref=ref, session_key=session_key
-        )
+        self._ledger.record_session(source_kind=source_kind, ref=ref, session_key=session_key)
         # The local ledger has no server behind it and therefore no fetch.
         return None
 

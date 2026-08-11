@@ -202,9 +202,7 @@ def test_a_tracker_that_could_not_be_listed_does_not_claim_the_issue_is_empty() 
     strictly worse than the silence it replaced: an agent that would otherwise
     have said nothing now has a server-authored line backing the wrong
     conclusion."""
-    rendered = _render(
-        StepFilesSummary(found=0, delivered=0, files=[], read_failed=True)
-    )
+    rendered = _render(StepFilesSummary(found=0, delivered=0, files=[], read_failed=True))
 
     assert "No files are attached to this issue." not in rendered
     assert "could not be listed" in rendered

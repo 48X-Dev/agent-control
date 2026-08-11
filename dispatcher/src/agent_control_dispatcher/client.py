@@ -291,8 +291,7 @@ class DispatchClient:
 
         payload = await self._request(
             "GET",
-            f"/teams/{quote(team_slug, safe='')}"
-            f"/milestones/{quote(milestone_id, safe='')}/issues",
+            f"/teams/{quote(team_slug, safe='')}/milestones/{quote(milestone_id, safe='')}/issues",
         )
         return ListMilestoneIssuesResponse.model_validate(payload)
 
@@ -374,14 +373,10 @@ class DispatchClient:
     async def get_task_plan(self, *, task_key: str) -> AgentTaskPlan:
         """Which agents run this task's steps, resolved by the server."""
 
-        payload = await self._request(
-            "GET", f"/agent-tasks/{quote(task_key, safe='')}/plan"
-        )
+        payload = await self._request("GET", f"/agent-tasks/{quote(task_key, safe='')}/plan")
         return GetAgentTaskPlanResponse.model_validate(payload).plan
 
-    async def claim_task(
-        self, *, task_key: str, instance_id: str
-    ) -> ClaimAgentTaskResponse:
+    async def claim_task(self, *, task_key: str, instance_id: str) -> ClaimAgentTaskResponse:
         """Take one task. A 409 means somebody else won; move on, do not retry."""
 
         payload = await self._request(
@@ -501,9 +496,7 @@ class DispatchClient:
                 not in self._attributed_deny_ids
             ]
             if events or asyncio.get_running_loop().time() >= deadline:
-                self._attributed_deny_ids.update(
-                    event.control_execution_id for event in events
-                )
+                self._attributed_deny_ids.update(event.control_execution_id for event in events)
                 return events
             await asyncio.sleep(poll_interval_seconds)
 

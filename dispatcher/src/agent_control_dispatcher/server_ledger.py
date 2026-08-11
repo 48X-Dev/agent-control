@@ -111,9 +111,7 @@ class ServerTaskLedger:
         )
         wanted = {item.ref for item in items}
         for status in ("queued", "running", "paused_quota"):
-            page = await self._client.list_tasks(
-                status=status, limit=self._queue_page_size
-            )
+            page = await self._client.list_tasks(status=status, limit=self._queue_page_size)
             for task in page.tasks:
                 if task.source_kind == source_kind and task.source_ref in wanted:
                     self._task_keys[(source_kind, task.source_ref)] = task.task_key
@@ -135,18 +133,14 @@ class ServerTaskLedger:
         """The row as it came back from this dispatcher's own claim."""
         return self._claimed.get((source_kind, ref))
 
-    async def claim(
-        self, *, source_kind: str, ref: str, agent_name: str, dry_run: bool
-    ) -> bool:
+    async def claim(self, *, source_kind: str, ref: str, agent_name: str, dry_run: bool) -> bool:
         """Take one task, or report that this dispatcher cannot have it."""
         del dry_run
         key = self._task_keys.get((source_kind, ref))
         if key is None:
             return False
         try:
-            claimed = await self._client.claim_task(
-                task_key=key, instance_id=self._instance_id
-            )
+            claimed = await self._client.claim_task(task_key=key, instance_id=self._instance_id)
         except DispatchHTTPError as exc:
             if exc.disposition is Disposition.FLEET_STOPPED:
                 # Not about this item, and the one refusal here that is not.
@@ -188,9 +182,7 @@ class ServerTaskLedger:
             text = (step.output_text or "").strip()
             if not text:
                 return None
-            return PriorReport(
-                agent_name=step.agent_name, brief=step.brief, text=text
-            )
+            return PriorReport(agent_name=step.agent_name, brief=step.brief, text=text)
         return None
 
     def session_task_key(self, *, source_kind: str, ref: str) -> str | None:
@@ -212,9 +204,7 @@ class ServerTaskLedger:
         if key is None:
             return None
         index = (
-            step_index
-            if step_index is not None
-            else self._step_index.get((source_kind, ref), 0)
+            step_index if step_index is not None else self._step_index.get((source_kind, ref), 0)
         )
         await self._client.heartbeat_task(task_key=key, instance_id=self._instance_id)
         files = await self._client.start_task_step(
@@ -269,17 +259,13 @@ class ServerTaskLedger:
         key = self._task_keys.get((source_kind, ref))
         if key is None:
             return
-        index = step_index if step_index is not None else self._step_index.get(
-            (source_kind, ref)
-        )
+        index = step_index if step_index is not None else self._step_index.get((source_kind, ref))
         if index is not None and (source_kind, ref) in self._open_steps:
             await self._client.finish_task_step(
                 task_key=key,
                 instance_id=self._instance_id,
                 step_index=index,
-                status=(
-                    "completed" if status is ClaimStatus.COMPLETED else "failed"
-                ),
+                status=("completed" if status is ClaimStatus.COMPLETED else "failed"),
                 output_text=output_text or None,
                 turn_trace_id=turn_trace_id,
                 failure_code=outcome_code,

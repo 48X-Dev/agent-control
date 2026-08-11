@@ -122,11 +122,7 @@ class ServePlane(FakeControlPlane):
 
     def _queue(self, request: httpx.Request) -> httpx.Response:
         wanted = request.url.params.get("status")
-        tasks = [
-            self._task(key)
-            for key in self.refs
-            if self.task_status.get(key) == wanted
-        ]
+        tasks = [self._task(key) for key in self.refs if self.task_status.get(key) == wanted]
         return httpx.Response(
             200,
             json={
@@ -337,9 +333,7 @@ def test_a_row_carrying_another_workflow_is_left_alone(
 def test_the_lease_is_refreshed_while_a_chain_runs(monkeypatch: pytest.MonkeyPatch) -> None:
     """Twenty minutes of chain under a claim taken once needs a heartbeat."""
     stop = ShutdownRequest()
-    plane = ServePlane(
-        ["t1"], stop=stop, plan_steps=[_planned(0, RESEARCHER), _planned(1, WRITER)]
-    )
+    plane = ServePlane(["t1"], stop=stop, plan_steps=[_planned(0, RESEARCHER), _planned(1, WRITER)])
     plane.stop_after_queue_reads = 2
 
     code, _ = _serve(plane, _options(), monkeypatch, stop)

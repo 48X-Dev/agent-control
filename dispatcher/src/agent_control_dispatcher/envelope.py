@@ -105,8 +105,7 @@ _REFUSAL_SENTENCES: dict[str, str] = {
     "over_task_budget": "this task has already used its file budget.",
     "blocked": "a guardrail refused this file.",
     "not_converted": (
-        "this file was fetched but has not been read yet, so its contents are "
-        "not in this message."
+        "this file was fetched but has not been read yet, so its contents are not in this message."
     ),
     "no_text": "no text could be read from this file, so its contents are not available to you.",
 }
