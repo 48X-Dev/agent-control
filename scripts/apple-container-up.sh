@@ -190,10 +190,24 @@ container run -d --name "$KNOWLEDGE_NAME" --network "$NETWORK" -a arm64 \
 echo "   syncing against $PG_IP every ${AGENT_KNOWLEDGE_SYNC_INTERVAL_SECONDS:-900}s; container logs $KNOWLEDGE_NAME"
 fi
 
+# One executor container per agent named in fleet.yaml, skipped by the same
+# mechanism the knowledge sync uses: no config, no service, and it says so.
+# `up` is idempotent and does its own ordering - server health, register, start,
+# bind - so this hands over rather than sequencing anything itself.
+echo "== fleet"
+FLEET_CONFIG="${AGENT_CONTROL_FLEET_CONFIG_PATH:-$PWD/fleet.yaml}"
+if [ ! -f "$FLEET_CONFIG" ]; then
+  echo "   skipped: no $FLEET_CONFIG (copy fleet.yaml.example to start one)"
+else
+  AGENT_CONTROL_FLEET_CONFIG_PATH="$FLEET_CONFIG" \
+  AGENT_CONTROL_FLEET_SERVER_URL="${AGENT_CONTROL_FLEET_SERVER_URL:-http://localhost:${AGENT_CONTROL_SERVER_HOST_PORT:-8000}}" \
+    uv run --package agent-control-fleet agent-control-fleet up
+fi
+
 echo
 echo "UI: http://localhost:${AGENT_CONTROL_SERVER_HOST_PORT:-8000}/ui"
 echo
-echo "Executors run on the HOST. From these VMs the host is the network gateway,"
-echo "not host.docker.internal, and an executor bound to 127.0.0.1 is unreachable"
-echo "from any VM. Bind them to 0.0.0.0 and aim agent_runtimes at the gateway IP;"
-echo "scripts/apple-container-up.sh prints only this reminder, it changes no data."
+echo "Executors started by the fleet run in containers on the agent-control network"
+echo "and publish no ports. An executor started by hand runs on the HOST, where the"
+echo "host is the network gateway rather than host.docker.internal; bind it to"
+echo "0.0.0.0 and aim its agent_runtimes row at the gateway IP."
