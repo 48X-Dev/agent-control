@@ -19,6 +19,7 @@ _COMPARE_RE = re.compile(r"^/repos/([^/]+)/([^/]+)/compare/(.+?)\.\.\.(.+)$")
 _TREE_RE = re.compile(r"^/repos/([^/]+)/([^/]+)/git/trees/([^/]+)$")
 _BLOB_RE = re.compile(r"^/repos/([^/]+)/([^/]+)/git/blobs/([^/]+)$")
 _COMMITS_RE = re.compile(r"^/repos/([^/]+)/([^/]+)/commits$")
+_ISSUES_RE = re.compile(r"^/repos/([^/]+)/([^/]+)/issues$")
 _REPO_RE = re.compile(r"^/repos/([^/]+)/([^/]+)$")
 
 DEFAULT_COMMIT_DATE = "2026-08-09T18:20:00Z"
@@ -42,6 +43,8 @@ class FakeRepo:
     files: dict[str, bytes] = field(default_factory=dict)
     truncated: bool = False
     compares: dict[str, dict[str, Any]] = field(default_factory=dict)
+    private: bool = False
+    issues: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def full_name(self) -> str:
@@ -129,6 +132,7 @@ class FakeGitHub:
             (_TREE_RE, self._tree),
             (_BLOB_RE, self._blob),
             (_COMMITS_RE, self._commits),
+            (_ISSUES_RE, self._issues),
             (_REPO_RE, self._repo),
         ):
             match = pattern.match(path)
@@ -153,8 +157,20 @@ class FakeGitHub:
         if repo is None:
             return self._respond(404, {"message": "Not Found"})
         return self._respond(
-            200, {"full_name": repo.full_name, "default_branch": repo.default_branch}
+            200,
+            {
+                "full_name": repo.full_name,
+                "default_branch": repo.default_branch,
+                "private": repo.private,
+            },
         )
+
+    def _issues(self, request: httpx.Request, match: re.Match[str]) -> httpx.Response:
+        repo = self._find(match)
+        if repo is None:
+            return self._respond(404, {"message": "Not Found"})
+        page = int(request.url.params.get("page", "1"))
+        return self._respond(200, repo.issues if page == 1 else [])
 
     def _commits(self, request: httpx.Request, match: re.Match[str]) -> httpx.Response:
         repo = self._find(match)

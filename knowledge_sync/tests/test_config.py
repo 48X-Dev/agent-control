@@ -6,16 +6,23 @@ import logging
 
 import pytest
 from agent_control_knowledge_sync.config import (
+    ALLOWLIST_PATH_DEFAULT,
+    ALLOWLIST_PATH_ENV,
     CLIENT_ID_ENV,
     CLIENT_SECRET_ENV,
     DATABASE_URL_ENV,
     EXECUTOR_DRIVE_ROOT_ENV,
+    GITHUB_TOKEN_ENV,
     GUARD_DISABLED_LINE,
     MAX_DOCUMENTS_ENV,
     MAX_FILE_BYTES_ENV,
     REFRESH_TOKEN_ENV,
     REQUEST_TIMEOUT_ENV,
     ROOT_FOLDER_ENV,
+    RUN_MAX_FETCH_BYTES_ENV,
+    SOURCE_MAX_BYTES_ENV,
+    SYNC_INTERVAL_ENV,
+    TOMBSTONE_RETENTION_ENV,
     ConfigError,
     SyncConfig,
 )
@@ -47,6 +54,28 @@ def test_the_defaults_are_the_documented_ceilings() -> None:
     assert config.max_file_bytes == 20_971_520
     assert config.max_documents_per_run == 10_000
     assert config.request_timeout_seconds == 120.0
+    assert config.source_max_bytes == 2_147_483_648
+    assert config.run_max_fetch_bytes == 4_294_967_296
+    assert config.tombstone_retention_days == 180
+    assert config.sync_interval_seconds == 900
+
+
+def test_a_deployment_that_never_heard_of_github_is_off_by_default() -> None:
+    """No token and the checked-in allowlist path is the whole of the off state."""
+    config = SyncConfig.from_env(FULL_ENV)
+    assert config.github_token is None
+    assert config.allowlist_path == ALLOWLIST_PATH_DEFAULT
+
+
+def test_the_github_half_is_read_when_it_is_configured() -> None:
+    config = SyncConfig.from_env(
+        dict(
+            FULL_ENV,
+            **{GITHUB_TOKEN_ENV: "ghp-not-a-real-token", ALLOWLIST_PATH_ENV: "/app/knowledge.yaml"},
+        )
+    )
+    assert config.github_token == "ghp-not-a-real-token"
+    assert str(config.allowlist_path) == "/app/knowledge.yaml"
 
 
 def test_an_unset_executor_root_names_itself_at_startup(
@@ -111,12 +140,20 @@ def test_the_ceilings_are_overridable() -> None:
             MAX_FILE_BYTES_ENV: "1048576",
             MAX_DOCUMENTS_ENV: "25",
             REQUEST_TIMEOUT_ENV: "7.5",
+            SOURCE_MAX_BYTES_ENV: "4096",
+            RUN_MAX_FETCH_BYTES_ENV: "8192",
+            TOMBSTONE_RETENTION_ENV: "30",
+            SYNC_INTERVAL_ENV: "60",
         },
     )
     config = SyncConfig.from_env(env)
     assert config.max_file_bytes == 1_048_576
     assert config.max_documents_per_run == 25
     assert config.request_timeout_seconds == 7.5
+    assert config.source_max_bytes == 4096
+    assert config.run_max_fetch_bytes == 8192
+    assert config.tombstone_retention_days == 30
+    assert config.sync_interval_seconds == 60
 
 
 @pytest.mark.parametrize(
@@ -127,6 +164,10 @@ def test_the_ceilings_are_overridable() -> None:
         (MAX_DOCUMENTS_ENV, "-1"),
         (REQUEST_TIMEOUT_ENV, "soon"),
         (REQUEST_TIMEOUT_ENV, "0"),
+        (SOURCE_MAX_BYTES_ENV, "0"),
+        (RUN_MAX_FETCH_BYTES_ENV, "a lot"),
+        (TOMBSTONE_RETENTION_ENV, "-1"),
+        (SYNC_INTERVAL_ENV, "quarter-hourly"),
     ],
 )
 def test_an_unusable_ceiling_is_refused_rather_than_ignored(name: str, value: str) -> None:

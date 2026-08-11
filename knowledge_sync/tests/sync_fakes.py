@@ -19,6 +19,7 @@ from agent_control_knowledge_sync.drive_client import (
 from agent_control_knowledge_sync.ingest import (
     REFUSAL_TOMBSTONES,
     IngestOutcome,
+    SourceItem,
     TombstoneReason,
 )
 from agent_control_knowledge_sync.sync import (
@@ -133,9 +134,9 @@ class FakeIngestor:
         self.secrets_skipped = secrets_skipped
         self.events: list[str] = []
 
-    async def ingest(self, item: DriveItem, content: FetchedContent) -> IngestOutcome:
-        self.events.append(f"ingest:{item.id}")
-        return self.outcomes.get(item.id, IngestOutcome("1", 3, False, None))
+    async def ingest(self, item: SourceItem) -> IngestOutcome:
+        self.events.append(f"ingest:{item.external_id}")
+        return self.outcomes.get(item.external_id, IngestOutcome("1", 3, False, None))
 
     async def tombstone(self, external_id: str, *, reason: str = TombstoneReason.DELETED) -> bool:
         self.events.append(f"tombstone:{external_id}:{reason}")
@@ -191,6 +192,10 @@ class FakeJournal:
     async def mark_source_failed(self, *, ref: str, error_code: str) -> None:
         self.events.append(("mark_source_failed", error_code))
 
+    async def sweep_tombstones(self, retention_days: int) -> int:
+        self.events.append(("sweep_tombstones", retention_days))
+        return 0
+
 
 class FakeLease:
     def __init__(self, *, renews: bool = True) -> None:
@@ -210,6 +215,7 @@ async def _run(
     *,
     lease: FakeLease | None = None,
     config: SyncConfig | None = None,
+    github: Any = None,
 ) -> RunCounters:
     return await run_once_with(
         config or _config(),
@@ -217,6 +223,7 @@ async def _run(
         journal=journal,  # type: ignore[arg-type]
         lease=lease or FakeLease(),  # type: ignore[arg-type]
         ingestor_factory=lambda _: ingestor,  # type: ignore[arg-type,return-value]
+        github=github,
     )
 
 

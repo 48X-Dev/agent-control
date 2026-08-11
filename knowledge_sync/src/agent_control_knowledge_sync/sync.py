@@ -1,9 +1,9 @@
-"""One pass over the Drive corpus: claim the lease, walk or replay, ingest, release."""
+"""One pass over the corpus: claim the lease, sweep every source, ingest, release."""
 
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime
@@ -14,6 +14,7 @@ import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from .config import SyncConfig
+from .conversion_cache import open_conversion_cache
 from .drive_auth import DriveTokenProvider
 from .drive_client import (
     DriveChange,
@@ -21,23 +22,54 @@ from .drive_client import (
     DriveError,
     DriveItem,
     DriveRefusalError,
+    FetchedContent,
     LocationUnknown,
     OutsideRoot,
     UnderRoot,
 )
 from .drive_transport import DriveTransport
-from .ingest import Ingestor, TombstoneReason
+from .github_run import GitHubChannel, github_channel, github_journal, run_github
+from .ingest import Ingestor, SourceItem, TombstoneReason
 from .ingest_guard import AgentOutputGuard, DriveAncestry
 from .journal import RunCounters, SourceState, SyncFailedError, SyncJournal, Tally
 from .lease import SessionFactory, SyncLease, hold_lease, mint_token
 from .schema import chunks, documents, sources, sync_runs
 
 IngestorFactory = Callable[[int], Ingestor]
+GitHubPass = Callable[[Tally], Awaitable[str | None]]
+"""The GitHub half of a run, or nothing at all when the channel is unconfigured."""
 
 LEASE_RENEW_EVERY = 100
 """Documents between renewals during a walk; the replay renews per drained batch."""
 
+SOURCE_CEILING = "source_ceiling"
+RUN_FETCH_CEILING = "run_fetch_ceiling"
+GITHUB_SKIPPED = "github channel skipped: the run's fetch ceiling was already spent"
+
 _LOG = logging.getLogger(__name__)
+
+
+@dataclass(slots=True)
+class FetchBudget:
+    """5.4's byte ceilings: one source's fetches, and one process's across all of them."""
+
+    source_max_bytes: int
+    run_max_fetch_bytes: int
+    source_bytes: int = 0
+    run_bytes: int = 0
+
+    def spend(self, count: int) -> None:
+        self.source_bytes += count
+        self.run_bytes += count
+
+    @property
+    def exceeded(self) -> str | None:
+        """The ceiling that stopped this run, named so the status can say which."""
+        if self.run_bytes >= self.run_max_fetch_bytes:
+            return RUN_FETCH_CEILING
+        if self.source_bytes >= self.source_max_bytes:
+            return SOURCE_CEILING
+        return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,6 +139,13 @@ async def corpus_sessions(config: SyncConfig) -> AsyncIterator[SessionFactory]:
 
 async def run_once(config: SyncConfig) -> RunCounters:
     """One sync pass, end to end. What ``once`` and a cron entry both call."""
+    channel = github_channel(config)
+    with open_conversion_cache(config.database_url):
+        return await _run_once(config, channel)
+
+
+async def _run_once(config: SyncConfig, channel: GitHubChannel | None) -> RunCounters:
+    """The pass itself, with the conversion cache already installed for this process."""
     async with corpus_sessions(config) as sessions:
         async with httpx.AsyncClient(timeout=config.request_timeout_seconds) as http:
             tokens = DriveTokenProvider(config.credentials, http)
@@ -115,6 +154,7 @@ async def run_once(config: SyncConfig) -> RunCounters:
                 config.executor_drive_root_id,
                 DriveAncestry(DriveTransport(tokens, http, config)),
             )
+            github = None if channel is None else _github_pass(channel, config, http, sessions)
             async with hold_lease(sessions, holder=mint_token()) as lease:
                 return await run_once_with(
                     config,
@@ -124,7 +164,29 @@ async def run_once(config: SyncConfig) -> RunCounters:
                     ingestor_factory=lambda source_id: Ingestor(
                         sessions, source_id, guard=guard
                     ),
+                    github=github,
                 )
+
+
+def _github_pass(
+    channel: GitHubChannel,
+    config: SyncConfig,
+    http: httpx.AsyncClient,
+    sessions: SessionFactory,
+) -> GitHubPass:
+    """The configured half, bound to this run's HTTP client and corpus sessions."""
+
+    async def sweep(tally: Tally) -> str | None:
+        return await run_github(
+            channel,
+            tally,
+            config=config,
+            http=http,
+            journal=github_journal(sessions),
+            sessions=sessions,
+        )
+
+    return sweep
 
 
 async def run_once_with(
@@ -134,18 +196,22 @@ async def run_once_with(
     journal: SyncJournal,
     lease: SyncLease,
     ingestor_factory: IngestorFactory,
+    github: GitHubPass | None = None,
 ) -> RunCounters:
     """The orchestration, with the lease already held and collaborators supplied."""
     await journal.assert_schema()
     await journal.lapse_orphans(lease.holder)
     run_id = await journal.open_run(lease.holder)
     tally = Tally()
+    budget = FetchBudget(config.source_max_bytes, config.run_max_fetch_bytes)
     try:
         root = await _resolve_root(client, journal, config.root_folder_id)
         source = await journal.ensure_source(ref=config.root_folder_id, display_name=root.name)
         ingestor = ingestor_factory(source.id)
-        truncated = await _sweep(config, client, journal, ingestor, lease, source, tally)
+        ceiling = await _sweep(config, client, journal, ingestor, lease, source, tally, budget)
         tally.secrets_skipped = ingestor.secrets_skipped
+        reported = await _run_github(github, tally, budget)
+        await journal.sweep_tombstones(config.tombstone_retention_days)
     except BaseException as exc:
         # BaseException, not Exception: a Ctrl-C or a cancelled task must still
         # close its `sync_runs` row, or the next claimant reads it as orphaned.
@@ -161,13 +227,32 @@ async def run_once_with(
 
     _fold_walk_refusals(client, tally)
     counters = tally.freeze()
-    status = "partial" if truncated else "ok"
-    error_code = "source_ceiling" if truncated else None
-    await journal.mark_verified(source.id, status=status, error_code=error_code)
+    # The Drive source row keeps its own ceiling; the run row reports whichever
+    # half first went short, so a repo nobody could read is not an `ok` run.
+    await journal.mark_verified(
+        source.id, status="partial" if ceiling else "ok", error_code=ceiling
+    )
+    run_code = ceiling or reported
     await journal.close_run(
-        run_id, status=status, counters=counters, tally=tally, error_code=error_code
+        run_id,
+        status="partial" if run_code else "ok",
+        counters=counters,
+        tally=tally,
+        error_code=run_code,
     )
     return counters
+
+
+async def _run_github(
+    github: GitHubPass | None, tally: Tally, budget: FetchBudget
+) -> str | None:
+    """Off unless configured, and skipped rather than silent when the run is out of budget."""
+    if github is None:
+        return None
+    if budget.exceeded is not None:
+        _LOG.warning(GITHUB_SKIPPED)
+        return None
+    return await github(tally)
 
 
 async def _resolve_root(client: DriveClient, journal: SyncJournal, ref: str) -> DriveItem:
@@ -187,11 +272,14 @@ async def _sweep(
     lease: SyncLease,
     source: SourceState,
     tally: Tally,
-) -> bool:
-    """The full walk or the changes replay. Returns whether a ceiling truncated it."""
+    budget: FetchBudget,
+) -> str | None:
+    """The full walk or the changes replay. Answers the ceiling that truncated it."""
     if source.cursor is None:
-        return await _walk(config, client, journal, ingestor, lease, source, tally)
-    return await _replay(client, journal, ingestor, lease, source, source.cursor, tally)
+        return await _walk(config, client, journal, ingestor, lease, source, tally, budget)
+    return await _replay(
+        config, client, journal, ingestor, lease, source, source.cursor, tally, budget
+    )
 
 
 async def _walk(
@@ -202,24 +290,40 @@ async def _walk(
     lease: SyncLease,
     source: SourceState,
     tally: Tally,
-) -> bool:
+    budget: FetchBudget,
+) -> str | None:
     """First run: take the cursor before the walk, so nothing between the two is lost."""
     cursor = await client.start_cursor()
     walked = 0
     async for item in client.walk_subtree():
         walked += 1
-        await _ingest_one(item, client=client, ingestor=ingestor, tally=tally)
+        await _ingest_one(item, client=client, ingestor=ingestor, tally=tally, budget=budget)
         if walked % LEASE_RENEW_EVERY == 0:
             await _renew(lease)
+        ceiling = budget.exceeded
+        if ceiling is not None:
+            await _renew(lease)
+            return _truncated(ceiling, walked, budget)
     await _renew(lease)
     if client.walk_truncated:
         # No cursor: storing one would strand what the walk never reached.
         _LOG.warning(
             "walk truncated at ceiling=%d after %d documents", config.max_documents_per_run, walked
         )
-        return True
+        return SOURCE_CEILING
     await journal.advance_cursor(source.id, cursor)
-    return False
+    return None
+
+
+def _truncated(ceiling: str, applied: int, budget: FetchBudget) -> str:
+    """A ceiling that stopped a pass names itself, or it is an invisible half-mirror."""
+    _LOG.warning(
+        "%s reached after %d documents and %d fetched bytes; the cursor stayed where it was",
+        ceiling,
+        applied,
+        budget.run_bytes,
+    )
+    return ceiling
 
 
 async def _renew(lease: SyncLease) -> None:
@@ -232,6 +336,7 @@ async def _renew(lease: SyncLease) -> None:
 
 
 async def _replay(
+    config: SyncConfig,
     client: DriveClient,
     journal: SyncJournal,
     ingestor: Ingestor,
@@ -239,11 +344,22 @@ async def _replay(
     source: SourceState,
     cursor: str,
     tally: Tally,
-) -> bool:
+    budget: FetchBudget,
+) -> str | None:
     """Later runs: one drained batch from the stored cursor, then advance it."""
     changes, new_cursor = await client.list_changes(cursor)
+    applied = 0
     for change in changes:
-        await _apply(change, client=client, ingestor=ingestor, tally=tally)
+        # A ceiling reached mid-batch leaves the cursor alone, so the next run
+        # replays the same feed rather than skipping what this one never applied.
+        ceiling = budget.exceeded or (
+            SOURCE_CEILING if applied >= config.max_documents_per_run else None
+        )
+        if ceiling is not None:
+            await _renew(lease)
+            return _truncated(ceiling, applied, budget)
+        await _apply(change, client=client, ingestor=ingestor, tally=tally, budget=budget)
+        applied += 1
     await _renew(lease)
     # Section 10 splits verification from advancement: a poll that came back
     # holding the same token verified the source without moving its cursor, and
@@ -251,11 +367,16 @@ async def _replay(
     # with `last_verified_at` and so says nothing.
     if new_cursor != cursor:
         await journal.advance_cursor(source.id, new_cursor)
-    return False
+    return None
 
 
 async def _apply(
-    change: DriveChange, *, client: DriveClient, ingestor: Ingestor, tally: Tally
+    change: DriveChange,
+    *,
+    client: DriveClient,
+    ingestor: Ingestor,
+    tally: Tally,
+    budget: FetchBudget,
 ) -> None:
     """One changes-feed entry: a tombstone, an out-of-scope skip, or an ingest."""
     if change.removed or change.item is None:
@@ -269,7 +390,7 @@ async def _apply(
     match location:
         case UnderRoot(folders):
             item = replace(change.item, folder_path=folders)
-            await _ingest_one(item, client=client, ingestor=ingestor, tally=tally)
+            await _ingest_one(item, client=client, ingestor=ingestor, tally=tally, budget=budget)
         case OutsideRoot():
             # A document moved out of the root is still readable, so the feed
             # never flags it removed. Tombstoning is the only thing that takes it out.
@@ -285,7 +406,12 @@ async def _apply(
 
 
 async def _ingest_one(
-    item: DriveItem, *, client: DriveClient, ingestor: Ingestor, tally: Tally
+    item: DriveItem,
+    *,
+    client: DriveClient,
+    ingestor: Ingestor,
+    tally: Tally,
+    budget: FetchBudget,
 ) -> None:
     """Fetch and ingest one document, counting every refusal by its own code."""
     tally.seen += 1
@@ -298,7 +424,8 @@ async def _ingest_one(
             tally.tombstoned += 1
         return
     tally.bytes_fetched += len(content.data)
-    outcome = await ingestor.ingest(item, content)
+    budget.spend(len(content.data))
+    outcome = await ingestor.ingest(drive_source_item(item, content))
     if outcome.refusal_code is not None:
         tally.refuse(outcome.refusal_code)
         _LOG.warning("refused item=%s code=%s", item.id, outcome.refusal_code)
@@ -306,6 +433,22 @@ async def _ingest_one(
         tally.unchanged += 1
     else:
         tally.indexed += 1
+
+
+def drive_source_item(item: DriveItem, content: FetchedContent) -> SourceItem:
+    """One Drive file as the corpus stores it; the citation is the chain from the root."""
+    return SourceItem(
+        external_id=item.id,
+        path="/".join((*item.folder_path, item.name)),
+        title=item.name,
+        data=content.data,
+        media_type=content.media_type,
+        source_mime=item.mime_type,
+        modified_at=item.modified_time,
+        size=item.size,
+        deleted=item.trashed,
+        shortcut=bool(item.shortcut_target_id),
+    )
 
 
 def _fold_walk_refusals(client: DriveClient, tally: Tally) -> None:

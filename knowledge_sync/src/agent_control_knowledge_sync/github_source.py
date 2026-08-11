@@ -26,6 +26,7 @@ from .github_client import (
 )
 
 __all__ = [
+    "CURSOR_KEY",
     "SOURCE_KIND",
     "TOMBSTONE_DELETED",
     "TOMBSTONE_EXCLUDED",
