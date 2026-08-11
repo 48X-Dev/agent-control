@@ -139,7 +139,7 @@ class AgentControlPlugin(BasePlugin):
             # accept a no-arg constructor.
             super().__init__(name=self.name)
         except TypeError:
-            super().__init__()
+            super().__init__()  # type: ignore[call-arg]
 
         normalized_name = ensure_agent_name(agent_name)
         current = state.current_agent
