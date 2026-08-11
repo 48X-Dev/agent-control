@@ -1,39 +1,4 @@
-"""Workflows: the ordered list of agents a task is handed between.
-
-A workflow is **server-side configuration on a team**, never anything the task
-itself can express. That is the whole point of the file. An issue body, an
-issue label and a YAML line all arrive from whoever has access to the source,
-and none of them reaches a decision about which agent runs, how many turns it
-gets, or what it is asked to do. Writing a workflow is ADMIN, at the same tier
-as authoring a control, because naming agents and shaping prompts is the same
-class of authority.
-
-**Agents never talk to each other, and this module is where that stops being a
-promise and becomes a shape.** A workflow is a list of steps the *dispatcher*
-walks. Between two steps the dispatcher receives agent A's turn response over
-HTTP, writes the text to ``agent_task_steps``, and starts a separate guarded
-turn on a separate session for agent B. Nothing here is a channel: there is no
-field on a step that names another step, no message an agent can address, and
-no way for a step to learn that a later one exists. Everything that looks like
-collaboration is the dispatcher holding both ends, and each hop is an ordinary
-``POST /turns`` with the full guard stack.
-
-Three shapes live here.
-
-:class:`AgentWorkflow` is the stored configuration. :class:`AgentTaskPlan` is
-that configuration **resolved for one task**: the same steps with each agent
-name filled in from the step or from the team's default, and with the ones that
-could not be resolved named rather than guessed at. :class:`AgentTaskChain` is
-what actually happened, assembled from ``agent_task_steps`` and never from a
-trace a caller supplied.
-
-The plan and the chain are deliberately separate. A chain built only from the
-step rows cannot say that a two-agent workflow stopped after its first agent,
-because the second agent's row was never written; a chain built only from the
-plan cannot say what any of them produced. Rendering the pair is what lets a
-console say "the writer never ran" instead of showing a one-agent task that
-looks complete.
-"""
+"""Workflows: the ordered list of agents a task is handed between."""
 
 from __future__ import annotations
 
@@ -71,45 +36,14 @@ StepBrief = Annotated[str, StringConstraints(max_length=STEP_BRIEF_MAX_LENGTH)]
 
 
 class RequiredOutput(StrEnum):
-    """What a step has to produce for the chain to carry on.
-
-    ``TEXT`` is the default and the only one that can be handed onward. A step
-    that reports nothing fails with ``EMPTY_STEP_OUTPUT`` rather than passing an
-    empty report to the next agent, because "the previous agent reported:
-    (nothing)" is how the next agent invents the missing work and reports it
-    confidently.
-
-    ``NONE`` says this step is allowed to be silent, which is only ever true of
-    the last step: there is nobody downstream to mislead.
-    :meth:`AgentWorkflowSteps._a_silent_step_is_the_last_step` refuses the
-    other arrangement at write time rather than at 3am.
-    """
+    """What a step has to produce for the chain to carry on."""
 
     TEXT = "text"
     NONE = "none"
 
 
 class AgentWorkflowStep(BaseModel):
-    """One hop: who runs it, what they are asked, and what bounds it.
-
-    ``agent_name`` null means "the team's ``default_agent_name``". It is not a
-    wildcard and it is not "any agent": when neither the step nor the team names
-    one, the task is ``blocked`` with ``NO_AGENT_SELECTED`` and a human sets one
-    of the two. Guessing here would be choosing the blast radius by accident,
-    because agents differ in system prompt, in bound controls and in tools.
-
-    ``brief`` is operator text and is the one part of the turn message that is
-    not framed as data. It is written by somebody holding ADMIN, which is why it
-    can be trusted at all.
-
-    ``idempotent`` is an assertion by whoever wrote the workflow, not a proof,
-    and the dispatcher currently ignores it. Section 11.3 permits one retry
-    after a timeout only where cancellation has been confirmed for the executor
-    kind in the deployment topology that will actually run, and that experiment
-    has not been done. "If either guard cannot be evaluated, the flag is
-    ignored" is the plan's own rule, and this is what ignoring it looks like:
-    the field is stored and read back, and nothing acts on it.
-    """
+    """One hop: who runs it, what they are asked, and what bounds it."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -147,12 +81,7 @@ class AgentWorkflowStep(BaseModel):
 
 
 class AgentWorkflow(BaseModel):
-    """An ordered list of steps, stored against a namespace and maybe a team.
-
-    ``team_slug`` scopes which team's tasks may use it and supplies the default
-    agent when a step does not pin one. A workflow with no team is usable from
-    any team in the namespace and can only run steps that name their own agent.
-    """
+    """An ordered list of steps, stored against a namespace and maybe a team."""
 
     workflow_key: WorkflowKey = Field(..., description="Stable key, unique in the namespace.")
     display_name: WorkflowDisplayName = Field(..., description="What a console calls it.")
@@ -167,17 +96,7 @@ class AgentWorkflow(BaseModel):
 
 
 def _a_silent_step_is_the_last_step(steps: list[AgentWorkflowStep]) -> list[AgentWorkflowStep]:
-    """Refuse ``required_output: none`` anywhere but the end of the chain.
-
-    A step that is permitted to say nothing, followed by a step that would be
-    handed its report, is a chain with a hole in the middle. The next agent
-    receives an empty prior-report block, has nothing to work from, and answers
-    anyway - which is the failure the envelope's untrusted framing cannot help
-    with, because there is no text to distrust.
-
-    Refused at write time rather than at run time, because the run-time version
-    of this refusal costs a claimed task and a turn nobody needed to pay for.
-    """
+    """Refuse ``required_output: none`` anywhere but the end of the chain."""
     for index, step in enumerate(steps[:-1]):
         if RequiredOutput(step.required_output) is RequiredOutput.NONE:
             raise ValueError(
@@ -189,13 +108,7 @@ def _a_silent_step_is_the_last_step(steps: list[AgentWorkflowStep]) -> list[Agen
 
 
 class UpsertAgentWorkflowRequest(BaseModel):
-    """Create or replace one workflow, keyed by ``workflow_key`` in the path.
-
-    Replace semantics, deliberately. A workflow is a short list read in order,
-    and a PATCH that could move one step in the middle is a way to change who
-    runs step 2 without the reviewer of the change seeing steps 1 and 3. The
-    whole list is written or none of it is.
-    """
+    """Create or replace one workflow, keyed by ``workflow_key`` in the path."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -211,9 +124,7 @@ class UpsertAgentWorkflowRequest(BaseModel):
 
     @field_validator("steps")
     @classmethod
-    def _silent_step_must_be_last(
-        cls, steps: list[AgentWorkflowStep]
-    ) -> list[AgentWorkflowStep]:
+    def _silent_step_must_be_last(cls, steps: list[AgentWorkflowStep]) -> list[AgentWorkflowStep]:
         return _a_silent_step_is_the_last_step(steps)
 
 
@@ -237,13 +148,7 @@ class ListAgentWorkflowsResponse(BaseModel):
 
 
 class DeleteAgentWorkflowResponse(BaseModel):
-    """What a delete did.
-
-    Tasks already queued against a deleted workflow keep their ``workflow_key``
-    and stop resolving, which shows up as ``blocked`` rather than as a task that
-    quietly runs somebody else's steps. ``open_task_count`` is what the console
-    warns with before the button is pressed.
-    """
+    """What a delete did."""
 
     success: bool = Field(...)
     workflow_key: str = Field(...)
@@ -258,12 +163,7 @@ class DeleteAgentWorkflowResponse(BaseModel):
 
 
 class ResolvedWorkflowStep(BaseModel):
-    """One planned step with its agent decided, or with nobody to run it.
-
-    ``agent_name`` is null exactly when neither the step nor the team named an
-    agent. It is reported rather than defaulted: a plan that silently filled the
-    gap would be agent selection happening somewhere nobody reviewed.
-    """
+    """One planned step with its agent decided, or with nobody to run it."""
 
     step_index: int = Field(..., ge=0, lt=MAX_STEPS_PER_TASK)
     agent_name: AgentName | None = Field(
@@ -283,14 +183,7 @@ class ResolvedWorkflowStep(BaseModel):
 
 
 class AgentTaskPlan(BaseModel):
-    """What is supposed to run on one task, before any of it has.
-
-    ``implicit`` is true for the one-step fallback a team with no workflow gets.
-    That step pins no agent and carries an empty brief, so a deployment that has
-    configured nothing still runs one agent doing one thing - which is most of
-    the value, and a design that demands a workflow before anything works does
-    not get used.
-    """
+    """What is supposed to run on one task, before any of it has."""
 
     task_key: TaskKey = Field(...)
     workflow_key: str = Field(..., max_length=WORKFLOW_KEY_MAX_LENGTH)
@@ -321,19 +214,7 @@ class GetAgentTaskPlanResponse(BaseModel):
 
 
 class AgentTaskChainHop(BaseModel):
-    """One position in the chain, planned and recorded together.
-
-    ``ran`` false is a step that never started: either the chain stopped before
-    reaching it, or it is still ahead of the dispatcher. That distinction is why
-    this model carries the plan's fields as well as the step row's - a hop with
-    no row is invisible in ``agent_task_steps``, and a chain that showed only
-    the rows would render a stopped two-agent workflow as a finished one-agent
-    task with nothing saying otherwise.
-
-    ``turn_trace_id`` is this hop's own trace, minted by the server for its
-    turn. It is a link to a forensic view and not the identity of the chain: the
-    chain is these rows. A caller has never been able to supply it.
-    """
+    """One position in the chain, planned and recorded together."""
 
     step_index: int = Field(..., ge=0)
     agent_name: AgentName | None = Field(default=None)
@@ -360,21 +241,7 @@ class AgentTaskChainHop(BaseModel):
 
 
 class AgentTaskChain(BaseModel):
-    """One task as a sequence of hops, assembled from its own step rows.
-
-    Not from a trace. The existing rollup at ``GET /observability/traces/{id}``
-    builds hops exclusively from control-execution events, so an agent with no
-    bound control that fired contributes zero hops and vanishes from it: a
-    three-agent chain where two have no controls renders as one agent, with
-    nothing indicating the rest is missing. These rows show every hop whether or
-    not a control fired, cannot 404, and carry a per-hop trace id for whoever
-    wants the forensic view of one of them.
-
-    ``chain_trace_id`` is minted by the server at claim time and is here for
-    correlation only. It is not what this view is built from, and it is not
-    accepted from a caller: the audited party does not author its own audit
-    record.
-    """
+    """One task as a sequence of hops, assembled from its own step rows."""
 
     task_key: TaskKey = Field(...)
     source_kind: str = Field(..., max_length=32)
@@ -397,18 +264,7 @@ class AgentTaskChain(BaseModel):
 
     @property
     def plan_changed(self) -> bool:
-        """More hops ran than the workflow now has steps.
-
-        Somebody rewrote or deleted the workflow while the dispatcher was
-        walking it. The chain still renders, and it renders **every** hop that
-        ran: the step rows are the record of what the agents actually did, and
-        trimming them to fit the current configuration would show an operator a
-        shorter chain than the one they paid for.
-
-        A flag rather than a refusal, because this is a read. A model that
-        raised here would turn "the workflow was edited" into a 500 on the one
-        page somebody opens to find out what happened.
-        """
+        """More hops ran than the workflow now has steps."""
         return self.hops_ran > self.hops_planned
 
     failure_code: str | None = Field(default=None, max_length=FAILURE_CODE_MAX_LENGTH)

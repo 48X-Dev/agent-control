@@ -1,4 +1,4 @@
-.PHONY: help sync openapi-spec openapi-spec-check test test-extras test-all contrib-verify scripts-test models-test dispatcher-test knowledge-sync-test test-models test-sdk lint lint-fix typecheck check build build-models build-server build-sdk publish publish-models publish-server publish-sdk hooks-install hooks-uninstall prepush evaluators-test evaluators-lint evaluators-lint-fix evaluators-typecheck evaluators-build contrib-test contrib-lint contrib-lint-fix contrib-typecheck contrib-build sdk-ts-generate sdk-ts-overlay-test sdk-ts-name-check sdk-ts-generate-check sdk-ts-build sdk-ts-test sdk-ts-lint sdk-ts-typecheck sdk-ts-release-check sdk-ts-publish-dry-run sdk-ts-publish telemetry-test telemetry-lint telemetry-lint-fix telemetry-typecheck telemetry-build telemetry-publish
+.PHONY: help sync openapi-spec openapi-spec-check test test-extras test-all contrib-verify scripts-test models-test dispatcher-test knowledge-sync-test test-models test-sdk lint lint-fix format format-check typecheck check build build-models build-server build-sdk publish publish-models publish-server publish-sdk hooks-install hooks-uninstall prepush evaluators-test evaluators-lint evaluators-lint-fix evaluators-typecheck evaluators-build contrib-test contrib-lint contrib-lint-fix contrib-typecheck contrib-build sdk-ts-generate sdk-ts-overlay-test sdk-ts-name-check sdk-ts-generate-check sdk-ts-build sdk-ts-test sdk-ts-lint sdk-ts-typecheck sdk-ts-release-check sdk-ts-publish-dry-run sdk-ts-publish telemetry-test telemetry-lint telemetry-lint-fix telemetry-typecheck telemetry-build telemetry-publish
 
 # Workspace package names
 PACK_MODELS := agent-control-models
@@ -147,6 +147,17 @@ lint: engine-lint telemetry-lint evaluators-lint contrib-lint
 	uv run --package $(PACK_SDK) ruff check --config pyproject.toml sdks/python/src
 	uv run --package $(PACK_DISPATCHER) ruff check --config pyproject.toml dispatcher/src dispatcher/tests
 	uv run --package $(PACK_KNOWLEDGE_SYNC) ruff check --config pyproject.toml knowledge_sync/src knowledge_sync/tests
+
+# `ruff format` was never adopted: it would rewrite 393 of 776 files, and no CI
+# job has ever run it. Packages join this list as they are formatted, so the
+# ones already done cannot regress while the rest are still outstanding.
+FORMATTED_PACKAGES = models
+
+format-check:
+	uv run ruff format --check --config pyproject.toml $(FORMATTED_PACKAGES)
+
+format:
+	uv run ruff format --config pyproject.toml $(FORMATTED_PACKAGES)
 
 lint-fix: engine-lint-fix telemetry-lint-fix evaluators-lint-fix contrib-lint-fix
 	uv run --package $(PACK_MODELS) ruff check --config pyproject.toml --fix models/src

@@ -55,10 +55,7 @@ def test_a_sibling_heading_replaces_rather_than_deepens() -> None:
 
 def test_a_document_whose_top_heading_is_level_two_still_reads_siblings_as_siblings() -> None:
     """A GitHub README that opens at ``##`` has no ``#`` for its sections to hang off."""
-    text = (
-        f"## Install\n\n{_paragraph(400, 'install')}\n\n"
-        f"## Usage\n\n{_paragraph(400, 'usage')}\n"
-    )
+    text = f"## Install\n\n{_paragraph(400, 'install')}\n\n## Usage\n\n{_paragraph(400, 'usage')}\n"
     paths = [chunk.heading_path for chunk in chunk_markdown(text)]
     assert paths == ["Install", "Usage"]
 

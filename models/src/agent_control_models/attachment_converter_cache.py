@@ -1,21 +1,4 @@
-"""The key a conversion is cached under. The cache itself belongs to the caller.
-
-Conversion cannot run inline: five visuals on one issue is roughly a hundred
-seconds of OCR against a twenty-five second per-step budget. So the work runs
-out of band and a step reads a stored result instead of waiting for one, and
-that arrangement needs exactly one thing from this library - a key that is the
-same for the same content under the same conditions, and different when the
-answer would be.
-
-What is stored under the key, where, for how long, and what a miss renders in
-front of an agent are all the caller's. This module is the contract between the
-two halves and it is deliberately the whole of it - two names: the key, which
-decides where an answer lives, and the capability fingerprint, which decides
-whether a stored *failure* still describes this deployment.
-
-It sits in models beside the converter it describes, because the knowledge sync
-keys the same conversions from an image that installs no server package.
-"""
+"""The key a conversion is cached under. The cache itself belongs to the caller."""
 
 from __future__ import annotations
 
@@ -49,27 +32,7 @@ def conversion_cache_key(
     backends: tuple[ConverterBackend, ...] | None = None,
     available: str | None = None,
 ) -> str:
-    """Return the cache key for converting this content under these conditions.
-
-    Content decides most of it. The rest is what would change the answer for
-    identical content: the contract version, the options, and **which
-    converters are installed**.
-
-    That last one is the decision worth stating. Installing Docling turns every
-    zero-character PNG into 552 characters of OCR, so a key that ignored
-    availability would go on serving the empty answer forever, on the corpus
-    where five of six files depend on it. Converter *versions* are deliberately
-    excluded: a point upgrade would retire every entry at once and re-OCR the
-    whole corpus at twenty seconds a file, which buys a marginally better
-    extraction at the cost of the thing the cache exists to prevent. Bump
-    :data:`CONVERSION_CONTRACT_VERSION` on the day an upgrade is worth that.
-
-    The key carries no content and no filename. It is a hash of a hash and a
-    handful of settings, so it is safe in a log line and safe in a URL.
-
-    A caller keying a whole corpus in one process can probe once and pass the
-    result as ``available`` rather than paying a spec lookup per document.
-    """
+    """Return the cache key for converting this content under these conditions."""
     probed = available_backends(backends) if available is None else available
     fingerprint = "|".join(
         (
@@ -89,29 +52,7 @@ def conversion_cache_key(
 def installed_capability_fingerprint(
     backends: tuple[ConverterBackend, ...] | None = None,
 ) -> str:
-    """Name the installed capability set, finely enough for a failure to cite.
-
-    The key above already folds in which backends report ``available()``, so a
-    whole converter appearing rotates every key and the stale rows are simply
-    never found again. What the key cannot see is a capability arriving
-    *inside* an installed backend: MarkItDown without its pptx extra answers
-    ``available()`` identically before and after the rebuild that adds it, the
-    key holds still, and a failure stored as ``ocr_converter_absent`` keeps
-    answering for a deck the deployment can now read. That happened to a real
-    deck and took a hand-written DELETE to clear.
-
-    So the fingerprint is the key's availability list plus the per-format
-    support modules, and it rides on the stored row rather than in the key. In
-    the key it would rotate every *successful* conversion too, re-running OCR
-    on a corpus the new extra cannot have changed; on the row it retires
-    exactly the verdicts the change could overturn - the caller treats a
-    failed row bearing a different fingerprint as a miss, and everything else
-    stands.
-
-    Stored readable rather than hashed, because the question it answers - what
-    was installed when this verdict was written - is one an operator asks
-    while staring at a failed row in ``psql``.
-    """
+    """Name the installed capability set, finely enough for a failure to cite."""
     return "|".join(
         (
             f"v{CONVERSION_CONTRACT_VERSION}",

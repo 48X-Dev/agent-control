@@ -1,25 +1,4 @@
-"""Files attached to a session, and their wire models.
-
-Agent Control stores the bytes and owns their retention. What it deliberately
-does not do is open them: nothing in this package parses a document, and the
-only thing read out of an uploaded file here is its first sixteen bytes.
-
-Three things run through every model below.
-
-**The bytes are never on the wire in a metadata response.** An attachment is
-described by a name, a length and two hashes. Downloading it is a separate
-route that streams, forces a download, and is authorized as session content.
-
-**The declared type is advisory.** ``declared_mime`` is whatever the client's
-form part said; ``sniffed_mime`` is what the first bytes actually are, and it is
-the one the accept gate uses. Both ride the response so a caller can see the
-disagreement rather than having it silently resolved.
-
-**A deleted attachment leaves a tombstone rather than a hole.** The bytes go and
-the row stays, carrying name, hashes, size and origin, because a transcript that
-can no longer answer "what documents did this conversation see" is worse than
-one that answers "this one, and its bytes were reclaimed on such a date".
-"""
+"""Files attached to a session, and their wire models."""
 
 from __future__ import annotations
 
@@ -73,18 +52,7 @@ AttachmentKey = Annotated[
 
 
 class AttachmentStatus(StrEnum):
-    """Where one attachment is in its life.
-
-    ``converting`` is reachable only by a deployment running the converter
-    sidecar, which is a later phase. It is in the enum now because a status
-    value added later means a migration and a client release; an unreached one
-    costs nothing.
-
-    ``tombstoned`` is not a soft delete. The metadata row survives on purpose
-    and the bytes are gone: a 20MB ``bytea`` behind a ``deleted_at`` would be
-    worse than no history, and a 300-byte tombstone is the record anyone
-    investigating an injection will want.
-    """
+    """Where one attachment is in its life."""
 
     PENDING = "pending"
     CONVERTING = "converting"
@@ -95,26 +63,14 @@ class AttachmentStatus(StrEnum):
 
 
 class AttachmentOrigin(StrEnum):
-    """Who put this file in the conversation.
-
-    Not a heuristic and not derived from anything the file says about itself.
-    An operator upload is written by the route the operator called; anything
-    fetched from a tracker is written by the fetch path. The difference decides
-    whether the file is delivered at all, so it must not be inferable from
-    content.
-    """
+    """Who put this file in the conversation."""
 
     OPERATOR_UPLOAD = "operator_upload"
     LINEAR = "linear"
 
 
 class AttachmentVariant(StrEnum):
-    """Which artifact of one attachment a blob row holds.
-
-    ``original`` is what was uploaded. The other two are produced by the
-    converter and are unreachable until it exists; they are named here so the
-    unique constraint on ``(attachment, variant)`` is settled once.
-    """
+    """Which artifact of one attachment a blob row holds."""
 
     ORIGINAL = "original"
     DELIVERED_PDF = "delivered_pdf"
@@ -122,13 +78,7 @@ class AttachmentVariant(StrEnum):
 
 
 class TurnAttachmentVerdict(StrEnum):
-    """What happened to one attachment on one turn.
-
-    The verdict is a fact about one evaluation at one moment, which is why it
-    lives on the turn binding rather than on the file. Controls change between
-    turns: a ``blocked`` marker on the attachment itself would leave a row
-    permanently condemned by a control that may no longer exist.
-    """
+    """What happened to one attachment on one turn."""
 
     PENDING = "pending"
     SENT = "sent"
@@ -155,9 +105,7 @@ class Attachment(BaseModel):
             "name to render."
         ),
     )
-    declared_mime: str = Field(
-        ..., description="What the upload claimed. Advisory, never trusted."
-    )
+    declared_mime: str = Field(..., description="What the upload claimed. Advisory, never trusted.")
     sniffed_mime: str = Field(
         ..., description="What the first bytes actually are. This is what the gate used."
     )
@@ -176,9 +124,7 @@ class Attachment(BaseModel):
     delivered_mime: str | None = None
     delivered_size_bytes: int | None = None
     status: AttachmentStatus
-    failure_code: str | None = Field(
-        default=None, max_length=ATTACHMENT_FAILURE_CODE_MAX_LENGTH
-    )
+    failure_code: str | None = Field(default=None, max_length=ATTACHMENT_FAILURE_CODE_MAX_LENGTH)
     page_count: int | None = Field(
         default=None,
         description=(
@@ -260,14 +206,7 @@ class DeleteAttachmentResponse(BaseModel):
 
 
 class AttachmentRefusalCode(StrEnum):
-    """Why one file the step found is not in front of the agent.
-
-    Every value maps to one hand-written sentence in the dispatcher's envelope.
-    The code is server-authored and the sentence is server-authored; nothing
-    upstream writes either, because a parser's or a tracker's own words about a
-    file are attacker-influenced text arriving through the channel the whole
-    attachment design is guarding.
-    """
+    """Why one file the step found is not in front of the agent."""
 
     UNSUPPORTED_TYPE = "unsupported_type"
     TOO_LARGE = "too_large"
@@ -291,32 +230,16 @@ class AttachmentRefusalCode(StrEnum):
 
 
 class StepAttachmentSummary(BaseModel):
-    """What one dispatch step actually carried, kept on the step row.
-
-    The durable record. It survives the session, and it survives the blob TTL
-    that reclaims the bytes, which is what still answers "did this step have
-    the spec" a week later. No bytes, no text, no URL.
-
-    **A file that never arrived gets a row here too**, carrying its refusal and
-    nothing else. Recording only the deliveries would leave the audit trail
-    saying the same thing an under-delivering step says to an agent - that
-    there was nothing to deliver - which is the failure this whole path exists
-    to prevent. So ``sha256``, ``size_bytes`` and ``sniffed_mime`` are optional:
-    they are facts about stored bytes, and a refusal has none.
-    """
+    """What one dispatch step actually carried, kept on the step row."""
 
     display_name: str = Field(..., max_length=ATTACHMENT_DISPLAY_NAME_MAX_LENGTH)
     sha256: str | None = None
     size_bytes: int | None = None
     sniffed_mime: str | None = None
     origin: AttachmentOrigin
-    origin_ref: str | None = Field(
-        default=None, max_length=ATTACHMENT_ORIGIN_REF_MAX_LENGTH
-    )
+    origin_ref: str | None = Field(default=None, max_length=ATTACHMENT_ORIGIN_REF_MAX_LENGTH)
     verdict: TurnAttachmentVerdict
-    failure_code: str | None = Field(
-        default=None, max_length=ATTACHMENT_FAILURE_CODE_MAX_LENGTH
-    )
+    failure_code: str | None = Field(default=None, max_length=ATTACHMENT_FAILURE_CODE_MAX_LENGTH)
     attachment_key: AttachmentKey | None = Field(
         default=None,
         description=(
@@ -347,26 +270,7 @@ class StepAttachmentSummary(BaseModel):
 
 
 class StepFilesSummary(BaseModel):
-    """Distinct files found on one issue against the ones actually delivered.
-
-    ``found`` is the count of distinct upload URLs the discovery sweep saw, and
-    it is deliberately not ``len(files)``: a per-issue cap means the step may
-    never attempt most of them, and an envelope that said "1 of 1" about an
-    issue carrying twelve would be the confident half-answer the count line
-    exists to stop. ``files`` holds the ones this step attempted, delivered or
-    refused, bounded by that cap.
-
-    ``delivered`` counts files whose text is actually in the turn message, not
-    files that were stored. The two differ, and the count line is the one
-    sentence this whole path asks an agent to rely on.
-
-    ``read_failed`` is the third state, and it is the reason this model does
-    not simply collapse a failure to zero. A tracker that was down and an issue
-    with nothing attached both produce ``found == 0``, and telling an agent
-    positively that no files are attached when nobody could look is strictly
-    worse than the silence it replaces: it is a server-authored sentence
-    backing the wrong conclusion.
-    """
+    """Distinct files found on one issue against the ones actually delivered."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -376,7 +280,6 @@ class StepFilesSummary(BaseModel):
     read_failed: bool = Field(
         default=False,
         description=(
-            "The issue's files could not be listed at all. Distinct from an "
-            "issue that has none."
+            "The issue's files could not be listed at all. Distinct from an issue that has none."
         ),
     )

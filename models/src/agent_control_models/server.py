@@ -45,11 +45,7 @@ _RAW_CONTROL_INPUT_FIELDS = _RAW_CONTROL_INPUT_FIELDS.union(
 
 
 def _parse_control_input(v: Any) -> Any:
-    """Discriminate raw control inputs from template-backed inputs.
-
-    A non-null ``template`` key means template-backed input and must be parsed
-    strictly as ``TemplateControlInput`` so mixed payloads are rejected.
-    """
+    """Discriminate raw control inputs from template-backed inputs."""
     if isinstance(v, (ControlDefinition, TemplateControlInput)):
         return v
     if not isinstance(v, dict):
@@ -85,11 +81,7 @@ ControlInput = Annotated[
 
 
 class EvaluatorSchema(BaseModel):
-    """Schema for a custom evaluator registered with an agent.
-
-    Custom evaluators are Evaluator classes deployed with the engine.
-    This schema is registered via initAgent for validation and UI purposes.
-    """
+    """Schema for a custom evaluator registered with an agent."""
 
     name: str = Field(..., min_length=1, max_length=255, description="Unique evaluator name")
     config_schema: dict[str, Any] = Field(
@@ -100,11 +92,7 @@ class EvaluatorSchema(BaseModel):
 
 
 class ConflictMode(StrEnum):
-    """Conflict handling mode for initAgent registration updates.
-
-    STRICT preserves compatibility checks and raises conflicts on incompatible changes.
-    OVERWRITE applies latest-init-wins replacement for steps and evaluators.
-    """
+    """Conflict handling mode for initAgent registration updates."""
 
     STRICT = "strict"
     OVERWRITE = "overwrite"
@@ -131,9 +119,7 @@ class InitAgentEvaluatorRemoval(BaseModel):
 class InitAgentOverwriteChanges(BaseModel):
     """Detailed change summary for initAgent overwrite mode."""
 
-    metadata_changed: bool = Field(
-        default=False, description="Whether agent metadata changed"
-    )
+    metadata_changed: bool = Field(default=False, description="Whether agent metadata changed")
     steps_added: list["StepKey"] = Field(
         default_factory=list,
         description="Steps added by overwrite",
@@ -208,9 +194,7 @@ class InitAgentRequest(BaseModel):
             "'overwrite' applies latest-init-wins replacement for steps and evaluators."
         ),
     )
-    target_type: Annotated[
-        str | None, StringConstraints(min_length=1, max_length=255)
-    ] = Field(
+    target_type: Annotated[str | None, StringConstraints(min_length=1, max_length=255)] = Field(
         default=None,
         description=(
             "Optional opaque target kind. When supplied with target_id, the "
@@ -219,22 +203,15 @@ class InitAgentRequest(BaseModel):
             "policy-derived controls."
         ),
     )
-    target_id: Annotated[
-        str | None, StringConstraints(min_length=1, max_length=255)
-    ] = Field(
+    target_id: Annotated[str | None, StringConstraints(min_length=1, max_length=255)] = Field(
         default=None,
-        description=(
-            "Optional opaque target identifier. Required when target_type is "
-            "supplied."
-        ),
+        description=("Optional opaque target identifier. Required when target_type is supplied."),
     )
 
     @model_validator(mode="after")
     def _check_target_pair(self) -> Self:
         if (self.target_type is None) != (self.target_id is None):
-            raise ValueError(
-                "target_type and target_id must be supplied together."
-            )
+            raise ValueError("target_type and target_id must be supplied together.")
         return self
 
     model_config = {
@@ -272,9 +249,8 @@ class InitAgentRequest(BaseModel):
 
 class InitAgentResponse(BaseModel):
     """Response from agent initialization."""
-    created: bool = Field(
-        ..., description="True if agent was newly created, False if updated"
-    )
+
+    created: bool = Field(..., description="True if agent was newly created, False if updated")
     controls: list[Control] = Field(
         default_factory=list,
         description="Active protection controls for the agent",
@@ -291,6 +267,7 @@ class InitAgentResponse(BaseModel):
 
 class GetAgentResponse(BaseModel):
     """Response containing agent details and registered steps."""
+
     agent: Agent = Field(..., description="Agent metadata")
     steps: list[StepSchema] = Field(..., description="Steps registered with this agent")
     evaluators: list[EvaluatorSchema] = Field(
@@ -362,9 +339,7 @@ class GetControlResponse(BaseModel):
 class GetPolicyControlsResponse(BaseModel):
     """Response containing control IDs associated with a policy."""
 
-    control_ids: list[int] = Field(
-        description="List of control IDs associated with the policy"
-    )
+    control_ids: list[int] = Field(description="List of control IDs associated with the policy")
 
 
 class AssocResponse(BaseModel):
@@ -401,6 +376,7 @@ class GetControlSchemaResponse(BaseModel):
 
 class SetControlDataRequest(BaseModel):
     """Request to update control configuration data."""
+
     data: ControlInput = Field(
         ...,
         description="Control configuration data (replaces existing)",
@@ -484,9 +460,7 @@ class AgentSummary(BaseModel):
     created_at: str | None = Field(None, description="ISO 8601 timestamp when agent was created")
     step_count: int = Field(0, description="Number of steps registered with the agent")
     evaluator_count: int = Field(0, description="Number of evaluators registered with the agent")
-    active_controls_count: int = Field(
-        0, description="Number of active controls for this agent"
-    )
+    active_controls_count: int = Field(0, description="Number of active controls for this agent")
 
 
 class PaginationInfo(BaseModel):
@@ -589,9 +563,7 @@ class ControlSummary(BaseModel):
     )
     used_by_agent: AgentRef | None = Field(None, description="Agent using this control")
     # TODO: Follow-up with full `used_by_agents` list for richer attribution.
-    used_by_agents_count: int = Field(
-        0, description="Number of unique agents using this control"
-    )
+    used_by_agents_count: int = Field(0, description="Number of unique agents using this control")
     attachments: ControlAttachments | None = Field(
         None,
         description=(
@@ -746,9 +718,7 @@ class CreateControlBindingRequest(BaseModel):
     target_id: ControlBindingTargetField = Field(
         ..., description="Opaque external identifier within the target_type."
     )
-    control_id: int = Field(
-        ..., gt=0, description="ID of the control to attach."
-    )
+    control_id: int = Field(..., gt=0, description="ID of the control to attach.")
     enabled: bool = Field(
         default=True,
         description=(
@@ -807,25 +777,14 @@ class DeleteControlBindingResponse(BaseModel):
 
 
 class UpsertControlBindingRequest(BaseModel):
-    """Request to attach (or update) a control binding by natural key.
+    """Request to attach (or update) a control binding by natural key."""
 
-    Idempotent: an existing binding with the same
-    ``(target_type, target_id, control_id)`` is updated in-place;
-    otherwise a new binding is created.
-    """
-
-    target_type: ControlBindingTargetField = Field(
-        ..., description="Opaque attachment kind."
-    )
+    target_type: ControlBindingTargetField = Field(..., description="Opaque attachment kind.")
     target_id: ControlBindingTargetField = Field(
         ..., description="Opaque external identifier within the target_type."
     )
-    control_id: int = Field(
-        ..., gt=0, description="ID of the control to attach."
-    )
-    enabled: bool = Field(
-        default=True, description="Whether the binding is active."
-    )
+    control_id: int = Field(..., gt=0, description="ID of the control to attach.")
+    enabled: bool = Field(default=True, description="Whether the binding is active.")
 
 
 class UpsertControlBindingResponse(BaseModel):
@@ -845,15 +804,11 @@ class UpsertControlBindingResponse(BaseModel):
 class PatchControlBindingByKeyRequest(BaseModel):
     """Request to update an existing control binding by natural key."""
 
-    target_type: ControlBindingTargetField = Field(
-        ..., description="Opaque attachment kind."
-    )
+    target_type: ControlBindingTargetField = Field(..., description="Opaque attachment kind.")
     target_id: ControlBindingTargetField = Field(
         ..., description="Opaque external identifier within the target_type."
     )
-    control_id: int = Field(
-        ..., gt=0, description="ID of the bound control."
-    )
+    control_id: int = Field(..., gt=0, description="ID of the bound control.")
     enabled: bool = Field(..., description="New enabled value for the binding.")
 
 
@@ -870,8 +825,5 @@ class DeleteControlBindingByKeyResponse(BaseModel):
 
     deleted: bool = Field(
         ...,
-        description=(
-            "True when a binding was deleted; False when no matching "
-            "binding existed."
-        ),
+        description=("True when a binding was deleted; False when no matching binding existed."),
     )

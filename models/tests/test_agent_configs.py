@@ -284,9 +284,10 @@ class TestOtherRequestShapes:
     def test_clear_requires_a_concurrency_token(self) -> None:
         with pytest.raises(ValidationError):
             ClearAgentConfigFieldRequest.model_validate({})
-        assert ClearAgentConfigFieldRequest.model_validate(
-            {"expected_version": 4}
-        ).expected_version == 4
+        assert (
+            ClearAgentConfigFieldRequest.model_validate({"expected_version": 4}).expected_version
+            == 4
+        )
 
     def test_the_enable_toggle_carries_the_flag_and_the_token(self) -> None:
         request = SetPromptEnabledRequest.model_validate(
@@ -339,9 +340,7 @@ class TestResponses:
         }
         response = GetAgentConfigResponse.model_validate(payload)
         assert response.delivery_state == DeliveryState.ACTIVE
-        assert GetAgentConfigResponse.model_validate(
-            response.model_dump(mode="json")
-        ) == response
+        assert GetAgentConfigResponse.model_validate(response.model_dump(mode="json")) == response
 
     def test_a_delisted_model_reads_as_not_allowed_with_no_provider(self) -> None:
         """The stored id survives; only its resolution changes.

@@ -1,4 +1,5 @@
 """Evaluation-related models."""
+
 from typing import Annotated, Literal, Self
 
 from pydantic import Field, StringConstraints, field_validator, model_validator
@@ -14,35 +15,16 @@ _TARGET_FIELD = Annotated[
 
 
 class EvaluationRequest(BaseModel):
-    """
-    Request model for evaluation analysis.
+    """Request model for evaluation analysis."""
 
-    Used to analyze agent interactions for safety violations,
-    policy compliance, and control rules.
-
-    Attributes:
-        agent_name: Unique identifier of the agent making the request
-        step: Step payload for evaluation
-        stage: 'pre' (before execution) or 'post' (after execution)
-        target_type: Optional opaque target kind. When set together with
-            ``target_id``, the server merges controls bound to that target
-            into the effective set, in addition to the agent's direct and
-            policy-derived controls.
-        target_id: Optional opaque target identifier. Required when
-            ``target_type`` is set.
-    """
     agent_name: str = Field(
         ...,
         min_length=AGENT_NAME_MIN_LENGTH,
         pattern=AGENT_NAME_PATTERN,
         description="Identifier of the agent making the evaluation request",
     )
-    step: Step = Field(
-        ..., description="Agent step payload to evaluate"
-    )
-    stage: Literal["pre", "post"] = Field(
-        ..., description="Evaluation stage: 'pre' or 'post'"
-    )
+    step: Step = Field(..., description="Agent step payload to evaluate")
+    stage: Literal["pre", "post"] = Field(..., description="Evaluation stage: 'pre' or 'post'")
     target_type: _TARGET_FIELD = Field(
         default=None,
         description=(
@@ -54,18 +36,13 @@ class EvaluationRequest(BaseModel):
     )
     target_id: _TARGET_FIELD = Field(
         default=None,
-        description=(
-            "Optional opaque target identifier. Required when target_type "
-            "is set."
-        ),
+        description=("Optional opaque target identifier. Required when target_type is set."),
     )
 
     @model_validator(mode="after")
     def _check_target_pair(self) -> Self:
         if (self.target_type is None) != (self.target_id is None):
-            raise ValueError(
-                "target_type and target_id must be supplied together."
-            )
+            raise ValueError("target_type and target_id must be supplied together.")
         return self
 
     model_config = {
@@ -79,7 +56,7 @@ class EvaluationRequest(BaseModel):
                         "input": "What is the customer's credit card number?",
                         "context": {"user_id": "user123", "session_id": "abc123"},
                     },
-                    "stage": "pre"
+                    "stage": "pre",
                 },
                 {
                     "agent_name": "customer-service-bot",
@@ -90,7 +67,7 @@ class EvaluationRequest(BaseModel):
                         "output": "I cannot share sensitive payment information.",
                         "context": {"user_id": "user123", "session_id": "abc123"},
                     },
-                    "stage": "post"
+                    "stage": "post",
                 },
                 {
                     "agent_name": "customer-service-bot",
@@ -100,7 +77,7 @@ class EvaluationRequest(BaseModel):
                         "input": {"query": "SELECT * FROM users"},
                         "context": {"user_id": "user123"},
                     },
-                    "stage": "pre"
+                    "stage": "pre",
                 },
                 {
                     "agent_name": "customer-service-bot",
@@ -111,8 +88,8 @@ class EvaluationRequest(BaseModel):
                         "output": {"results": []},
                         "context": {"user_id": "user123"},
                     },
-                    "stage": "post"
-                }
+                    "stage": "post",
+                },
             ]
         }
     }
@@ -124,20 +101,7 @@ class EvaluationRequest(BaseModel):
 
 
 class EvaluationResponse(BaseModel):
-    """
-    Response model from evaluation analysis (server-side).
-
-    This is what the server returns. The SDK may transform this
-    into an EvaluationResult for client convenience.
-
-    Attributes:
-        is_safe: Whether the content is considered safe
-        confidence: Confidence score between 0.0 and 1.0
-        reason: Optional explanation for the decision
-        matches: List of controls that matched/triggered (if any)
-        errors: List of controls that failed during evaluation (if any)
-        non_matches: List of controls that were evaluated but did not match (if any)
-    """
+    """Response model from evaluation analysis (server-side)."""
 
     is_safe: bool = Field(..., description="Whether content is safe")
     confidence: float = Field(
@@ -162,42 +126,21 @@ class EvaluationResponse(BaseModel):
         default=None,
         description="List of controls that were evaluated but did not match (if any)",
     )
-class EvaluationResult(EvaluationResponse):
-    """
-    Client-side result model for evaluation analysis.
 
-    Extends EvaluationResponse with additional client-side convenience methods.
-    This is what SDK users interact with.
-    """
+
+class EvaluationResult(EvaluationResponse):
+    """Client-side result model for evaluation analysis."""
 
     def is_confident(self, threshold: float = 0.8) -> bool:
-        """
-        Check if the result confidence exceeds a threshold.
-
-        Args:
-            threshold: Minimum confidence threshold (default: 0.8)
-
-        Returns:
-            True if confidence >= threshold
-        """
+        """Check if the result confidence exceeds a threshold."""
         return self.confidence >= threshold
 
     def __bool__(self) -> bool:
-        """
-        Allow boolean evaluation of result.
-
-        Returns:
-            True if content is safe, False otherwise
-        """
+        """Allow boolean evaluation of result."""
         return self.is_safe
 
     def __str__(self) -> str:
-        """
-        String representation of the result.
-
-        Returns:
-            Human-readable description
-        """
+        """String representation of the result."""
         status = "SAFE" if self.is_safe else "UNSAFE"
         conf_pct = int(self.confidence * 100)
         base = f"[{status}] Confidence: {conf_pct}%"

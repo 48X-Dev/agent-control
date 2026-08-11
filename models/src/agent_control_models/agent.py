@@ -1,4 +1,5 @@
 """Agent entity and step models."""
+
 from __future__ import annotations
 
 import re
@@ -24,23 +25,15 @@ def normalize_agent_name(value: str) -> str:
     """Normalize and validate an agent identifier."""
     normalized = value.strip().lower()
     if len(normalized) < AGENT_NAME_MIN_LENGTH:
-        raise ValueError(
-            f"agent_name must be at least {AGENT_NAME_MIN_LENGTH} characters long"
-        )
+        raise ValueError(f"agent_name must be at least {AGENT_NAME_MIN_LENGTH} characters long")
     if not _AGENT_NAME_REGEX.fullmatch(normalized):
-        raise ValueError(
-            "agent_name may only contain lowercase letters, digits, ':', '_' or '-'"
-        )
+        raise ValueError("agent_name may only contain lowercase letters, digits, ':', '_' or '-'")
     return normalized
 
 
 class Agent(BaseModel):
-    """
-    Agent metadata for registration and tracking.
+    """Agent metadata for registration and tracking."""
 
-    An agent represents an AI system that can be protected and monitored.
-    Each agent has a unique immutable name and can have multiple steps registered with it.
-    """
     agent_name: str = Field(
         ...,
         min_length=AGENT_NAME_MIN_LENGTH,
@@ -56,9 +49,7 @@ class Agent(BaseModel):
     agent_updated_at: str | None = Field(
         None, description="ISO 8601 timestamp when agent was last updated"
     )
-    agent_version: str | None = Field(
-        None, description="Semantic version string (e.g. '1.0.0')"
-    )
+    agent_version: str | None = Field(None, description="Semantic version string (e.g. '1.0.0')")
     agent_metadata: dict[str, Any] | None = Field(
         None, description="Free-form metadata dictionary for custom properties"
     )
@@ -70,7 +61,7 @@ class Agent(BaseModel):
                     "agent_name": "customer-service-bot",
                     "agent_description": "Handles customer inquiries and support tickets",
                     "agent_version": "1.0.0",
-                    "agent_metadata": {"team": "support", "environment": "production"}
+                    "agent_metadata": {"team": "support", "environment": "production"},
                 }
             ]
         }
@@ -91,9 +82,7 @@ class StepSchema(BaseModel):
         description="Step type for this schema (e.g., 'tool', 'llm')",
     )
     name: str = Field(..., description="Unique name for the step", min_length=1)
-    description: str | None = Field(
-        None, description="Optional description of the step"
-    )
+    description: str | None = Field(None, description="Optional description of the step")
     input_schema: dict[str, Any] | None = Field(
         default=None, description="JSON schema describing step input"
     )
@@ -111,20 +100,14 @@ class StepSchema(BaseModel):
                     "type": "tool",
                     "name": "search_knowledge_base",
                     "description": "Search the internal knowledge base",
-                    "input_schema": {
-                        "query": {"type": "string", "description": "Search query"}
-                    },
-                    "output_schema": {
-                        "results": {"type": "array", "items": {"type": "object"}}
-                    },
+                    "input_schema": {"query": {"type": "string", "description": "Search query"}},
+                    "output_schema": {"results": {"type": "array", "items": {"type": "object"}}},
                 },
                 {
                     "type": "llm",
                     "name": "support-answer",
                     "description": "Customer support response generation",
-                    "input_schema": {
-                        "messages": {"type": "array", "items": {"type": "object"}}
-                    },
+                    "input_schema": {"messages": {"type": "array", "items": {"type": "object"}}},
                     "output_schema": {"text": {"type": "string"}},
                 },
             ]
@@ -147,12 +130,8 @@ class Step(BaseModel):
         min_length=1,
         description="Step type (e.g., 'tool', 'llm')",
     )
-    name: str = Field(
-        ..., min_length=1, description="Step name (tool name or model/chain id)"
-    )
-    input: JSONValue = Field(
-        ..., description="Input content for this step"
-    )
+    name: str = Field(..., min_length=1, description="Step name (tool name or model/chain id)")
+    input: JSONValue = Field(..., description="Input content for this step")
     output: JSONValue | None = Field(
         None, description="Output content for this step (None for pre-checks)"
     )

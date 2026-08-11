@@ -97,9 +97,7 @@ def test_the_response_wrappers_forbid_unknown_fields() -> None:
 
 
 def test_a_list_response_carries_the_totals_the_quotas_count() -> None:
-    response = ListAttachmentsResponse(
-        attachments=[_attachment()], count=1, total_bytes=2411903
-    )
+    response = ListAttachmentsResponse(attachments=[_attachment()], count=1, total_bytes=2411903)
 
     assert response.model_dump()["total_bytes"] == 2411903
 

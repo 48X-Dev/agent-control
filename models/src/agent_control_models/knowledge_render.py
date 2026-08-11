@@ -1,25 +1,4 @@
-"""How a corpus snippet is presented to a model, and defused on the way.
-
-Shared by the server and the SDK for ``files.py``'s reason. The server
-neutralizes every field before the response leaves the endpoint, and the tool
-renders those fields into the fenced block a model reads; two implementations
-of "what is inert" would let the two disagree about the same document, which is
-the disagreement an attacker is looking for.
-
-Two rules run through everything here.
-
-**Every sentence a model reads is a hand-written constant.** No Postgres error
-text, no HTTP body, no exception string. ``attachment_delivery._REASONS`` set
-this discipline and the reason is unchanged: a parser's own words about a
-document it could not read are attacker-influenced text arriving through the
-one channel this whole design guards.
-
-**Neutralization covers every rendered field, not just the body.** A filename
-is chosen by whoever names the file and a heading by whoever writes the
-document, and both land inside the one-line fence header. A name that could
-forge a header would put the rest of a document outside the warning, in the
-position the operator's own words occupy.
-"""
+"""How a corpus snippet is presented to a model, and defused on the way."""
 
 from __future__ import annotations
 
@@ -100,28 +79,14 @@ _UNKNOWN_REFUSAL = (
 
 
 def neutralize(text: str) -> str:
-    """Defuse the knowledge fence and the transcript marker in text we did not write.
-
-    Deliberately not the dispatcher's ``<<<TASK_...>>>`` and ``<<<REPORT_...>>>``
-    fences. Each fence is neutralized by the process that authors it, and the
-    dispatcher's extraction covers an agent's whole reply uniformly at the
-    hand-off, whatever tool produced it (plan 3.2). A snippet quoting
-    ``<<<REPORT_END>>>`` therefore travels intact through this turn and is
-    defused where it crosses a chain boundary, which is the correct place.
-    """
+    """Defuse the knowledge fence and the transcript marker in text we did not write."""
 
     defused = _FENCE_RE.sub(lambda m: m.group(0)[:-1] + _NEUTRAL_HYPHEN, text)
-    return _MARKER_RE.sub(
-        lambda m: m.group(0)[:6] + _NEUTRAL_HYPHEN + m.group(0)[7:], defused
-    )
+    return _MARKER_RE.sub(lambda m: m.group(0)[:6] + _NEUTRAL_HYPHEN + m.group(0)[7:], defused)
 
 
 def neutralize_header_field(value: str | None) -> str | None:
-    """Neutralize one header field and flatten it onto a single line.
-
-    Whitespace collapses before the cap so a name padded with newlines cannot
-    spend the whole budget on nothing and push the closing marker out of view.
-    """
+    """Neutralize one header field and flatten it onto a single line."""
 
     if value is None:
         return None
@@ -150,13 +115,7 @@ def refusal_sentence(code: str | None, *, retry_after_seconds: int | None = None
 
 
 def empty_sentence(corpus: Mapping[str, Any] | None) -> str:
-    """What "nothing matched" says, which is not what "could not look" says.
-
-    A gap is a finding. The sentence names the size of the base it searched so
-    a model can tell an empty corpus from an unlucky query, and tells it to
-    report the miss rather than fill it in - which is the researcher persona's
-    existing instruction, deliberately repeated here.
-    """
+    """What "nothing matched" says, which is not what "could not look" says."""
 
     facts = corpus or {}
     documents = int(facts.get("documents") or 0)
@@ -172,12 +131,7 @@ def empty_sentence(corpus: Mapping[str, Any] | None) -> str:
 
 
 def staleness_sentence(stale_seconds: int | None, *, warn_after_seconds: int) -> str:
-    """Say the mirror's age when it is large enough to change an answer.
-
-    Silence below the threshold on purpose: a sentence about freshness on every
-    single result teaches a model to skip the preamble, and the sentence is
-    only worth reading when it is true enough to matter.
-    """
+    """Say the mirror's age when it is large enough to change an answer."""
 
     if stale_seconds is None or stale_seconds < warn_after_seconds:
         return ""
@@ -191,15 +145,7 @@ def staleness_sentence(stale_seconds: int | None, *, warn_after_seconds: int) ->
 
 
 def render_results(results: Sequence[Mapping[str, Any]]) -> str:
-    """Lay the results out as fenced blocks, each numbered and attributed.
-
-    The header carries the citation a human can check in one click: the
-    document's path, the heading path inside it, when it changed and when the
-    mirror last saw it. Fields arrive already neutralized from the server and
-    are neutralized again here, because this function is also what the MCP
-    surface and a local script would call, and the second pass on inert text
-    costs nothing.
-    """
+    """Lay the results out as fenced blocks, each numbered and attributed."""
 
     blocks: list[str] = []
     for position, row in enumerate(results, start=1):
@@ -224,12 +170,7 @@ def _header(position: int, row: Mapping[str, Any]) -> str:
 
 
 def _date(value: Any) -> str | None:
-    """The date half of an ISO timestamp, or None.
-
-    Dates rather than timestamps: the header is one line, a model reasons about
-    "last week" and not about seconds, and the full instant is in the
-    structured field for anything that needs it.
-    """
+    """The date half of an ISO timestamp, or None."""
 
     if value is None:
         return None

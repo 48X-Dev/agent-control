@@ -118,15 +118,14 @@ def test_an_acknowledgement_list_is_bounded() -> None:
     """The server resolves one row per entry inside a transaction holding the
     session lock, so an unbounded list is an unbounded number of queries under
     a lock every model boundary needs."""
-    acks = [NudgeAck(id=index, outcome=NudgeAckOutcome.RELEASED) for index in range(
-        MAX_ACKS_PER_REQUEST
-    )]
+    acks = [
+        NudgeAck(id=index, outcome=NudgeAckOutcome.RELEASED)
+        for index in range(MAX_ACKS_PER_REQUEST)
+    ]
     assert len(AckNudgesRequest(acks=acks).acks) == MAX_ACKS_PER_REQUEST
 
     with pytest.raises(ValidationError):
-        AckNudgesRequest(
-            acks=[*acks, NudgeAck(id=99, outcome=NudgeAckOutcome.RELEASED)]
-        )
+        AckNudgesRequest(acks=[*acks, NudgeAck(id=99, outcome=NudgeAckOutcome.RELEASED)])
 
 
 @pytest.mark.parametrize(

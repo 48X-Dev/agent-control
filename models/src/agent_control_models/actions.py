@@ -17,16 +17,10 @@ _ACTION_QUERY_EXPANSION: dict[ActionDecision, tuple[str, ...]] = {
 
 
 def validate_action(action: str) -> ActionDecision:
-    """Validate that *action* is one of the canonical action values.
-
-    Use this on public API boundaries (control create/update, query filters)
-    where legacy values should be rejected.
-    """
+    """Validate that *action* is one of the canonical action values."""
     if action in _CANONICAL_ACTIONS:
         return cast(ActionDecision, action)
-    raise ValueError(
-        f"Invalid action {action!r}. Must be one of: deny, steer, observe."
-    )
+    raise ValueError(f"Invalid action {action!r}. Must be one of: deny, steer, observe.")
 
 
 def validate_action_list(actions: Sequence[str]) -> list[ActionDecision]:
@@ -43,18 +37,12 @@ def validate_action_list(actions: Sequence[str]) -> list[ActionDecision]:
 
 
 def normalize_action(action: str) -> ActionDecision:
-    """Normalize a stored or legacy action name to the canonical action.
-
-    Use this on internal read paths (deserializing DB rows, server responses)
-    where historical data may contain legacy values.
-    """
+    """Normalize a stored or legacy action name to the canonical action."""
     if action in _OBSERVE_ACTION_ALIASES:
         return "observe"
     if action in ("deny", "steer"):
         return cast(ActionDecision, action)
-    raise ValueError(
-        f"Invalid action {action!r}. Expected one of: deny, steer, observe."
-    )
+    raise ValueError(f"Invalid action {action!r}. Expected one of: deny, steer, observe.")
 
 
 def normalize_action_list(actions: Sequence[str]) -> list[ActionDecision]:
