@@ -1,0 +1,48 @@
+# Build context exclusions. This file MUST live at the repo root: every image
+# here builds from the root (they are uv workspace members), and Docker reads
+# .dockerignore only at the context root. ui/.dockerignore predates this and
+# never applied, which is why `COPY ui/ ./` shipped 817MB of node_modules.
+
+# Virtualenvs and node_modules: host-native binaries, wrong platform in-image,
+# and `COPY ui/ ./` would land them on top of the install the build just ran.
+.venv
+**/.venv
+**/node_modules
+
+.git
+.github
+.githooks
+
+# Tool caches
+**/__pycache__
+**/*.pyc
+.mypy_cache
+.pytest_cache
+.ruff_cache
+**/tsconfig.tsbuildinfo
+
+# Next.js build output. The image runs `pnpm build` itself; a host copy here
+# only masks whether that step works.
+ui/.next
+ui/out
+
+# Test artifacts
+ui/playwright
+ui/playwright-report
+ui/test-results
+**/.DS_Store
+**/*-debug.log*
+
+# Coverage
+.coverage
+coverage*.xml
+htmlcov
+
+# Secrets must never enter a layer.
+.env
+.env.*
+!.env.example
+
+dist
+docs
+examples
