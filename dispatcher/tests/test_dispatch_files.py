@@ -198,11 +198,7 @@ def test_a_tracker_that_could_not_be_listed_reaches_the_agent_as_a_warning() -> 
     """Not "no files are attached". The dispatcher renders whichever of the
     three states the server reported, and this one exists so a Linear outage
     cannot produce a confident wrong sentence."""
-    _run(
-        RecordingLedger(
-            StepFilesSummary(found=0, delivered=0, files=[], read_failed=True)
-        )
-    )
+    _run(RecordingLedger(StepFilesSummary(found=0, delivered=0, files=[], read_failed=True)))
     client: StubClient = _run.client  # type: ignore[attr-defined]
 
     assert "No files are attached to this issue." not in client.turns[0]

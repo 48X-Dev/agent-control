@@ -35,14 +35,11 @@ _TEAM_NOT_APPLICABLE = (
 )
 
 _EMPTY_MILESTONE_ID = (
-    "--source {prefix}<id> needs a milestone id. Read one from "
-    "GET /api/v1/teams/<team>/milestones."
+    "--source {prefix}<id> needs a milestone id. Read one from GET /api/v1/teams/<team>/milestones."
 )
 
 
-def build_source(
-    spec: str, *, team_slug: str | None, reader: MilestoneIssueReader
-) -> TaskSource:
+def build_source(spec: str, *, team_slug: str | None, reader: MilestoneIssueReader) -> TaskSource:
     """Build the source named by ``--source``."""
 
     if spec.startswith(SOURCE_PREFIX):
@@ -53,9 +50,7 @@ def build_source(
             raise SourceParseError(_MALFORMED_MILESTONE_ID.format(value=milestone_id))
         if not team_slug:
             raise SourceParseError(_TEAM_REQUIRED.format(spec=spec))
-        return LinearMilestoneSource(
-            reader=reader, milestone_id=milestone_id, team_slug=team_slug
-        )
+        return LinearMilestoneSource(reader=reader, milestone_id=milestone_id, team_slug=team_slug)
 
     if team_slug:
         raise SourceParseError(_TEAM_NOT_APPLICABLE)

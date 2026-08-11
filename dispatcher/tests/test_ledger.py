@@ -53,9 +53,7 @@ def test_the_transcript_and_trace_are_recorded_for_the_operator(tmp_path: Path) 
     with _ledger(tmp_path) as ledger:
         ledger.claim(source_kind="file", ref="t1", agent_name="a", dry_run=False)
         ledger.record_session(source_kind="file", ref="t1", session_key="sk")
-        ledger.finish(
-            source_kind="file", ref="t1", status=ClaimStatus.BLOCKED, turn_trace_id="tr"
-        )
+        ledger.finish(source_kind="file", ref="t1", status=ClaimStatus.BLOCKED, turn_trace_id="tr")
         claim = ledger.get(source_kind="file", ref="t1")
         assert claim is not None
         assert (claim.session_key, claim.turn_trace_id, claim.dry_run) == ("sk", "tr", False)

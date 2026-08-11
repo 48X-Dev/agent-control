@@ -60,8 +60,7 @@ def _issue(ref: str, *, minutes: int = 0, identifier: str = "OPS-1") -> Mileston
         description="Owner noted in request: Clive.",
         url=f"https://linear.app/acme/issue/{identifier}",
         created_at=dt.datetime(2026, 8, 1, 14, 56, tzinfo=dt.UTC),
-        updated_at=dt.datetime(2026, 8, 1, 15, 0, tzinfo=dt.UTC)
-        + dt.timedelta(minutes=minutes),
+        updated_at=dt.datetime(2026, 8, 1, 15, 0, tzinfo=dt.UTC) + dt.timedelta(minutes=minutes),
         creator_id="c087560f",
         creator_display_name="paul",
     )
@@ -110,9 +109,7 @@ def _digest(refs: list[str]) -> str:
 def _source(response: ListMilestoneIssuesResponse) -> tuple[LinearMilestoneSource, FakeReader]:
     reader = FakeReader(response)
     return (
-        LinearMilestoneSource(
-            reader=reader, milestone_id=MILESTONE, team_slug="operations"
-        ),
+        LinearMilestoneSource(reader=reader, milestone_id=MILESTONE, team_slug="operations"),
         reader,
     )
 
@@ -358,9 +355,7 @@ def test_an_issue_with_no_updated_at_still_sorts_rather_than_crashing() -> None:
 def test_a_naive_timestamp_does_not_crash_the_sort() -> None:
     """Linear sends UTC. A mixed page must not raise on the comparison anyway."""
 
-    naive = _issue("naive").model_copy(
-        update={"updated_at": dt.datetime(2026, 8, 1, 14, 0)}
-    )
+    naive = _issue("naive").model_copy(update={"updated_at": dt.datetime(2026, 8, 1, 14, 0)})
     source, _ = _source(_response(_issue("aware", minutes=5), naive))
 
     assert [item.ref for item in asyncio.run(source.poll(cursor=None))] == [
@@ -396,8 +391,6 @@ def test_the_linear_source_refuses_to_write_back() -> None:
     source, reader = _source(_response(_issue("a")))
 
     with pytest.raises(NotImplementedError):
-        asyncio.run(
-            source.write_back(item_ref="a", body="report", idempotency_marker="m")
-        )
+        asyncio.run(source.write_back(item_ref="a", body="report", idempotency_marker="m"))
 
     assert reader.calls == []

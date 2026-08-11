@@ -230,10 +230,7 @@ class FakeLedgerServer:
         status = request.url.params.get("status")
         self.queue_status_reads.append(status)
         tasks = (
-            [
-                _task_payload(task_key=key, source_ref=ref)
-                for ref, key in self.keys.items()
-            ]
+            [_task_payload(task_key=key, source_ref=ref) for ref, key in self.keys.items()]
             if status == "queued"
             else []
         )
@@ -401,8 +398,7 @@ async def test_a_lost_claim_is_reported_as_false_rather_than_raised() -> None:
     assert won is True
 
 
-async def test_a_fleet_stop_on_the_claim_is_raised_rather_than_reported_as_a_lost_race(
-) -> None:
+async def test_a_fleet_stop_on_the_claim_is_raised_rather_than_reported_as_a_lost_race() -> None:
     """A switch thrown mid-run is not "somebody else has this row".
 
     The claim gained two refusals that are about the *namespace* and not about
@@ -461,9 +457,7 @@ async def test_a_claim_body_carries_the_instance_and_nothing_else() -> None:
         ledger = ServerTaskLedger(client, instance_id="inst-a")
         await ledger.register(source_kind=SOURCE_KIND, items=_items("t1"), dry_run=True)
 
-        await ledger.claim(
-            source_kind=SOURCE_KIND, ref="t1", agent_name="a_agent", dry_run=False
-        )
+        await ledger.claim(source_kind=SOURCE_KIND, ref="t1", agent_name="a_agent", dry_run=False)
 
     claim_body = next(body for path, body in server.bodies if path.endswith("/claim"))
     assert claim_body == {"instance_id": "inst-a"}
@@ -485,9 +479,7 @@ async def test_the_session_binding_is_available_before_the_session_is_opened() -
     async with _client(server) as client:
         ledger = ServerTaskLedger(client, instance_id="inst-a")
         await ledger.register(source_kind=SOURCE_KIND, items=_items("t1"), dry_run=True)
-        await ledger.claim(
-            source_kind=SOURCE_KIND, ref="t1", agent_name="a_agent", dry_run=True
-        )
+        await ledger.claim(source_kind=SOURCE_KIND, ref="t1", agent_name="a_agent", dry_run=True)
 
         key = ledger.session_task_key(source_kind=SOURCE_KIND, ref="t1")
 
@@ -505,9 +497,7 @@ async def test_the_step_is_opened_after_a_heartbeat_and_carries_the_session() ->
     async with _client(server) as client:
         ledger = ServerTaskLedger(client, instance_id="inst-a")
         await ledger.register(source_kind=SOURCE_KIND, items=_items("t1"), dry_run=True)
-        await ledger.claim(
-            source_kind=SOURCE_KIND, ref="t1", agent_name="a_agent", dry_run=True
-        )
+        await ledger.claim(source_kind=SOURCE_KIND, ref="t1", agent_name="a_agent", dry_run=True)
 
         await ledger.record_session(
             source_kind=SOURCE_KIND,
@@ -547,9 +537,7 @@ async def test_a_reclaimed_task_opens_its_step_at_the_index_the_server_reported(
     async with _client(server) as client:
         ledger = ServerTaskLedger(client, instance_id="inst-b")
         await ledger.register(source_kind=SOURCE_KIND, items=_items("t1"), dry_run=True)
-        await ledger.claim(
-            source_kind=SOURCE_KIND, ref="t1", agent_name="a_agent", dry_run=True
-        )
+        await ledger.claim(source_kind=SOURCE_KIND, ref="t1", agent_name="a_agent", dry_run=True)
 
         await ledger.record_session(
             source_kind=SOURCE_KIND,
@@ -578,9 +566,7 @@ async def test_finish_closes_the_step_with_its_output_and_then_the_task() -> Non
     async with _client(server) as client:
         ledger = ServerTaskLedger(client, instance_id="inst-a")
         await ledger.register(source_kind=SOURCE_KIND, items=_items("t1"), dry_run=True)
-        await ledger.claim(
-            source_kind=SOURCE_KIND, ref="t1", agent_name="a_agent", dry_run=True
-        )
+        await ledger.claim(source_kind=SOURCE_KIND, ref="t1", agent_name="a_agent", dry_run=True)
         await ledger.record_session(
             source_kind=SOURCE_KIND,
             ref="t1",
@@ -602,9 +588,7 @@ async def test_finish_closes_the_step_with_its_output_and_then_the_task() -> Non
         f"/api/v1/agent-tasks/{key}/steps/0/finish",
         f"/api/v1/agent-tasks/{key}/finish",
     ]
-    step_finish = next(
-        body for path, body in server.bodies if path.endswith("/steps/0/finish")
-    )
+    step_finish = next(body for path, body in server.bodies if path.endswith("/steps/0/finish"))
     assert step_finish["status"] == "completed"
     assert step_finish["output_text"] == "the three reports shared one cause"
     assert step_finish["turn_trace_id"] == "trace-0"
@@ -617,9 +601,7 @@ async def test_a_failure_before_the_session_existed_writes_only_the_task() -> No
     async with _client(server) as client:
         ledger = ServerTaskLedger(client, instance_id="inst-a")
         await ledger.register(source_kind=SOURCE_KIND, items=_items("t1"), dry_run=True)
-        await ledger.claim(
-            source_kind=SOURCE_KIND, ref="t1", agent_name="a_agent", dry_run=True
-        )
+        await ledger.claim(source_kind=SOURCE_KIND, ref="t1", agent_name="a_agent", dry_run=True)
 
         await ledger.finish(
             source_kind=SOURCE_KIND,
@@ -658,9 +640,7 @@ async def test_every_ending_keeps_its_own_name_across_the_wire(
     async with _client(server) as client:
         ledger = ServerTaskLedger(client, instance_id="inst-a")
         await ledger.register(source_kind=SOURCE_KIND, items=_items("t1"), dry_run=True)
-        await ledger.claim(
-            source_kind=SOURCE_KIND, ref="t1", agent_name="a_agent", dry_run=True
-        )
+        await ledger.claim(source_kind=SOURCE_KIND, ref="t1", agent_name="a_agent", dry_run=True)
 
         await ledger.finish(source_kind=SOURCE_KIND, ref="t1", status=claim_status)
 

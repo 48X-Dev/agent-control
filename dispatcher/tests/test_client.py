@@ -431,8 +431,7 @@ async def test_the_scope_read_is_a_get_and_carries_the_key() -> None:
     assert seen == [
         (
             "GET",
-            "/api/v1/teams/operations/milestones/"
-            "3dcd106d-e00a-4f32-a3b6-27b9fd64c6d6/issues",
+            "/api/v1/teams/operations/milestones/3dcd106d-e00a-4f32-a3b6-27b9fd64c6d6/issues",
         )
     ]
     assert [issue.identifier for issue in response.issues] == ["OPS-2"]
@@ -474,9 +473,7 @@ async def test_a_path_shaped_team_cannot_retarget_the_request_either() -> None:
                 team_slug="../../agent-sessions", milestone_id="m-1"
             )
 
-    assert seen == [
-        b"/api/v1/teams/..%2F..%2Fagent-sessions/milestones/m-1/issues"
-    ]
+    assert seen == [b"/api/v1/teams/..%2F..%2Fagent-sessions/milestones/m-1/issues"]
 
 
 async def test_a_path_shaped_id_cannot_retarget_the_request() -> None:
@@ -500,9 +497,7 @@ async def test_a_path_shaped_id_cannot_retarget_the_request() -> None:
             team_slug="operations", milestone_id="../../../agent-sessions"
         )
 
-    assert seen == [
-        b"/api/v1/teams/operations/milestones/..%2F..%2F..%2Fagent-sessions/issues"
-    ]
+    assert seen == [b"/api/v1/teams/operations/milestones/..%2F..%2F..%2Fagent-sessions/issues"]
 
 
 async def test_an_unlinked_team_is_a_blocked_refusal_carrying_the_servers_words() -> None:
@@ -517,9 +512,7 @@ async def test_an_unlinked_team_is_a_blocked_refusal_carrying_the_servers_words(
 
     async with _client(handler) as client:
         with pytest.raises(DispatchHTTPError) as excinfo:
-            await client.fetch_milestone_issues(
-                team_slug="marketing", milestone_id="m-1"
-            )
+            await client.fetch_milestone_issues(team_slug="marketing", milestone_id="m-1")
 
     assert excinfo.value.disposition is Disposition.BLOCKED
     assert excinfo.value.error_code == "TEAM_NOT_LINKED"

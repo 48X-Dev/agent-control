@@ -485,9 +485,7 @@ async def _plan_chain(
 
     plan = await client.get_task_plan(task_key=task_key)
     unresolved = list(plan.unresolved_step_indexes)
-    if unresolved and not (
-        len(plan.steps) == 1 and len(unresolved) == 1 and options.agent_name
-    ):
+    if unresolved and not (len(plan.steps) == 1 and len(unresolved) == 1 and options.agent_name):
         return [], ChainRefusal(
             code=NO_AGENT_SELECTED,
             detail=(
@@ -772,9 +770,7 @@ async def _run_step(
         return await _fail(ledger, source_kind, item, exc, stream, session_key=session_key)
 
     try:
-        deny_events = await client.deny_events_for_turn(
-            agent_name=step.agent_name, turn=turn
-        )
+        deny_events = await client.deny_events_for_turn(agent_name=step.agent_name, turn=turn)
     except DispatchHTTPError as exc:
         return await _unclassified(
             ledger, source_kind, item, turn=turn, exc=exc, session_key=session_key, stream=stream
@@ -877,9 +873,7 @@ async def _blocked(
         status=ClaimStatus.BLOCKED,
         outcome_code=refusal.code,
         detail=refusal.detail,
-        stop_reason=(
-            _STOP_REASON_FOR[Disposition.BLOCKED] if refusal.stops_the_run else None
-        ),
+        stop_reason=(_STOP_REASON_FOR[Disposition.BLOCKED] if refusal.stops_the_run else None),
     )
 
 
