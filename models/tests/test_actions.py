@@ -7,13 +7,12 @@ from agent_control_models import (
     ControlAction,
     ControlExecutionEvent,
     ControlMatch,
-    EventQueryRequest,
     EvaluatorResult,
+    EventQueryRequest,
     expand_action_filter,
 )
 from agent_control_models.actions import normalize_action, validate_action
 from pydantic import ValidationError
-
 
 # ---------------------------------------------------------------------------
 # validate_action (strict, for API boundaries)
@@ -156,14 +155,17 @@ class TestEventQueryRequestValidation:
 class TestReadPathNormalization:
     """Internal read-path models normalize legacy values from DB rows."""
 
-    @pytest.mark.parametrize("legacy,expected", [
-        ("allow", "observe"),
-        ("warn", "observe"),
-        ("log", "observe"),
-        ("observe", "observe"),
-        ("deny", "deny"),
-        ("steer", "steer"),
-    ])
+    @pytest.mark.parametrize(
+        "legacy,expected",
+        [
+            ("allow", "observe"),
+            ("warn", "observe"),
+            ("log", "observe"),
+            ("observe", "observe"),
+            ("deny", "deny"),
+            ("steer", "steer"),
+        ],
+    )
     def test_control_match_normalizes_legacy(self, legacy: str, expected: str) -> None:
         # Given: a ControlMatch deserialized from a DB row with a legacy action
         # When: constructing the model
@@ -177,17 +179,18 @@ class TestReadPathNormalization:
         # Then: the action is normalized to the canonical value
         assert match.action == expected
 
-    @pytest.mark.parametrize("legacy,expected", [
-        ("allow", "observe"),
-        ("warn", "observe"),
-        ("log", "observe"),
-        ("observe", "observe"),
-        ("deny", "deny"),
-        ("steer", "steer"),
-    ])
-    def test_control_execution_event_normalizes_legacy(
-        self, legacy: str, expected: str
-    ) -> None:
+    @pytest.mark.parametrize(
+        "legacy,expected",
+        [
+            ("allow", "observe"),
+            ("warn", "observe"),
+            ("log", "observe"),
+            ("observe", "observe"),
+            ("deny", "deny"),
+            ("steer", "steer"),
+        ],
+    )
+    def test_control_execution_event_normalizes_legacy(self, legacy: str, expected: str) -> None:
         # Given: a ControlExecutionEvent deserialized from a historical event row
         # When: constructing the model
         event = ControlExecutionEvent(

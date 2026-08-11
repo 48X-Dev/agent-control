@@ -1,35 +1,4 @@
-"""Human guidance injected into a running agent, and its wire models.
-
-A *nudge* is a sentence a person types while an agent is working. It is not a
-control decision, so it is deliberately not called steering: ``steer`` is
-already an ``ActionDecision``, a ``ControlSteerError`` and a
-``steering_context`` field elsewhere in this package, and one word meaning two
-things is how a guardrail verdict ends up rendered as operator text.
-
-Three properties of the design show up all over the models below.
-
-**A nudge arrives at the agent's next model call, not now.** Nothing in this
-stack interrupts a running tool. So a nudge is queued, claimed by the executor
-at a model boundary, and only then applied. Every status here describes a step
-of that journey, and the UI is expected to say which one a nudge is at rather
-than showing a spinner that implies the agent stopped to read it.
-
-**Delivery is at-least-once, and the two counters are separate.**
-``claim_count`` moves whenever a claim takes the row, including the reclaim of a
-claim whose executor died. ``injection_attempts`` moves only when an injection
-was actually attempted and failed, and expiry keys on that one alone. A single
-shared counter would age out nudges that were never attempted - queue ten, and
-seven get marked undelivered after three claim cycles, which is exactly the
-"the human was told it was delivered and it was not" failure the at-least-once
-design exists to prevent.
-
-**The body is evaluated by the control engine before it reaches a model.** It
-is delivered as a synthetic user-role content part, so every control already
-attached to the agent sees it, and it is additionally evaluated as its own step
-before injection. A denied nudge is terminal at ``rejected`` and names the
-control that denied it, because "nothing happened" is not an answer a person
-can act on.
-"""
+"""Human guidance injected into a running agent, and its wire models."""
 
 from __future__ import annotations
 
@@ -89,19 +58,7 @@ NudgeBody = Annotated[
 
 
 class NudgeStatus(StrEnum):
-    """Where one nudge is on its way to a model.
-
-    ``pending`` and ``claimed`` are the only non-terminal states. ``claimed``
-    means an executor holds it for one model boundary; it returns to
-    ``pending`` on its own if that executor never comes back, which is what the
-    claim TTL is for.
-
-    ``applied`` means the text was handed to a model. ``expired`` means
-    injection was attempted and kept failing. ``cancelled`` means a human
-    withdrew it before it was claimed. ``rejected`` means a control denied it,
-    and it is the only terminal state that names something the operator can go
-    and look at.
-    """
+    """Where one nudge is on its way to a model."""
 
     PENDING = "pending"
     CLAIMED = "claimed"
@@ -118,15 +75,7 @@ which is a lie in the direction that matters."""
 
 
 class NudgeAckOutcome(StrEnum):
-    """What the executor did with a nudge it claimed.
-
-    ``applied`` is the only outcome that means a model saw the text.
-    ``released`` returns it to the queue untouched - the surplus over the
-    per-call cap, or a claim superseded by a halt - and moves no counter.
-    ``failed`` records an attempted injection that did not land and is the only
-    outcome that moves ``injection_attempts``. ``rejected`` is a control denial
-    and is terminal.
-    """
+    """What the executor did with a nudge it claimed."""
 
     APPLIED = "applied"
     RELEASED = "released"
@@ -135,14 +84,7 @@ class NudgeAckOutcome(StrEnum):
 
 
 class Nudge(BaseModel):
-    """One queued piece of human guidance.
-
-    ``body`` is the exact text that was queued, and - for an applied nudge -
-    the exact text that was handed to the model, minus the delimiters the SDK
-    wraps it in. The UI renders it inline in the transcript at the turn it
-    landed for one reason: an operator has to be able to judge for themselves
-    whether the agent was actually told what they think they said.
-    """
+    """One queued piece of human guidance."""
 
     id: int = Field(..., description="Identifier, unique within the namespace.")
     session_key: str = Field(..., description="Session the nudge was queued for.")
@@ -154,10 +96,7 @@ class Nudge(BaseModel):
     )
     claim_expires_at: dt.datetime | None = Field(
         default=None,
-        description=(
-            "When an unacknowledged claim lapses and the nudge becomes "
-            "claimable again."
-        ),
+        description=("When an unacknowledged claim lapses and the nudge becomes claimable again."),
     )
     applied_at: dt.datetime | None = Field(
         default=None, description="When the text was handed to a model."
@@ -170,9 +109,7 @@ class Nudge(BaseModel):
             "decisions."
         ),
     )
-    claim_count: int = Field(
-        ..., ge=0, description="How many times a claim has taken this nudge."
-    )
+    claim_count: int = Field(..., ge=0, description="How many times a claim has taken this nudge.")
     injection_attempts: int = Field(
         ...,
         ge=0,
@@ -240,17 +177,7 @@ class ClaimedNudge(BaseModel):
 
 
 class ClaimedHalt(BaseModel):
-    """A stop that beat the nudge queue to this boundary.
-
-    Carried on the nudge claim rather than fetched separately: the token, the
-    session binding and the boundary are identical for both, and two HTTP calls
-    for one decision at one instant is exactly the per-step cost the claim
-    design exists to bound.
-
-    A halt carries no operator text, by construction. What the model is shown
-    is a constant authored by the SDK, so a stop cannot become an unevaluated
-    free-text channel into a high-trust field.
-    """
+    """A stop that beat the nudge queue to this boundary."""
 
     id: int = Field(..., description="Identifier of the halt that was applied.")
     target_trace_id: str = Field(
@@ -260,12 +187,7 @@ class ClaimedHalt(BaseModel):
 
 
 class ClaimNudgesRequest(BaseModel):
-    """Ask for the guidance and the stop waiting at this boundary.
-
-    Carries no session coordinates. The runtime token *is* the session
-    identity: one minted for session A physically cannot claim session B,
-    because the verifier compares the token's target against the request path.
-    """
+    """Ask for the guidance and the stop waiting at this boundary."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -289,28 +211,20 @@ class ClaimNudgesRequest(BaseModel):
 
 
 class ClaimNudgesResponse(BaseModel):
-    """What this boundary should do.
-
-    When ``halt`` is set, ``nudges`` is empty and no nudge counter moved. A
-    nudge injected into a request whose response is about to be replaced by a
-    stop would be marked delivered while no model ever read it, which is the
-    one failure the queue design cannot afford.
-    """
+    """What this boundary should do."""
 
     session_key: str = Field(..., description="Session the claim ran against.")
     nudges: list[ClaimedNudge] = Field(default_factory=list)
     halt: ClaimedHalt | None = Field(
         default=None,
         description=(
-            "A stop bound to the turn now in flight. When present, act on it "
-            "and ignore the queue."
+            "A stop bound to the turn now in flight. When present, act on it and ignore the queue."
         ),
     )
     claim_expires_at: dt.datetime | None = Field(
         default=None,
         description=(
-            "When an unacknowledged claim lapses and these nudges become "
-            "claimable again."
+            "When an unacknowledged claim lapses and these nudges become claimable again."
         ),
     )
 

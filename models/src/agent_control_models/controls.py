@@ -17,11 +17,7 @@ from .base import BaseModel
 
 
 class ControlSelector(BaseModel):
-    """Selects data from a Step payload.
-
-    - path: which slice of the Step to feed into the evaluator. Optional, defaults to "*"
-      meaning the entire Step object.
-    """
+    """Selects data from a Step payload."""
 
     path: str | None = Field(
         default="*",
@@ -38,9 +34,7 @@ class ControlSelector(BaseModel):
         if v is None:
             return "*"
         if v == "":
-            raise ValueError(
-                "Path cannot be empty string. Use '*' for root or omit the field."
-            )
+            raise ValueError("Path cannot be empty string. Use '*' for root or omit the field.")
 
         # Valid root fields
         valid_roots = {"input", "output", "name", "type", "context", "*"}
@@ -48,8 +42,7 @@ class ControlSelector(BaseModel):
 
         if root not in valid_roots:
             raise ValueError(
-                f"Invalid path root '{root}'. "
-                f"Must be one of: {', '.join(sorted(valid_roots))}"
+                f"Invalid path root '{root}'. Must be one of: {', '.join(sorted(valid_roots))}"
             )
         return v
 
@@ -93,9 +86,7 @@ class ControlScope(BaseModel):
 
     @field_validator("step_types")
     @classmethod
-    def validate_step_types(
-        cls, v: list[str] | None
-    ) -> list[str] | None:
+    def validate_step_types(cls, v: list[str] | None) -> list[str] | None:
         if v is None:
             return v
         if len(v) == 0:
@@ -121,9 +112,7 @@ class ControlScope(BaseModel):
 
     @field_validator("step_name_regex")
     @classmethod
-    def validate_step_name_regex(
-        cls, v: str | None, info: ValidationInfo
-    ) -> str | None:
+    def validate_step_name_regex(cls, v: str | None, info: ValidationInfo) -> str | None:
         if v is None:
             return v
         if info.context and info.context.get("allow_invalid_step_name_regex"):
@@ -165,13 +154,7 @@ class ControlScope(BaseModel):
 
 
 class EvaluatorSpec(BaseModel):
-    """Evaluator specification. See GET /evaluators for available evaluators and schemas.
-
-    Evaluator reference formats:
-    - Built-in: "regex", "list", "json", "sql"
-    - External: "galileo.luna" (requires agent-control-evaluators[galileo])
-    - Agent-scoped: "my-agent:my-evaluator" (validated in endpoint, not here)
-    """
+    """Evaluator specification. See GET /evaluators for available evaluators and schemas."""
 
     name: str = Field(
         ...,
@@ -201,11 +184,7 @@ class EvaluatorSpec(BaseModel):
 
     @model_validator(mode="after")
     def validate_evaluator_config(self) -> Self:
-        """Validate config against evaluator's schema if evaluator is registered.
-
-        Agent-scoped evaluators (format: agent:evaluator) are validated in the
-        endpoint where we have database access to look up the agent's schema.
-        """
+        """Validate config against evaluator's schema if evaluator is registered."""
         # Agent-scoped evaluators: defer validation to endpoint (needs DB access)
         if ":" in self.name:
             return self
@@ -243,15 +222,10 @@ class ControlObservabilityIdentity:
 
 
 class SteeringContext(BaseModel):
-    """Steering context for steer actions.
-
-    This model provides an extensible structure for steering guidance.
-    Future fields could include severity, categories, suggested_actions, etc.
-    """
+    """Steering context for steer actions."""
 
     message: str = Field(
-        ...,
-        description="Guidance message explaining what needs to be corrected and how"
+        ..., description="Guidance message explaining what needs to be corrected and how"
     )
 
     model_config = {
@@ -272,7 +246,7 @@ class SteeringContext(BaseModel):
                         "3) If approved, retry with manager_approved=True and "
                         "justification filled in."
                     )
-                }
+                },
             ]
         }
     }
@@ -365,9 +339,7 @@ class StringListTemplateParameter(TemplateParameterBase):
 
     @field_validator("default", "placeholder")
     @classmethod
-    def validate_string_lists(
-        cls, value: list[str] | None
-    ) -> list[str] | None:
+    def validate_string_lists(cls, value: list[str] | None) -> list[str] | None:
         if value is None:
             return value
         if any((not isinstance(item, str)) for item in value):
@@ -459,9 +431,7 @@ class TemplateDefinition(BaseModel):
     ) -> dict[str, TemplateParameterDefinition]:
         for name in value:
             if not _TEMPLATE_PARAMETER_NAME_RE.fullmatch(name):
-                raise ValueError(
-                    "Parameter names must match [a-zA-Z_][a-zA-Z0-9_]*"
-                )
+                raise ValueError("Parameter names must match [a-zA-Z_][a-zA-Z0-9_]*")
         return value
 
     @field_validator("definition_template")
@@ -484,12 +454,7 @@ class TemplateControlInput(BaseModel):
 
 
 class UnrenderedTemplateControl(BaseModel):
-    """Stored state of a template control that hasn't been rendered yet.
-
-    An unrendered template has a template definition and possibly partial
-    parameter values, but no concrete condition/action/execution fields.
-    It is always ``enabled=False`` and excluded from evaluation.
-    """
+    """Stored state of a template control that hasn't been rendered yet."""
 
     template: TemplateDefinition = Field(
         ..., description="Template definition awaiting parameter values"
@@ -507,16 +472,14 @@ class UnrenderedTemplateControl(BaseModel):
 class ControlAction(BaseModel):
     """What to do when control matches."""
 
-    decision: ActionDecision = Field(
-        ..., description="Action to take when control is triggered"
-    )
+    decision: ActionDecision = Field(..., description="Action to take when control is triggered")
     steering_context: SteeringContext | None = Field(
         None,
         description=(
             "Steering context object for steer actions. Strongly recommended when "
             "decision='steer' to provide correction suggestions. If not provided, the "
             "evaluator result message will be used as fallback."
-        )
+        ),
     )
 
     @field_validator("decision", mode="before")
@@ -531,15 +494,9 @@ def _validate_common_control_constraints(
 ) -> None:
     """Validate control constraints shared by authoring and runtime models."""
     if condition.max_depth() > MAX_CONDITION_DEPTH:
-        raise ValueError(
-            f"Condition nesting depth exceeds maximum of {MAX_CONDITION_DEPTH}"
-        )
+        raise ValueError(f"Condition nesting depth exceeds maximum of {MAX_CONDITION_DEPTH}")
 
-    if (
-        action.decision == "steer"
-        and not condition.is_leaf()
-        and action.steering_context is None
-    ):
+    if action.decision == "steer" and not condition.is_leaf() and action.steering_context is None:
         raise ValueError("Composite steer controls require action.steering_context")
 
 
@@ -767,9 +724,7 @@ def canonicalize_control_payload(data: Any) -> Any:
             "with legacy selector/evaluator fields."
         )
     if has_selector != has_evaluator:
-        raise ValueError(
-            "Legacy control definition must include both selector and evaluator."
-        )
+        raise ValueError("Legacy control definition must include both selector and evaluator.")
     if not has_condition and has_selector:
         canonical = dict(data)
         selector = canonical.pop("selector")
@@ -787,9 +742,7 @@ class ControlDefinitionBase(_ConditionBackedControlMixin, BaseModel):
 
     description: str | None = Field(None, description="Detailed description of the control")
     enabled: bool = Field(True, description="Whether this control is active")
-    execution: Literal["server", "sdk"] = Field(
-        ..., description="Where this control executes"
-    )
+    execution: Literal["server", "sdk"] = Field(..., description="Where this control executes")
 
     # When to apply
     scope: ControlScope = Field(
@@ -831,11 +784,7 @@ class ControlDefinitionBase(_ConditionBackedControlMixin, BaseModel):
 
 
 class ControlDefinition(ControlDefinitionBase):
-    """A control definition to evaluate agent interactions.
-
-    This model contains only the logic and configuration.
-    Identity fields (id, name) are managed by the database.
-    """
+    """A control definition to evaluate agent interactions."""
 
     template: TemplateDefinition | None = Field(
         None,
@@ -852,9 +801,7 @@ class ControlDefinition(ControlDefinitionBase):
         has_template = self.template is not None
         has_template_values = self.template_values is not None
         if has_template != has_template_values:
-            raise ValueError(
-                "template and template_values must both be present or both absent"
-            )
+            raise ValueError("template and template_values must both be present or both absent")
         return self
 
     def to_template_control_input(self) -> TemplateControlInput:
@@ -906,24 +853,10 @@ class ControlDefinitionRuntime(ControlDefinitionBase):
 
 
 class EvaluatorResult(BaseModel):
-    """Result from a control evaluator.
-
-    The `error` field indicates evaluator failures, NOT validation failures:
-    - Set `error` for: evaluator crashes, timeouts, missing dependencies, external service errors
-    - Do NOT set `error` for: invalid input, syntax errors, schema violations, constraint failures
-
-    When `error` is set, `matched` must be False (fail-open on evaluator errors).
-    When `error` is None, `matched` reflects the actual validation result.
-
-    This distinction allows:
-    - Clients to distinguish "data violated rules" from "evaluator is broken"
-    - Observability systems to monitor evaluator health separately from validation outcomes
-    """
+    """Result from a control evaluator."""
 
     matched: bool = Field(..., description="Whether the pattern matched")
-    confidence: float = Field(
-        ..., ge=0.0, le=1.0, description="Confidence in the evaluation"
-    )
+    confidence: float = Field(..., ge=0.0, le=1.0, description="Confidence in the evaluation")
     message: str | None = Field(default=None, description="Explanation of the result")
     metadata: dict[str, Any] | None = Field(default=None, description="Additional result metadata")
     error: str | None = Field(
@@ -951,15 +884,12 @@ class ControlMatch(BaseModel):
     )
     control_id: int = Field(..., description="Database ID of the control")
     control_name: str = Field(..., description="Name of the control")
-    action: ActionDecision = Field(
-        ..., description="Action configured for this control"
-    )
+    action: ActionDecision = Field(..., description="Action configured for this control")
     result: EvaluatorResult = Field(
         ..., description="Evaluator result (confidence, message, metadata)"
     )
     steering_context: SteeringContext | None = Field(
-        None,
-        description="Steering context for steer actions if configured"
+        None, description="Steering context for steer actions if configured"
     )
 
     @field_validator("action", mode="before")

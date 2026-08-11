@@ -1,28 +1,4 @@
-"""Per-agent runtime configuration: the system prompt and the model.
-
-One row, two fields, one version history. They ship on one mechanism because
-they are the same shape - per-agent runtime configuration, stored centrally,
-ADMIN-authored, versioned, delivered over the existing refresh channel, applied
-at the same point in the same callback. Splitting them would mean two version
-counters, two optimistic-concurrency tokens and two audit trails for one page.
-
-Two things about this module are load-bearing rather than stylistic.
-
-**The prompt body lands in ADK's ``config.system_instruction``, which
-``extract_request_text`` never reads.** Nothing written here is evaluated by any
-control in the deployment. That is correct for authored configuration - a system
-prompt belongs in the highest-trust field - and it is exactly why the write
-operation is ADMIN and why a saved body may not contain either fence delimiter.
-
-**A model id is a destination selector, not a name.** A ``/`` prefix re-selects
-the LiteLLM provider and a configured ``api_base`` is ignored for routing,
-verified: ``litellm.get_llm_provider('bedrock/anthropic.claude-v2',
-api_base='http://127.0.0.1:10531/v1')`` returns provider ``bedrock``. So an id
-containing ``/`` or ``://`` is refused here, again at the server's write
-boundary, again by a database check constraint, and again by the SDK before it
-constructs anything. Four layers on one field, because a mistake in it sends
-customer data to a vendor nobody chose.
-"""
+"""Per-agent runtime configuration: the system prompt and the model."""
 
 from __future__ import annotations
 
@@ -60,24 +36,13 @@ _FENCE_PATTERN = re.compile(
 
 
 class BodyFormat(StrEnum):
-    """How a stored body should be interpreted.
-
-    One member today, and the check constraint in the database enforces it. It
-    exists so that if a prompt ever gains structure - variables, includes, a
-    template dialect - restoring an old version fails loudly instead of feeding
-    a ``{placeholder}`` to a model as literal text.
-    """
+    """How a stored body should be interpreted."""
 
     TEXT = "text"
 
 
 class ConfigEventType(StrEnum):
-    """What a version row records.
-
-    ``cleared`` splits into ``PROMPT_CLEARED`` and ``MODEL_CLEARED`` because a
-    single value on a two-field row cannot say which field was cleared, and the
-    history panel would render "cleared" against a row whose prompt is intact.
-    """
+    """What a version row records."""
 
     CREATED = "created"
     UPDATED = "updated"
@@ -89,13 +54,7 @@ class ConfigEventType(StrEnum):
 
 
 class ConfigOrigin(StrEnum):
-    """Where the body in a version row came from.
-
-    ``COPIED_FROM_REPORTED`` exists for the confused deputy that source
-    reporting introduces: an agent process registers under an AUTHENTICATED
-    operation, so what it reports as its own instruction is untrusted text, and
-    an admin who moves it into the editor should leave a trace that says so.
-    """
+    """Where the body in a version row came from."""
 
     AUTHORED = "authored"
     COPIED_FROM_REPORTED = "copied_from_reported"
@@ -103,28 +62,14 @@ class ConfigOrigin(StrEnum):
 
 
 class ModelProvider(StrEnum):
-    """Which client the SDK constructs for an allowlisted model.
-
-    The SDK never infers this from the id string. That inference is the
-    exfiltration path: ADK's ``LLMRegistry`` resolves bare names by regex, and a
-    bare ``gpt-*`` string resolves to a client whose factory is ``AsyncOpenAI()``
-    with no base-URL argument, which reads ``OPENAI_BASE_URL`` from the process
-    or falls back to OpenAI itself. Being told beats guessing, so the provider
-    travels on the wire beside the id.
-    """
+    """Which client the SDK constructs for an allowlisted model."""
 
     GEMINI = "gemini"
     OPENAI_COMPATIBLE = "openai_compatible"
 
 
 class ModelCostTier(StrEnum):
-    """Operator-authored spend banding for an allowlisted model.
-
-    Agent Control prints no currency and no per-token figure: it does not know
-    prices, prices change without telling it, and a wrong number beside a Save
-    button is worse than no number. The operator wrote these tiers and knows
-    what they mean.
-    """
+    """Operator-authored spend banding for an allowlisted model."""
 
     ECONOMY = "economy"
     STANDARD = "standard"
@@ -147,14 +92,7 @@ class ModelSource(StrEnum):
 
 
 class DeliveryState(StrEnum):
-    """Whether this agent's configuration reaches a running process at all.
-
-    ``BLOCKED_INSECURE_AUTH`` is the startup gate: on a server with credential
-    enforcement off, every operation succeeds unauthenticated including ADMIN,
-    so nothing here is applied to a running agent. Storage, versioning and the
-    audit trail keep working, because a laptop with no credentials configured is
-    how everyone first meets this feature.
-    """
+    """Whether this agent's configuration reaches a running process at all."""
 
     ACTIVE = "active"
     DISABLED = "disabled"
@@ -162,11 +100,7 @@ class DeliveryState(StrEnum):
 
 
 def contains_fence_delimiter(body: str) -> bool:
-    """Whether a body carries any of the four fence delimiters.
-
-    Case-insensitive and tolerant of internal whitespace, because
-    ``< / AGENT_CONTROL_GUIDANCE >`` is the same forgery as the tidy spelling.
-    """
+    """Whether a body carries any of the four fence delimiters."""
     return _FENCE_PATTERN.search(body) is not None
 
 
@@ -190,13 +124,7 @@ def validate_prompt_body(value: str) -> str:
 
 
 def validate_model_id_shape(value: str) -> str:
-    """Reject a model id that is really a destination selector.
-
-    Shape only. Membership of the server allowlist is checked at the write
-    boundary, where a rejection can name the allowed values, and re-evaluated on
-    every read so that removing an entry from server config does not rewrite
-    stored rows.
-    """
+    """Reject a model id that is really a destination selector."""
     if "://" in value:
         raise ValueError(
             "Model id may not contain '://'. This field names a model, not an "
@@ -227,13 +155,7 @@ ModelId = Annotated[
 
 
 class ScanFinding(BaseModel):
-    """One advisory observation recorded when a body was saved.
-
-    Never blocks the write. The value is the record - including the record that
-    a human saw a finding and saved anyway. A blocking scan on a field authored
-    by admins produces false positives that operators route around, which is
-    worse than an advisory note nobody can delete.
-    """
+    """One advisory observation recorded when a body was saved."""
 
     scanner: str = Field(description="Which check produced this, e.g. 'secret_pattern'.")
     severity: Literal["info", "warning"] = Field(
@@ -247,19 +169,7 @@ class ScanFinding(BaseModel):
 
 
 class AgentModelOption(BaseModel):
-    """One entry in the server's model allowlist.
-
-    ``recommended`` is named that way rather than ``default`` precisely so
-    nobody later wires it to one. A server-side default would silently move
-    every unmanaged agent in the deployment the day an operator edited one line
-    of config, which destroys the zero-risk rollout the whole feature rests on.
-
-    ``extra="forbid"`` catches the person who reads "model" and writes
-    ``"api_base"`` or ``"base_url"`` into an allowlist entry. Ignoring the key
-    would leave them believing they had configured a per-agent endpoint, when
-    what they had actually done was nothing. There is no such field, here or
-    anywhere else in this feature.
-    """
+    """One entry in the server's model allowlist."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -276,25 +186,13 @@ class AgentModelOption(BaseModel):
 
 
 class ListAgentModelsResponse(BaseModel):
-    """The deployment's model allowlist.
-
-    Deployment-wide and namespace-independent: it names vendors the operator has
-    relationships with, not tenant data. That is also why the route requires the
-    write operation rather than the read one - at AUTHENTICATED it would be
-    cross-tenant vendor reconnaissance readable by any agent process key.
-    """
+    """The deployment's model allowlist."""
 
     models: list[AgentModelOption] = Field(default_factory=list)
 
 
 class GetAgentConfigResponse(BaseModel):
-    """One agent's current configuration, resolved against server state.
-
-    ``prompt_source`` and ``model_source`` resolve server-side, once. The SDK
-    does not re-derive them, so the gate in section 5 of the design and the
-    allowlist membership check are enforced in one place rather than in every
-    client.
-    """
+    """One agent's current configuration, resolved against server state."""
 
     agent_name: str
     body: str | None = Field(default=None, description="None when unmanaged or cleared.")
@@ -329,9 +227,7 @@ class GetAgentConfigResponse(BaseModel):
 
     source_instruction: str | None = Field(
         default=None,
-        description=(
-            "Reported by the agent process. Unverified. Never sent to a model."
-        ),
+        description=("Reported by the agent process. Unverified. Never sent to a model."),
     )
     source_reported_at: dt.datetime | None = None
     updated_by_hash: str | None = None
@@ -340,20 +236,7 @@ class GetAgentConfigResponse(BaseModel):
 
 
 class SetAgentConfigRequest(BaseModel):
-    """Write both fields, or either one.
-
-    Both optional so a model-only save does not round-trip a 32000-character
-    body and a prompt-only save does not have to restate the model. A request
-    with neither is rejected: a no-op write that burns a version number is worse
-    than a refusal.
-
-    ``extra="forbid"``, matching every other write request on this branch, and
-    here it earns it twice. A misspelled ``prompt_enable`` would otherwise fall
-    back to the default and switch delivery **on** for a running agent, with a
-    200 and a version row saying it was deliberate. And a body carrying
-    ``api_base`` or ``base_url`` would be accepted and dropped, teaching the
-    caller that a per-agent endpoint exists. It does not.
-    """
+    """Write both fields, or either one."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -407,12 +290,7 @@ class SetAgentConfigResponse(BaseModel):
 
 
 class ClearAgentConfigFieldRequest(BaseModel):
-    """Stop using the managed prompt, or the managed model.
-
-    Two verb routes rather than one taking a field list, because the version
-    row's ``event_type`` has to name what happened and a list makes it
-    ambiguous.
-    """
+    """Stop using the managed prompt, or the managed model."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -421,12 +299,7 @@ class ClearAgentConfigFieldRequest(BaseModel):
 
 
 class ClearAgentConfigFieldResponse(BaseModel):
-    """Whether anything was there to clear.
-
-    Idempotent: clearing an already-null field returns ``cleared=False`` and
-    writes no version row, matching the shape ``delete_control_binding_by_key``
-    already uses.
-    """
+    """Whether anything was there to clear."""
 
     cleared: bool
     version_num: int | None = None
@@ -438,13 +311,7 @@ class ClearAgentConfigFieldResponse(BaseModel):
 
 
 class SetPromptEnabledRequest(BaseModel):
-    """Switch managed-prompt delivery without touching the body.
-
-    A prompt body is expensive to retype, so a toggle that preserves it earns
-    its column. There is deliberately no model equivalent: a model id is one
-    dropdown selection preserved in history anyway, and a second boolean would
-    only ever mean "the dropdown says X, ignore it".
-    """
+    """Switch managed-prompt delivery without touching the body."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -454,11 +321,7 @@ class SetPromptEnabledRequest(BaseModel):
 
 
 class RestoreAgentConfigVersionRequest(BaseModel):
-    """Copy an old version forward as a new one.
-
-    Version numbers never rewind. A shared history that can be rewritten is a
-    history nobody can reason about.
-    """
+    """Copy an old version forward as a new one."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -467,11 +330,7 @@ class RestoreAgentConfigVersionRequest(BaseModel):
 
 
 class AgentConfigVersionSummary(BaseModel):
-    """One history row without its body.
-
-    ``model_id`` is included even though the body is not: it is short, and it is
-    what most history rows are about.
-    """
+    """One history row without its body."""
 
     version_num: int
     event_type: ConfigEventType

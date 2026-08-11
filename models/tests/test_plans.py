@@ -50,9 +50,7 @@ _NOW = dt.datetime(2026, 8, 2, 12, 0, tzinfo=dt.UTC)
 
 
 def _step(index: int = 0, status: PlanStepStatus = PlanStepStatus.PENDING) -> PlanStep:
-    return PlanStep(
-        index=index, title=f"step {index}", status=status, note=None, updated_at=_NOW
-    )
+    return PlanStep(index=index, title=f"step {index}", status=status, note=None, updated_at=_NOW)
 
 
 # ---------------------------------------------------------------------------
@@ -142,9 +140,7 @@ def test_skipped_and_failed_are_their_own_statuses() -> None:
     }
     assert PlanStepStatus.SKIPPED != PlanStepStatus.DONE
     assert PlanStepStatus.FAILED != PlanStepStatus.DONE
-    assert json.loads(_step(0, PlanStepStatus.FAILED).model_dump_json())["status"] == (
-        "failed"
-    )
+    assert json.loads(_step(0, PlanStepStatus.FAILED).model_dump_json())["status"] == ("failed")
 
 
 def test_an_invented_status_is_refused() -> None:

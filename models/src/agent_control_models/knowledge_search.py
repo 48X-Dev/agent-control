@@ -1,21 +1,4 @@
-"""The retrieval contract: what an agent may ask the corpus, and what comes back.
-
-Three verbs exist and no more: ranked search, bounded recency, and the corpus
-counters that ride along with both. What is missing is the design. There is no
-list request, no cursor, no offset and no wildcard, because wholesale export is
-exfiltration shaped like a feature: a list call plus a loop is the whole corpus
-in a transcript in an afternoon, defeating every per-call ceiling one page at a
-time. The parameter that would enable it is the one that does not exist, in
-this module and in ``agent_control_server.knowledge.store``.
-
-``result_count`` and ``external_author_count`` are required on every response
-including refusals. That is not tidiness. The shipped deny control selects the
-whole result object into the ``json`` evaluator with a ``field_constraints``
-key, so a missing field is a "field not found" error, which the evaluator
-reports as a match, which denies. A response that omitted them on the refusal
-path would fail **open** on the ordinary path and closed on the refusal path,
-which is precisely backwards.
-"""
+"""The retrieval contract: what an agent may ask the corpus, and what comes back."""
 
 from __future__ import annotations
 
@@ -56,12 +39,7 @@ contract, and this stops the arithmetic being handed a decade."""
 
 
 class KnowledgeSnippet(BaseModel):
-    """One result, carrying the provenance that makes it checkable by a human.
-
-    Every string here has been neutralized server-side: a filename, a heading
-    and a source name are all attacker-choosable, and all three are rendered
-    inside the fence header the model reads.
-    """
+    """One result, carrying the provenance that makes it checkable by a human."""
 
     snippet: str = Field(..., description="Matching text, truncated with a stated marker.")
     path: str = Field(..., description="Full path of the document inside its source.")
@@ -86,20 +64,7 @@ class KnowledgeSnippet(BaseModel):
 
 
 class KnowledgeCorpus(BaseModel):
-    """What the mirror says about itself, on every response including refusals.
-
-    An agent told "no results" deserves to know whether it searched four
-    hundred documents or none, and an operator debugging "search finds
-    nothing" needs the same fact to tell an empty corpus from a broken query.
-
-    ``measured`` is what stops that helpfulness inverting. The counters carry
-    defaults so the block is present on every response, refusals included, for
-    the deny control's sake - which means a refusal raised before the store was
-    opened carries zeros nobody counted. "These were never measured" and "these
-    were measured and the corpus is empty" are otherwise byte-identical on the
-    wire, and a reader that cannot tell them apart prints a broken sync under a
-    message about a working one.
-    """
+    """What the mirror says about itself, on every response including refusals."""
 
     documents: int = Field(default=0, ge=0, description="Searchable documents.")
     sources: int = Field(default=0, ge=0, description="Enabled sources.")
@@ -157,12 +122,7 @@ class KnowledgeSearchRequest(BaseModel):
 
 
 class KnowledgeRecentRequest(BaseModel):
-    """Ask what moved, inside a capped window, newest first.
-
-    Not the enumeration search refuses: the window and the k-cap bound it to
-    one page of a fortnight, there is no cursor, and asking again returns the
-    same page - a loop gains nothing.
-    """
+    """Ask what moved, inside a capped window, newest first."""
 
     days: int | None = Field(
         default=None,
@@ -179,13 +139,7 @@ class KnowledgeRecentRequest(BaseModel):
 
 
 class KnowledgeSearchResponse(BaseModel):
-    """One answer, whether it found something, found nothing, or could not look.
-
-    The same model for all three, so a caller has one shape to read and the
-    two counters are present unconditionally. ``refusal_code`` distinguishes
-    "could not look" from "looked and found nothing", which are different
-    facts and lead to different sentences.
-    """
+    """One answer, whether it found something, found nothing, or could not look."""
 
     results: list[KnowledgeSnippet] = Field(default_factory=list)
     result_count: int = Field(..., ge=0, description="How many results are in this response.")

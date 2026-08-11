@@ -12,7 +12,6 @@ from agent_control_models import (
 from agent_control_models.server import CreateControlRequest
 from pydantic import ValidationError
 
-
 VALID_TEMPLATE = {
     "parameters": {
         "pattern": {
@@ -143,9 +142,7 @@ def test_template_definition_allows_flat_arrays_at_depth() -> None:
     node["items"] = ["a", "b", "c", "d", "e"]
 
     # When: validating the template definition
-    result = TemplateDefinition.model_validate(
-        {"parameters": {}, "definition_template": deep}
-    )
+    result = TemplateDefinition.model_validate({"parameters": {}, "definition_template": deep})
 
     # Then: it succeeds (list elements don't count as additional depth)
     assert result.definition_template is not None
@@ -189,8 +186,7 @@ def test_create_control_request_rejects_mixed_raw_and_template_payload() -> None
     with pytest.raises(
         ValidationError,
         match=(
-            "Template-backed control input cannot mix template fields with rendered "
-            "control fields"
+            "Template-backed control input cannot mix template fields with rendered control fields"
         ),
     ):
         # When: the request model parses the mixed payload

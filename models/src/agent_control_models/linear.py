@@ -1,13 +1,4 @@
-"""Wire models for the Linear milestone integration.
-
-Agent Control talks to Linear on the server; the browser only ever sees what
-is in this module. Nothing here carries a credential, and none of these models
-has a field that could hold one.
-
-A team is linked to Linear by its team key (``ENG``, ``SALES``), stored on the
-Agent Control team. Milestones themselves are read-through: they are never
-persisted, so nothing in Linear has to be kept in sync with this database.
-"""
+"""Wire models for the Linear milestone integration."""
 
 from __future__ import annotations
 
@@ -46,13 +37,7 @@ transforms exist to accept.
 
 
 class MilestonesStatus(StrEnum):
-    """Why a milestone response looks the way it does.
-
-    Four of these five are not failures, and the UI is expected to render each
-    one differently. Only ``ERROR`` means something went wrong, and even that
-    is delivered with a 200 so an unreachable third party cannot make an Agent
-    Control page look broken.
-    """
+    """Why a milestone response looks the way it does."""
 
     NOT_CONFIGURED = "not_configured"
     """The server has no Linear API key. Nothing was requested from Linear."""
@@ -71,12 +56,7 @@ class MilestonesStatus(StrEnum):
 
 
 class Milestone(BaseModel):
-    """One Linear project milestone, flattened onto its parent project.
-
-    Linear hangs milestones off projects rather than teams, so a team's
-    milestones are the union across its projects. The project fields are kept
-    on each row so a flat list stays readable without a second lookup.
-    """
+    """One Linear project milestone, flattened onto its parent project."""
 
     id: str = Field(..., description="Linear identifier for the milestone.")
     name: str = Field(..., description="Milestone name as entered in Linear.")
@@ -103,21 +83,12 @@ class Milestone(BaseModel):
     project_id: str | None = Field(
         None, description="Linear identifier of the project the milestone sits in."
     )
-    project_name: str | None = Field(
-        None, description="Name of the project the milestone sits in."
-    )
-    project_url: str | None = Field(
-        None, description="Link to the project in Linear."
-    )
+    project_name: str | None = Field(None, description="Name of the project the milestone sits in.")
+    project_url: str | None = Field(None, description="Link to the project in Linear.")
 
 
 class ListTeamMilestonesResponse(BaseModel):
-    """Milestones for one Agent Control team, read through from Linear.
-
-    ``status`` is the field to branch on. ``milestones`` is empty for every
-    status other than ``ok``, so a client that ignores the status still renders
-    an empty list rather than stale or wrong data.
-    """
+    """Milestones for one Agent Control team, read through from Linear."""
 
     status: MilestonesStatus = Field(
         ..., description="Which of the five outcomes this response represents."
@@ -160,20 +131,7 @@ class ListTeamMilestonesResponse(BaseModel):
 
 
 class MilestoneIssue(BaseModel):
-    """One issue inside a milestone that an agent could be pointed at.
-
-    Only *eligible* issues are rendered as rows. Everything the scope read
-    skipped is reported as a count on :class:`MilestoneIssueCounts` and nothing
-    else, so a shared project's other-team work never has its text copied into
-    an Agent Control response.
-
-    ``creator_id``, ``creator_display_name`` and ``created_at`` exist so a human
-    can weigh provenance before starting anything. **They stop at the confirm.**
-    Plan section 5.1 keeps them off ``SourceItem``, out of the envelope and away
-    from a model: a creator name in the prompt is one more attacker-controlled
-    string, and an agent that can read who filed an issue is an agent an
-    injection can address by name.
-    """
+    """One issue inside a milestone that an agent could be pointed at."""
 
     ref: str = Field(
         ...,
@@ -190,8 +148,7 @@ class MilestoneIssue(BaseModel):
     description: str | None = Field(
         None,
         description=(
-            "Issue body as written in Linear. Untrusted text: whoever can file "
-            "an issue wrote it."
+            "Issue body as written in Linear. Untrusted text: whoever can file an issue wrote it."
         ),
     )
     url: str | None = Field(None, description="Link to the issue in Linear.")
@@ -210,12 +167,7 @@ class MilestoneIssue(BaseModel):
 
 
 class MilestoneIssueSkipCounts(BaseModel):
-    """Why issues in this milestone were not offered, by reason.
-
-    The three are disjoint and add up with ``eligible`` to the milestone's whole
-    issue set. An issue that is both started and assigned counts once, under
-    ``started``, because that is the stronger statement about it.
-    """
+    """Why issues in this milestone were not offered, by reason."""
 
     started: int = Field(
         default=0,
@@ -269,17 +221,7 @@ class MilestoneIssueCounts(BaseModel):
 
 
 class ListMilestoneIssuesResponse(BaseModel):
-    """The issues of one milestone that are eligible to be worked, plus counts.
-
-    ``status`` carries the same meanings as
-    :class:`ListTeamMilestonesResponse`, minus one: ``not_linked`` never appears
-    here because a team with no ``linear_team_key`` is refused with 409
-    ``TEAM_NOT_LINKED`` instead. There is no scope to read against, and
-    answering 200 with an empty list would read as "nothing to do".
-
-    Nothing on this response is a write, an authorization, or a claim. It is a
-    read of somebody else's tracker.
-    """
+    """The issues of one milestone that are eligible to be worked, plus counts."""
 
     status: MilestonesStatus = Field(
         ..., description="not_configured, error, empty or ok. Never not_linked."

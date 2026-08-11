@@ -1,15 +1,4 @@
-"""Index-time logic for the company-knowledge corpus: chunking, scrubbing, naming.
-
-Three pure functions and their constants, with no database, no framework and no
-network. They live in the shared models package for ``files.py``'s reason: the
-sync process writes the corpus and the control plane reads it, and the two must
-agree byte for byte about what a chunk is and what a heading path says. Two
-implementations that must agree will not.
-
-Nothing here parses a file format. The chunker's input is markdown that
-``attachment_converter.py`` has already produced; anything that has to open a
-PDF belongs in the process with the memory limit and no credentials.
-"""
+"""Index-time logic for the company-knowledge corpus: chunking, scrubbing, naming."""
 
 from __future__ import annotations
 
@@ -21,15 +10,7 @@ from .files import normalize_display_name
 
 
 class KnowledgeRefusalCode(StrEnum):
-    """Every way a knowledge request can come back with no results.
-
-    A closed enum, shared by the store, the endpoint and the tool, so the
-    sentence a model eventually reads is a hand-written constant chosen from
-    this list. No Postgres error text and no upstream body ever travels to an
-    agent, and "found nothing" and "could not look" are different answers: an
-    operator debugging "search finds nothing" needs to be told which problem
-    they have.
-    """
+    """Every way a knowledge request can come back with no results."""
 
     QUERY_TOO_SHORT = "query_too_short"
     QUERY_TOO_LONG = "query_too_long"
@@ -37,6 +18,7 @@ class KnowledgeRefusalCode(StrEnum):
     KNOWLEDGE_UNAVAILABLE = "knowledge_unavailable"
     KNOWLEDGE_DISABLED = "knowledge_disabled"
     CORPUS_EMPTY = "corpus_empty"
+
 
 # The splitting target, and the floor a fragment has to clear to stand alone.
 #
@@ -136,24 +118,7 @@ def chunk_markdown(
     max_chars: int = CHUNK_MAX_CHARS,
     min_chars: int = CHUNK_MIN_CHARS,
 ) -> list[Chunk]:
-    """Split converted markdown into heading-bounded chunks.
-
-    Heading boundaries rather than fixed windows, because what full-text
-    retrieval needs is provenance a human can check: ``laptops.md > Onboarding >
-    Laptops`` is verifiable in one click and "characters 4096 to 6144" is not.
-
-    Three degradations, each pinned by a test. A document with no headings
-    becomes paragraph-packed chunks carrying ``heading_path=None``. A section
-    over ``max_chars`` splits at paragraph boundaries. A single paragraph over
-    ``max_chars`` - the pathological plaintext dump - hard-splits at
-    ``max_chars``.
-
-    A merge that clears the ``min_chars`` floor may push a chunk past
-    ``max_chars`` by less than ``min_chars``. That is deliberate: the ceiling is
-    a splitting target, the floor is a correctness rule about what an agent is
-    allowed to mistake for a whole policy, and the retrieval path truncates to
-    its own snippet ceiling regardless.
-    """
+    """Split converted markdown into heading-bounded chunks."""
 
     sections = _split_into_sections(text)
     merged = _merge_short_sections(sections, min_chars=min_chars)
@@ -170,13 +135,7 @@ def chunk_markdown(
 
 
 def scrub_chunk(body: str) -> ScrubResult:
-    """Report whether a chunk body carries a known credential shape.
-
-    The honest claim is "known credential shapes do not enter the index", never
-    "no secret can". A deny-list misses what it does not name, and the residual
-    is why every drop is counted rather than swallowed: a silent scrub is
-    indistinguishable from a broken one.
-    """
+    """Report whether a chunk body carries a known credential shape."""
 
     for name, pattern in _SCRUB_PATTERNS:
         if pattern.search(body):
@@ -190,25 +149,7 @@ def chunk_and_scrub(
     max_chars: int = CHUNK_MAX_CHARS,
     min_chars: int = CHUNK_MIN_CHARS,
 ) -> ScrubbedChunks:
-    """Chunk a document and drop every piece that carries a credential shape.
-
-    The one entry point a writer should use, because chunking and then
-    scrubbing each chunk is not the same operation and the difference is a key
-    in the index. ``_hard_split`` cuts an oversized paragraph at an arbitrary
-    offset, so a credential lying across that offset matches neither side:
-    both pieces come back clean, ``secrets_skipped`` stays zero, and the key
-    is indexed in full across two rows. The seam between two adjacent
-    survivors is therefore scrubbed as well, and a match that exists only
-    across it drops both pieces.
-
-    Joining a seam drops the whitespace that separated two paragraphs, which
-    makes the seam check slightly more eager than the document it came from.
-    That direction is the safe one, and every drop is counted.
-
-    The residual, stated: a run longer than a whole chunk keeps only its first
-    piece next to the assignment that names it, so the later pieces are
-    indexed as the opaque text they look like.
-    """
+    """Chunk a document and drop every piece that carries a credential shape."""
 
     chunks = chunk_markdown(text, max_chars=max_chars, min_chars=min_chars)
     dropped = {index for index, chunk in enumerate(chunks) if not scrub_chunk(chunk.body).clean}
@@ -231,25 +172,14 @@ def is_secret_filename(name: str | None) -> bool:
 
 
 def normalize_index_name(raw: str | None) -> str | None:
-    """Normalize one attacker-influenced name for storage.
-
-    A filename is chosen by whoever names the file, and these strings render
-    inside the fence header the model reads, so they are normalized here at
-    index time and neutralized again at render. This is the first of the two
-    layers, not the only one.
-    """
+    """Normalize one attacker-influenced name for storage."""
 
     name, _ = normalize_display_name(raw)
     return name
 
 
 def normalize_index_path(raw: str | None) -> str | None:
-    """Normalize a corpus path segment by segment, keeping the separators.
-
-    ``normalize_display_name`` turns ``/`` into ``_`` because a display name has
-    no business carrying one. A corpus path is exactly the case where it does,
-    so each segment goes through separately and the path is rebuilt.
-    """
+    """Normalize a corpus path segment by segment, keeping the separators."""
 
     if not raw:
         return None
@@ -259,16 +189,7 @@ def normalize_index_path(raw: str | None) -> str | None:
 
 
 def _split_into_sections(text: str) -> list[tuple[str | None, str]]:
-    """Cut markdown at ``#``..``###`` boundaries, ignoring headings inside fences.
-
-    Each section's body keeps its own heading line, so the heading's words are
-    searchable and ``ts_headline`` can highlight them. Preamble before the first
-    heading carries ``heading_path=None``.
-
-    The stack holds each open heading's own level rather than relying on
-    position, because a document is free to start at ``##`` or to skip a level,
-    and a stack indexed by level reads siblings as parent and child.
-    """
+    """Cut markdown at ``#``..``###`` boundaries, ignoring headings inside fences."""
 
     stack: list[tuple[int, str]] = []
     sections: list[tuple[str | None, list[str]]] = []
@@ -320,14 +241,7 @@ def _merge_short_sections(
     *,
     min_chars: int,
 ) -> list[tuple[str | None, str]]:
-    """Fold sections under the floor into a neighbour, preferring the next one.
-
-    The merged chunk keeps the heading path of whichever side contributes more
-    characters, so a citation points at the section that dominates the text
-    rather than at a one-line preamble that happened to come first. Both
-    headings survive inside the body, so the boundary stays visible to a human
-    checking the citation.
-    """
+    """Fold sections under the floor into a neighbour, preferring the next one."""
 
     merged: list[tuple[str | None, str]] = []
     pending: tuple[str | None, str] | None = None
@@ -390,15 +304,7 @@ def _paragraphs(body: str) -> list[str]:
 
 
 def _hard_split(paragraph: str, *, max_chars: int) -> list[str]:
-    """The single-paragraph pathology: no boundary to cut on, so cut evenly.
-
-    Evenly rather than at the ceiling repeatedly, because repeated ceiling cuts
-    leave a remainder that is whatever is left over - frequently a handful of
-    characters, which is the fragment the floor exists to prevent, and one the
-    floor cannot fix here without inserting a paragraph break into text that
-    never had one. Even cuts stay under the ceiling and never leave a
-    remainder smaller than half of it. No character is added or removed.
-    """
+    """The single-paragraph pathology: no boundary to cut on, so cut evenly."""
 
     if len(paragraph) <= max_chars:
         return [paragraph]

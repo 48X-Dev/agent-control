@@ -3,12 +3,7 @@ from .controls import ControlDefinition, UnrenderedTemplateControl
 
 
 class Control(BaseModel):
-    """A control with identity and configuration.
-
-    For rendered controls (raw or template-backed), ``control`` is a
-    ``ControlDefinition``.  For unrendered template controls, ``control``
-    is an ``UnrenderedTemplateControl``.
-    """
+    """A control with identity and configuration."""
 
     id: int
     name: str
@@ -16,11 +11,7 @@ class Control(BaseModel):
 
 
 class Policy(BaseModel):
-    """A policy with its associated controls.
-
-    Policies define a collection of controls that can be assigned to agents.
-    Controls are directly associated with policies (no intermediate layer).
-    """
+    """A policy with its associated controls."""
 
     id: int
     name: str

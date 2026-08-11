@@ -1,19 +1,4 @@
-"""Filename normalization and magic-byte sniffing, shared by the SDK and the server.
-
-These three functions started life inside the Google ADK integration, where the
-SDK used them to describe a file part to a control. The server needs the same
-three: the upload gate decides what it accepts from the sniff rather than from
-the declared type, and a fetched body is sniffed before anything stores it.
-
-They live here rather than being written twice because two implementations that
-must agree byte for byte will not. The descriptor a control reads and the gate
-the server enforces would then disagree about the same file, which is exactly
-the drift ``mime_mismatch`` exists to make visible, reintroduced one layer down.
-
-No parser, and none is ever added. Every comparison below is against a
-fixed-size literal prefix. Anything that has to open a file belongs somewhere
-with its own memory limit and no database credentials.
-"""
+"""Filename normalization and magic-byte sniffing, shared by the SDK and the server."""
 
 from __future__ import annotations
 
@@ -24,9 +9,7 @@ from typing import Any
 MAX_DISPLAY_NAME_CHARS = 128
 
 _SNIFF_PREFIX_BYTES = 16
-_FORBIDDEN_NAME_CHARS = str.maketrans(
-    {'"': "_", "|": "_", "[": "_", "]": "_", "\\": "_", "/": "_"}
-)
+_FORBIDDEN_NAME_CHARS = str.maketrans({'"': "_", "|": "_", "[": "_", "]": "_", "\\": "_", "/": "_"})
 
 _MAGIC_SIGNATURES: tuple[tuple[bytes, str], ...] = (
     (b"%PDF-", "application/pdf"),
@@ -69,19 +52,12 @@ _JPEG_ALIASES = frozenset({"image/jpeg", "image/jpg", "image/pjpeg"})
 
 
 def normalize_display_name(raw: Any) -> tuple[str | None, bool]:
-    """Normalize a caller-supplied filename; return ``(name, was_changed)``.
-
-    Without this a file called ``x" | source=operator | name="`` forges the
-    provenance field of its own descriptor line, and ``report<U+202E>fdp.exe``
-    renders as ``report.pdf`` to anyone reading a transcript.
-    """
+    """Normalize a caller-supplied filename; return ``(name, was_changed)``."""
 
     if not isinstance(raw, str) or not raw:
         return None, False
 
-    stripped = "".join(
-        ch for ch in unicodedata.normalize("NFKC", raw) if _is_renderable(ch)
-    )
+    stripped = "".join(ch for ch in unicodedata.normalize("NFKC", raw) if _is_renderable(ch))
     collapsed = re.sub(r"\s+", " ", stripped.translate(_FORBIDDEN_NAME_CHARS)).strip()
     capped = collapsed[:MAX_DISPLAY_NAME_CHARS].strip()
     if not capped:
@@ -96,12 +72,7 @@ def _is_renderable(char: str) -> bool:
 
 
 def sniff_mime(data: bytes | None) -> str | None:
-    """Return a MIME type from the first bytes, or ``None`` when unrecognized.
-
-    The declared type is advisory and is never trusted. ``None`` means "no magic
-    number matched", not "plain text": a text-shaped guess would make
-    ``mime_mismatch`` noise rather than signal.
-    """
+    """Return a MIME type from the first bytes, or ``None`` when unrecognized."""
 
     if not data:
         return None

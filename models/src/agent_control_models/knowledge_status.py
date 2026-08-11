@@ -1,8 +1,4 @@
-"""The oversight read: what the knowledge mirror says about itself, per source.
-
-Separate from ``knowledge_search``'s ``KnowledgeCorpus``, which is the
-freshness strip every search response carries, because the audiences differ.
-"""
+"""The oversight read: what the knowledge mirror says about itself, per source."""
 
 from __future__ import annotations
 

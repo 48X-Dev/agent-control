@@ -1,37 +1,4 @@
-"""
-Standardized error models for Agent Control API.
-
-This module implements a unified error response format that combines:
-- RFC 7807 (Problem Details for HTTP APIs)
-- Kubernetes-style error structure
-- GitHub-style validation error arrays
-- OPA-style semantic error codes
-
-Example error response:
-{
-    "type": "https://agent-control.dev/errors/not-found",
-    "title": "Resource Not Found",
-    "status": 404,
-    "detail": "Agent with name 'customer-service-bot' not found",
-    "instance": "/api/v1/agents/customer-service-bot",
-    "error_code": "AGENT_NOT_FOUND",
-    "kind": "Status",
-    "api_version": "v1",
-    "reason": "NotFound",
-    "metadata": {
-        "request_id": "req-abc123",
-        "timestamp": "2025-01-15T10:30:00Z"
-    },
-    "errors": [
-        {
-            "resource": "Agent",
-            "field": "agent_name",
-            "code": "not_found",
-            "message": "Agent with name 'customer-service-bot' does not exist"
-        }
-    ]
-}
-"""
+"""Standardized error models for Agent Control API."""
 
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -43,11 +10,7 @@ from .base import BaseModel
 
 
 class ErrorCode(StrEnum):
-    """
-    Standardized error codes following OPA-style semantic naming.
-
-    Error codes follow the pattern: RESOURCE_ACTION or CATEGORY_DESCRIPTION
-    """
+    """Standardized error codes following OPA-style semantic naming."""
 
     # Authentication & Authorization (1xx pattern in code)
     AUTH_MISSING_KEY = "AUTH_MISSING_KEY"
@@ -250,11 +213,7 @@ class ErrorCode(StrEnum):
 
 
 class ErrorReason(StrEnum):
-    """
-    Kubernetes-style reason codes for error categorization.
-
-    These provide a machine-readable, stable identifier for the error type.
-    """
+    """Kubernetes-style reason codes for error categorization."""
 
     # Client errors
     NOT_FOUND = "NotFound"
@@ -273,11 +232,7 @@ class ErrorReason(StrEnum):
 
 
 class ValidationErrorItem(BaseModel):
-    """
-    GitHub-style validation error item.
-
-    Represents a single validation error with field-level detail.
-    """
+    """GitHub-style validation error item."""
 
     resource: str = Field(
         ...,
@@ -315,11 +270,7 @@ class ValidationErrorItem(BaseModel):
 
 
 class ErrorMetadata(BaseModel):
-    """
-    Metadata about the error occurrence.
-
-    Contains contextual information useful for debugging and tracing.
-    """
+    """Metadata about the error occurrence."""
 
     request_id: str | None = Field(
         default=None,
@@ -336,11 +287,7 @@ class ErrorMetadata(BaseModel):
 
 
 class ErrorDetails(BaseModel):
-    """
-    Additional structured details about the error.
-
-    Kubernetes-style details object containing resource-specific information.
-    """
+    """Additional structured details about the error."""
 
     name: str | None = Field(
         default=None,
@@ -361,18 +308,7 @@ class ErrorDetails(BaseModel):
 
 
 class ProblemDetail(BaseModel):
-    """
-    RFC 7807 Problem Details with Kubernetes and GitHub extensions.
-
-    This is the standardized error response format for all API errors.
-    All error responses conform to this schema for consistency.
-
-    Combines:
-    - RFC 7807 core fields (type, title, status, detail, instance)
-    - Kubernetes fields (kind, apiVersion, reason, metadata)
-    - GitHub validation (errors array)
-    - OPA semantic codes (error_code)
-    """
+    """RFC 7807 Problem Details with Kubernetes and GitHub extensions."""
 
     # RFC 7807 core fields
     type: str = Field(

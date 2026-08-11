@@ -33,16 +33,7 @@ TeamSlug = Annotated[
 
 
 def slugify(value: str) -> str:
-    """Derive a team slug from free-form text.
-
-    Lowercases, folds accented characters onto their ASCII base, collapses every
-    run of non-alphanumeric characters into a single hyphen, and strips leading
-    and trailing hyphens. ``"Sales & Outreach"`` becomes ``"sales-outreach"``.
-
-    Input without any alphanumeric content yields an empty string rather than an
-    exception, so callers can validate the result against :data:`TeamSlug` and
-    raise an error that fits their own boundary.
-    """
+    """Derive a team slug from free-form text."""
     decomposed = unicodedata.normalize("NFKD", value)
     # Accents are dropped so "Café" folds to "cafe", but every other character
     # without an ASCII form becomes a separator rather than disappearing:
@@ -54,20 +45,11 @@ def slugify(value: str) -> str:
 
 
 class Team(BaseModel):
-    """A named group of agents within a single namespace.
-
-    Teams are descriptive. Membership records which agents belong together and
-    has no effect on how controls or policies resolve at runtime.
-
-    ``slug`` is the stable key and is immutable once the team exists; a rename
-    changes ``display_name`` only.
-    """
+    """A named group of agents within a single namespace."""
 
     id: int = Field(..., description="Surrogate identifier for the team.")
     namespace_key: str = Field(..., description="Namespace the team belongs to.")
-    slug: TeamSlug = Field(
-        ..., description="Stable, immutable key derived from the display name."
-    )
+    slug: TeamSlug = Field(..., description="Stable, immutable key derived from the display name.")
     display_name: str = Field(
         ...,
         min_length=1,
@@ -100,19 +82,12 @@ class Team(BaseModel):
 
 
 class TeamMember(BaseModel):
-    """Membership of one agent in one team.
+    """Membership of one agent in one team."""
 
-    Membership is many-to-many: the same agent may appear in several teams.
-    """
-
-    namespace_key: str = Field(
-        ..., description="Namespace shared by the team and the agent."
-    )
+    namespace_key: str = Field(..., description="Namespace shared by the team and the agent.")
     team_id: int = Field(..., description="Team the agent belongs to.")
     agent_name: str = Field(..., description="Normalized agent identifier.")
-    joined_at: dt.datetime = Field(
-        ..., description="When the agent was added to the team."
-    )
+    joined_at: dt.datetime = Field(..., description="When the agent was added to the team.")
 
     @field_validator("agent_name", mode="before")
     @classmethod
@@ -137,11 +112,7 @@ TeamDescription = Annotated[
 
 
 class UpsertTeamRequest(BaseModel):
-    """Request to create or replace a team, keyed by slug.
-
-    Replace semantics: an omitted ``description`` clears the stored value on an
-    existing team. Use PATCH to change one field and leave the rest alone.
-    """
+    """Request to create or replace a team, keyed by slug."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -185,25 +156,17 @@ class UpsertTeamResponse(BaseModel):
     created: bool = Field(
         ...,
         description=(
-            "True when a new team was created; False when an existing team "
-            "was updated in place."
+            "True when a new team was created; False when an existing team was updated in place."
         ),
     )
 
 
 class PatchTeamRequest(BaseModel):
-    """Request to update a team's mutable fields.
-
-    ``slug`` is immutable, so supplying it is rejected rather than silently
-    ignored. Omitted fields are left unchanged; an explicit ``null``
-    description clears it.
-    """
+    """Request to update a team's mutable fields."""
 
     model_config = ConfigDict(extra="forbid")
 
-    display_name: TeamDisplayName | None = Field(
-        None, description="New human-readable team name."
-    )
+    display_name: TeamDisplayName | None = Field(None, description="New human-readable team name.")
     description: TeamDescription | None = Field(
         None, description="New description, or null to clear it."
     )
@@ -270,9 +233,7 @@ class TeamMemberRef(BaseModel):
     """One agent's membership in a team."""
 
     agent_name: str = Field(..., description="Normalized agent identifier.")
-    joined_at: dt.datetime = Field(
-        ..., description="When the agent was added to the team."
-    )
+    joined_at: dt.datetime = Field(..., description="When the agent was added to the team.")
 
 
 class GetTeamResponse(TeamSummary):
@@ -288,9 +249,7 @@ class ListTeamsResponse(BaseModel):
     """Paginated list of teams."""
 
     teams: list[TeamSummary] = Field(default_factory=list)
-    pagination: PaginationInfo = Field(
-        ..., description="Cursor-based pagination metadata."
-    )
+    pagination: PaginationInfo = Field(..., description="Cursor-based pagination metadata.")
 
 
 class AddTeamMemberResponse(BaseModel):
@@ -299,8 +258,7 @@ class AddTeamMemberResponse(BaseModel):
     added: bool = Field(
         ...,
         description=(
-            "True when the membership was created; False when the agent was "
-            "already a member."
+            "True when the membership was created; False when the agent was already a member."
         ),
     )
     team_id: int = Field(..., description="Identifier of the team.")
@@ -315,8 +273,5 @@ class RemoveTeamMemberResponse(BaseModel):
 
     removed: bool = Field(
         ...,
-        description=(
-            "True when a membership was deleted; False when the agent was "
-            "not a member."
-        ),
+        description=("True when a membership was deleted; False when the agent was not a member."),
     )

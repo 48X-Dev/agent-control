@@ -1,8 +1,4 @@
-"""Read models for a trace viewed as an ordered chain of hops.
-
-These are views over the control execution events in
-:mod:`agent_control_models.observability`; nothing here is ingested or stored.
-"""
+"""Read models for a trace viewed as an ordered chain of hops."""
 
 from __future__ import annotations
 
@@ -25,23 +21,14 @@ needs more than a single page out of the event store.
 
 
 class TraceTeamRef(BaseModel):
-    """The team an agent belonged to when a trace was read.
-
-    Resolved at read time from current membership, not captured with the event,
-    so a hop reflects where the agent sits now rather than where it sat when
-    the control ran.
-    """
+    """The team an agent belonged to when a trace was read."""
 
     slug: str = Field(..., description="Stable key of the team.")
     display_name: str = Field(..., description="Human-readable team name.")
 
 
 class TraceHop(BaseModel):
-    """One control execution in a trace.
-
-    A hop is an observation, not a causal step: events carry no parent span, so
-    position in the sequence says only that this hop's timestamp sorted here.
-    """
+    """One control execution in a trace."""
 
     agent_name: str = Field(
         ...,
@@ -74,34 +61,21 @@ class TraceHop(BaseModel):
     @field_validator("timestamp")
     @classmethod
     def ensure_timezone_aware(cls, v: datetime) -> datetime:
-        """Treat a naive client timestamp as UTC.
-
-        Events are accepted with lenient timestamps, and hops from a mix of
-        naive and aware clients have to stay comparable to each other.
-        """
+        """Treat a naive client timestamp as UTC."""
         if v.tzinfo is None:
             return v.replace(tzinfo=UTC)
         return v
 
 
 class TraceResponse(BaseModel):
-    """Ordered hops of a single trace.
-
-    Hops are sorted by ``(timestamp, span_id)``. Timestamps come from the
-    clients that emitted the events, so a sequence spanning several machines
-    can be misordered without that being detectable here; ``out_of_order``
-    reports the one case that is detectable, which is hops the timestamps
-    could not separate.
-    """
+    """Ordered hops of a single trace."""
 
     trace_id: str = Field(..., min_length=1, description="Trace that was read.")
     hops: list[TraceHop] = Field(
         default_factory=list, description="Hops in (timestamp, span_id) order."
     )
     hop_count: int = Field(..., ge=0, description="Number of hops in this response.")
-    total_hop_count: int = Field(
-        ..., ge=0, description="Number of hops the trace has in total."
-    )
+    total_hop_count: int = Field(..., ge=0, description="Number of hops the trace has in total.")
     truncated: bool = Field(
         ...,
         description=(

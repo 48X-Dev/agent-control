@@ -1,21 +1,4 @@
-"""Agent-to-executor bindings and their HTTP wire models.
-
-An *executor* is the process that actually runs an agent. Agent Control never
-runs agent code itself, so before a chat session can exist, something has to
-answer "which process serves this agent". That is what a runtime binding is.
-
-The word "runtime" already means something else in this codebase
-(``Operation.RUNTIME_USE``, ``AGENT_CONTROL_RUNTIME_TOKEN_SECRET``), so every
-field naming the process that runs the agent says *executor*: ``executor_kind``,
-``executor_app_name``. The table keeps the name ``agent_runtimes`` because it is
-the binding registry, not the process.
-
-One agent binds to exactly one executor. That is not a simplification: the
-Python SDK holds a single module-level agent per process
-(``sdks/python/src/agent_control/_state.py``) and ``AgentControlPlugin.__init__``
-raises when the names disagree, so one process serves one agent and a team of
-five agents means five executor processes.
-"""
+"""Agent-to-executor bindings and their HTTP wire models."""
 
 from __future__ import annotations
 
@@ -34,37 +17,18 @@ EXECUTOR_APP_NAME_MAX_LENGTH = 255
 
 
 class ExecutorKind(StrEnum):
-    """Which executor implementation serves an agent.
-
-    One member today. It exists as an enum rather than a free string because
-    the value selects a client implementation, and a typo in it should be a
-    422 at the boundary rather than a 500 at resolution time.
-    """
+    """Which executor implementation serves an agent."""
 
     GOOGLE_ADK = "google_adk"
 
 
 def validate_executor_base_url(value: str) -> str:
-    """Return a normalized executor base URL, or raise ``ValueError``.
-
-    Only the origin plus an optional path is accepted. A query string, a
-    fragment or embedded credentials are rejected rather than silently
-    dropped: this string is concatenated with executor paths on every call, and
-    a caller who thinks they configured ``?key=...`` should be told they did
-    not. The trailing slash is stripped so ``base + "/apps/..."`` never
-    produces a double slash.
-
-    This is deployment configuration written by an admin, not user input, but
-    it is still the one field on this row that turns into an outbound request,
-    so it is validated here rather than at the call site.
-    """
+    """Return a normalized executor base URL, or raise ``ValueError``."""
     candidate = value.strip()
     if not candidate:
         raise ValueError("base_url must not be empty")
     if len(candidate) > EXECUTOR_BASE_URL_MAX_LENGTH:
-        raise ValueError(
-            f"base_url must be at most {EXECUTOR_BASE_URL_MAX_LENGTH} characters"
-        )
+        raise ValueError(f"base_url must be at most {EXECUTOR_BASE_URL_MAX_LENGTH} characters")
     parts = urlsplit(candidate)
     if parts.scheme not in ("http", "https"):
         raise ValueError("base_url must start with http:// or https://")
@@ -88,13 +52,9 @@ ExecutorAppName = Annotated[
     StringConstraints(min_length=1, max_length=EXECUTOR_APP_NAME_MAX_LENGTH),
 ]
 
-def _normalize_agent_name_input(value: object) -> str:
-    """Normalize an inbound agent name, rejecting anything unusable.
 
-    Runs *before* the length and pattern constraints so a caller who sends
-    ``"My-Agent-Name"`` gets the same normalization every other agent-bearing
-    endpoint applies, rather than a pattern violation for the capital letters.
-    """
+def _normalize_agent_name_input(value: object) -> str:
+    """Normalize an inbound agent name, rejecting anything unusable."""
     return normalize_agent_name(str(value))
 
 
@@ -148,12 +108,7 @@ class AgentRuntime(BaseModel):
 
 
 class UpsertAgentRuntimeRequest(BaseModel):
-    """Create or replace the executor binding for one agent.
-
-    Replace semantics, keyed by the agent in the path: every field on an
-    existing binding is overwritten with what this body carries, so an omitted
-    ``enabled`` re-enables a drained binding.
-    """
+    """Create or replace the executor binding for one agent."""
 
     model_config = ConfigDict(extra="forbid")
 
