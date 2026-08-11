@@ -524,7 +524,7 @@ def init(
     api_key_header: str | None = None,
     controls_file: str | None = None,
     steps: list[StepSchemaDict] | None = None,
-    conflict_mode: Literal["strict", "overwrite"] = "overwrite",
+    conflict_mode: Literal["strict", "overwrite"] = "strict",
     observability_enabled: bool | None = None,
     observability_sink_name: str | None = None,
     observability_sink_config: JSONObject | None = None,
@@ -567,7 +567,9 @@ def init(
         steps: Optional list of step schemas for registration:
                [{"type": "tool", "name": "search", "input_schema": {...}, "output_schema": {...}}]
         conflict_mode: Conflict handling mode for initAgent registration.
-            Defaults to "overwrite" in SDK flows.
+            Defaults to "strict": the registry merges, a changed step schema
+            raises 409 SCHEMA_INCOMPATIBLE, and pruning needs "overwrite",
+            which is admin-gated by mode rather than by diff.
         observability_enabled: Optional bool to enable/disable observability (defaults to env var)
         observability_sink_name: Optional sink selection name. Use "default" to preserve
             SDK -> server delivery or "registered" / a named sink factory for custom sinks.
