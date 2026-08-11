@@ -1,76 +1,82 @@
 # Agent Fleet Topology: Implementation Plan
 
-Status: design. Nothing built.
-Branch context: `feat/task-dispatcher`.
-Scope: how N agents across M teams get started, addressed, credentialed and budgeted; what `docker compose up` brings up and what stays manual; and the two credential problems that only appear at fleet scale.
-Depends on: the orchestration plan's Phases 1 and 2 (`agent_runtimes`, `agent_sessions`, `POST /turns`), which are shipped, and the dispatch ledger from `task-dispatcher.md` Phases 1 to 4, which is largely shipped (`agent_tasks`, `agent_task_steps`, `agent_workflows`, `agent_dispatch_state`, `endpoints/agent_dispatch.py`, `dispatcher/`).
+Status: design, revision 2. Nothing built.
+Runtime target: **Apple `container` only.** Revision 1 was written for Docker Compose; section 3.3 records why that was wrong and what it cost.
+Branch context: `build/container-context-and-corpus-migrations`.
+Scope: how N agents get started, addressed and credentialed under the runtime this stack actually uses; and the credential problem that has to be solved before any of it is worth building.
+Depends on: the orchestration plan's Phases 1 and 2 (`agent_runtimes`, `agent_sessions`, `POST /turns`), shipped; the dispatch ledger from `task-dispatcher.md`, largely shipped.
+Split out of this plan: per-team budgets, now `docs/plans/per-team-budgets.md`. It has no dependency on anything here and was holding a 1.5-week server change behind three weeks of packaging.
 Does not deliver: a scheduler, a supervisor, autoscaling, or any change to what authorizes work. Section 9.
 
-**Author's note.** Every measurement below was taken from this working tree, this database and these running processes while writing. An earlier draft of this plan carried two errors that survived a first review and were caught by a second: it assumed `App(name=...)` was ADK's routing key, and it assumed `conflict_mode="strict"` alone removed the admin requirement. Both were wrong, both are corrected here in sections 3.4 and 4.3, and both corrections cost real effort that the earlier phase table did not have. Where a claim is about behaviour rather than text, the probe that produced it is named.
+**Author's note on this revision.** Revision 1 claimed every measurement came from a live tree. Most did, and then it sat unedited from 3 August while roughly 2,900 lines changed in the files it cited. A four-reviewer audit on 11 August found the decay, and found two things that were wrong when written rather than merely stale. Both are corrected below and both are load-bearing:
+
+- **Probe A, the plan's own entry gate, asserted a failure that does not happen.** Measured today against the running executor: `POST /apps/marketing_researcher/users/u/sessions/probe1` on the process serving `my_agent` returns **200**, with `"appName":"marketing_researcher"` echoed in the body. Session creation never consults the agent loader. Section 3.4 is rewritten around where the failure actually lands.
+- **Executors cannot boot on an ordinary key, and revision 1 never examined the path that stops them.** It enumerated registration and stopped. The nudge and halt path is ADMIN, fires at every model and tool boundary, and has no configured alternative in this repo. Section 4.4 is new and it is a blocker, not a caveat.
+
+Where a claim here is about behaviour rather than text, the probe that produced it is named and was run on 11 August.
 
 ---
 
 ## 1. What ships, in one paragraph
 
-Eight executor processes stop being eight terminal tabs. A checked-in `fleet.yaml` names which registered agents should have a process; a generator turns it into `compose.fleet.yml`, one service per agent, all from one image, differing only by `AGENT_CONTROL_AGENT_NAME`. Nothing publishes a host port, so the 8080-8087 range disappears rather than growing, and `agent_runtimes.base_url` becomes `http://ac-exec-<agent-name>:8000`, derived from the thing it points at rather than a number somebody typed. The image materializes exactly one ADK agent package per container at start, so `/list-apps` returns the agent's own name and a row aimed at the wrong process fails closed instead of silently running one agent's work under another's controls. A one-shot `fleet-register` job holds the only admin credential in the design: it registers the agents, syncs their step schemas, writes the runtime bindings, and exits before any agent code exists anywhere in the profile, which is the argument `docker-compose.dev.yml` already makes for `adk-db-init`. Executors then boot on an ordinary key and find every step already present, which is what takes ADMIN out of eight processes running model-driven agent code. The namespace turn budget gains a per-team companion charged in the same transaction and at the same statement, `charge_dispatch_turn`, and the plan is honest that per-team accounting bounds authorized spend without creating capacity, because all four teams draw on one consumer subscription through one unauthenticated local proxy.
+Executor processes stop being terminal tabs. An operator-supplied `fleet.yaml` names which registered agents should have a process; a new `fleet/` workspace package reads it and drives Apple `container` directly, one container per agent, all from one image, differing only by `AGENT_CONTROL_AGENT_NAME`. Nothing publishes a host port, so the 8080-8087 range disappears rather than growing. The image materializes exactly one ADK agent package per container at start, so `/list-apps` returns the agent's own name, which is what lets `fleet doctor` tell a mis-bound row from a healthy one. Admin credentials live in two one-shot jobs that exit; executors run on an ordinary key. **That last clause is conditional on section 4.4, which is unsolved.** Until it is, this plan buys addressing and lifecycle and does not buy the credential reduction that is its entire justification.
 
-**Three things it does not ship**, named here because each is what a reader supplies for themselves. Milestone scope does not become schedulable, at any layer, by any convenience this adds. The dispatcher does not become admin, and the fleet's registration credential deliberately lives in a different process with a different lifetime. And the one-agent-per-process SDK constraint is not removed; section 3.2 prices removing it and refuses.
+**Three things it does not ship.** Milestone scope does not become schedulable, by any convenience added here. The dispatcher does not become admin. And the one-agent-per-process SDK constraint is not removed; section 3.2 prices removing it and refuses.
 
 ---
 
-## 2. Measured state
+## 2. Measured state, 11 August
 
-**Eight executor processes, on the host, started by hand.** `ps` shows eight `uv run --no-sync --with google-adk[extensions] adk api_server --port 808N` for N in 0..7. All eight answer 200 on `/list-apps`. None is in Docker. Only `agent_control_postgres` (host port 15432) and `agent_control_server` (host port 8000) are.
+**One executor process, not eight.** `adk api_server --host 0.0.0.0 --port 8080 .` serving app `my_agent`. Ports 8081 to 8087 refuse connections. Revision 1 described eight and sized several arguments against that number; every "eight crash loops" and "restart the eight" claim in it was fiction by the time it was read.
 
-**None of them passes `--session_service_uri`.** So ADK sessions are in `InMemorySessionService` and die with the process. This matters more than it looks and section 3.5 is about it.
+Note `--host 0.0.0.0`. The one executor currently binds every interface on the host, which is the exposure section 3.3 exists to remove.
 
-**They are all the same application.** `examples/google_adk_plugin/my_agent/agent.py` reads `AGENT_CONTROL_AGENT_NAME` from the environment and ends with `app = App(name="my_agent", root_agent=root_agent, plugins=[plugin])`. `marketing_researcher` and `engineering_reviewer` are the same code, the same two local tools, the same Exa toolset, differing by that environment variable and by a system prompt stored in `agent_configs`.
+**The stack runs on Apple `container`, not Docker.** Live: `ac-postgres`, `ac-server`, `ac-dispatcher`, `ac-knowledge` on a 192.168.64.0/24 network, started by `scripts/apple-container-up.sh`. The Docker daemon is not running. This is the single fact that invalidated revision 1's delivery mechanism.
 
-**`agent_runtimes`, all eight rows:**
+**`agent_runtimes`, all eight rows**, after a deliberate repair on 11 August that moved them off `host.docker.internal`, which does not resolve inside these VMs:
 
 ```
-namespace_key |       agent_name       | executor_kind |             base_url             | executor_app_name | enabled
---------------+------------------------+---------------+----------------------------------+-------------------+--------
-default       | marketing_copywriter   | google_adk    | http://host.docker.internal:8080 | my_agent          | t
-default       | sales_prospector       | google_adk    | http://host.docker.internal:8081 | my_agent          | t
-default       | sales_outreach_drafter | google_adk    | http://host.docker.internal:8082 | my_agent          | t
-default       | ops_runbook_agent      | google_adk    | http://host.docker.internal:8083 | my_agent          | t
-default       | ops_incident_triage    | google_adk    | http://host.docker.internal:8084 | my_agent          | t
-default       | marketing_researcher   | google_adk    | http://host.docker.internal:8085 | my_agent          | t
-default       | engineering_reviewer   | google_adk    | http://host.docker.internal:8086 | my_agent          | t
-default       | engineering_debugger   | google_adk    | http://host.docker.internal:8087 | my_agent          | t
+agent_name             | base_url                   | executor_app_name
+-----------------------+----------------------------+------------------
+marketing_copywriter   | http://192.168.64.1:8080   | my_agent
+sales_prospector       | http://192.168.64.1:8081   | my_agent
+sales_outreach_drafter | http://192.168.64.1:8082   | my_agent
+ops_runbook_agent      | http://192.168.64.1:8083   | my_agent
+ops_incident_triage    | http://192.168.64.1:8084   | my_agent
+marketing_researcher   | http://192.168.64.1:8085   | my_agent
+engineering_reviewer   | http://192.168.64.1:8086   | my_agent
+engineering_debugger   | http://192.168.64.1:8087   | my_agent
 ```
 
-Primary key `(namespace_key, agent_name)`. No unique constraint on `base_url`, which orchestration 9.6 already noted. `executor_app_name` is the same literal string on every row.
+`192.168.64.1` is the network gateway, which from inside a VM is the host. Seven of the eight point at nothing listening. `executor_app_name` is the same literal on every row.
 
 **Nine agents, eight runtimes.** `google-adk-plugin` is registered and unbound.
 
-**Four teams, and a live misconfiguration:**
+**33 `agent_sessions` rows, 16 with `agent_task_id`, all 16 with `team_id` NULL.** Revision 1 said five and sized its adoption migration against five.
 
-```
-      slug      |   display_name   | linear_team_key
-----------------+------------------+-----------------
- engineering    | Engineering      | ENG
- marketing      | Marketing        | OPS
- operations     | Operations       | OPS
- sales-outreach | Sales & Outreach |
-```
+**`serve` exists.** `dispatcher/src/agent_control_dispatcher/cli.py` defines `once` and `serve`; `loop.py` and `test_serve.py` are landed. `claim` and `preflight` are still unwritten. Revision 1's claim that only `once` exists, and its proposal to hide the dispatcher behind a profile, would undo a deliberate decision documented at `docker-compose.yml:114-138`.
 
-`marketing` and `operations` both point at Linear team OPS. `linear_team_key` bounds which team's issues a dispatcher may read, so two Agent Control teams currently see one Linear team's work. `sales-outreach` has no key at all.
+**The workflow no longer crosses team lines.** `plan-critique-execute` now names three marketing agents. Commit `701f7e5` made the upsert refuse a step naming a non-member with `AGENT_NOT_IN_TEAM`. Revision 1 built an argument on the cross-team case as shipped fact; that argument moved to the budgets plan and shrank.
 
-**The budget is namespace-wide.** `agent_dispatch_state` has `namespace_key` as its entire primary key, `max_tasks_per_hour` 20 and `max_turns_per_hour` 60. All four teams draw on that one row, which is why every dispatcher run prints one budget line for the whole fleet.
+**The proxy.** An OpenAI-compatible endpoint at `http://127.0.0.1:10531/v1`, no API key, fronting a consumer subscription. Loopback-bound, which section 5.4 requires. Models include `gpt-5.6-sol`, which is what the example agent defaults to when a base URL is set.
 
-**A workflow already crosses team lines.** The one row in `agent_workflows` is `plan-critique-execute`, `team_slug = marketing`, and its second step names `engineering_reviewer`, a member of `engineering`. Not hypothetical; it is the shipped example.
+### 2.1 What Apple `container` does not have
 
-**Dispatch sessions carry no team.** All five rows in `agent_sessions` with `agent_task_id IS NOT NULL` have `team_id` NULL, because `DispatchClient.create_session` sends `agent_name`, `title` and `task_key` and nothing else. `agent_tasks.team_slug` is populated for the Linear-sourced tasks and NULL for the file-sourced one.
+Measured by `container run --help` and by probe:
 
-**Only `once` exists.** `dispatcher/src/agent_control_dispatcher/cli.py` defines one subparser. `serve`, `claim` and `preflight` are specced in `task-dispatcher.md` section 4 and are not written.
+| Compose feature revision 1 used | Apple `container` |
+|---|---|
+| `profiles:` | absent |
+| `include:` | absent |
+| `depends_on: service_healthy` | absent |
+| `depends_on: service_completed_successfully` | absent |
+| `healthcheck:` | absent |
+| `restart: unless-stopped` | **absent. No restart policy of any kind.** |
+| inter-container DNS by service name | **absent.** `socket.gethostbyname("ac-postgres")` from `ac-server` raises `gaierror` |
 
-**No compose file uses `profiles:` or `include:`.** Grepped both `docker-compose.yml` and `docker-compose.dev.yml`. The `agent-dispatcher` service in `docker-compose.yml` carries a comment claiming "a profile meets the same intent", but no profile key exists, and the service also carries a `build:` block, so `docker compose build` builds it today. Local Compose is v5.1.4, well past the 2.20 that `include:` needs.
+What it does have, and revision 1 never used: `--uid` and `--gid`, `--cap-drop`, `--read-only`, `--tmpfs`, `--env-file`, `--rm`.
 
-**The proxy.** Executors reach an OpenAI-compatible endpoint at `http://127.0.0.1:10531/v1` (`npx openai-oauth`, no API key, fronting a consumer subscription). Probed: `/v1/models` answers 200, `/v1/files` answers 404. Measured earlier and taken as given: it silently drops an inline file block (HTTP 200, the model reports no attachment) and rejects image `data:` URIs with a 500 naming the URL scheme. Text is the only transport it accepts.
-
-**Containers can reach it.** Probed from inside `agent_control_server` with `urllib`: `http://host.docker.internal:10531/v1/models` returns 200, `http://host.docker.internal:8085/list-apps` returns 200. Docker Desktop for macOS. Section 11 flags what that does not prove.
+Two of those absences are design-changing and get their own sections: no DNS (3.3) and no restart policy (5.3).
 
 ---
 
@@ -78,397 +84,293 @@ Primary key `(namespace_key, agent_name)`. No unique constraint on `base_url`, w
 
 ### 3.1 The constraint, stated once
 
-One process serves one agent. `_state.py:25` holds `self.current_agent: Agent | None`, one per module, alongside one `api_key`, one `server_url`, one `server_controls` list and one `agent_config` snapshot. `AgentControlPlugin.__init__` raises `ValueError` at `plugin.py:147` when its `agent_name` does not match the process's initialized agent. `models/src/agent_control_models/agent_runtimes.py` says the same in its module docstring, and the example agent says it in a comment above `AGENT_NAME`.
+One process serves one agent. `_state.py:25` holds `self.current_agent: Agent | None`, one per module, alongside one `api_key`, one `server_url`, one `server_controls` list and one `agent_config` snapshot. `AgentControlPlugin.__init__` raises `ValueError` at `plugin.py:147` when its `agent_name` does not match the process's initialized agent.
 
 N agents means N processes. Everything below has to fit that shape.
 
-### 3.2 Should the constraint be changed instead? No, and here is the bill
+### 3.2 Should the constraint be changed instead? No
 
 The tempting move is a per-agent registry in the SDK, so one `adk api_server` hosts many agents and the fleet becomes one container. Three costs, and the third decides it.
 
-The mechanical cost is ordinary. `state` becomes a per-agent map; `_cached_server_control_lookup` rekeys (orchestration section 1 records it keying on `state.current_agent.agent_name` at `evaluation.py:203`); the plugin's constructor refusal becomes a lookup; the refresh loop fans out; `RuntimeTokenCache`, `agent_config`, `model_max_staleness_seconds` and `server_controls` all become per-agent. Two to three weeks of surgery on the most safety-critical file in the SDK, plus a compatibility story for every consumer holding the module-level API.
+The mechanical cost is ordinary: `state` becomes a per-agent map, the plugin's constructor refusal becomes a lookup, the refresh loop fans out. Two to three weeks on the most safety-critical file in the SDK, plus a compatibility story for every consumer holding the module-level API.
 
-The credential cost is worse. One process holding one agent holds one agent's key, one agent's model endpoint and one agent's tool secrets. A process holding eight holds the union, and the blast radius of one prompt injection stops being one agent's sessions and becomes every agent sharing the process.
+The credential cost is worse. A process holding eight agents holds the union of eight agents' keys, model endpoints and tool secrets, and one prompt injection stops costing one agent's sessions.
 
-And the third cost inverts the argument the topology was chosen for. Orchestration section 5 defends process-per-agent partly because "an agent with any HTTP-egress tool is an SSRF pivot onto the network its own executor sits on", and says process per agent "shrinks that blast radius to one agent's own sessions, which is a real benefit of the topology forced by the SDK constraint". The example agent ships `web_fetch_exa` on by default. Merging processes spends a property this deployment gets for free in order to save memory.
+And the third cost inverts the argument the topology was chosen for. Orchestration section 5 defends process-per-agent partly because "an agent with any HTTP-egress tool is an SSRF pivot onto the network its own executor sits on". The example ships `web_fetch_exa` on by default. Merging processes spends a property this deployment gets for free to save memory.
 
-**Decision: keep one process per agent.** What the fleet design owes in return is that starting the eighth process costs the same as starting the second.
+**Decision: keep one process per agent.** What the fleet design owes in return is that starting the eighth costs the same as starting the second.
 
-### 3.3 One container per agent, generated, no published ports
+### 3.3 One container per agent, driven from Python, addressed by IP
 
-*One container serving many agents behind a router.* Ruled out by 3.2. A router in front of eight processes is fine; a router inside one process is the thing that does not exist.
+Revision 1 specified a generator emitting `compose.fleet.yml`, a committed generated file, `include:` in `docker-compose.yml`, profiles, and `depends_on` conditions. None of that exists on this runtime. **Deleting it is a scope reduction, not a loss:** the generator, its golden-file test, the committed-artefact drift check and the `include:` blast radius into the quick start all disappear together.
 
-*A host process supervisor.* Stays documented as the fallback, because the consumer-subscription proxy binds loopback and some operators will not want executors in Docker at all. Not the default: it reintroduces the port range, and "supervised" on a laptop means a shell script nobody wrote.
+**What replaces it.** A `fleet/` workspace package reads `fleet.yaml` and invokes `container run` directly, the same way `apple-container-up.sh` already invokes it for the four existing services. Ordering is imperative and explicit rather than declared and inferred, which on a runtime with no `depends_on` is the only option and is also easier to read.
 
-*One container per agent.* Chosen. Same image, listening on 8000 inside its own network namespace, publishing nothing.
+**Why not bash.** The up script already reaches for inline `python3` to parse `container inspect` JSON, and CLAUDE.md requires boundary validation with sanitized paths. A YAML schema parsed in shell is the wrong answer to both. The package validates in Python with named error codes, modelled on `knowledge_sync/.../allowlist.py`, and shells out only to `container`.
 
-**`docker compose up --scale` is not the mechanism, and the reason matters.** Scaled replicas of one service share an environment. Every executor needs a distinct `AGENT_CONTROL_AGENT_NAME`, and the SDK refuses a second agent in a process, so eight identical replicas would be eight copies of one agent racing on one binding. Compose has no per-replica environment, so the services are generated, not scaled.
-
-**`fleet.yaml`, checked in, is the source of what should be running:**
+**`fleet.yaml.example`, checked in; the real `fleet.yaml` is operator-supplied and gitignored.** This follows `knowledge.yaml.example` exactly, including that the path is an environment variable with a default. Revision 1 wanted the real file committed so fleet changes are reviewable in a diff. That is a genuine loss and it is the cost of matching the precedent this repo already set for operator-supplied allowlists.
 
 ```yaml
 version: 1
 image: agent-control-executor:local
 defaults:
   web_tools: true
-  restart: unless-stopped
 agents:
   - agent_name: marketing_researcher
   - agent_name: marketing_copywriter
-  - agent_name: engineering_reviewer
-  - agent_name: engineering_debugger
-  - agent_name: ops_runbook_agent
-  - agent_name: ops_incident_triage
-  - agent_name: sales_prospector
   - agent_name: sales_outreach_drafter
     web_tools: false
 ```
 
-**The database is not the source.** Generating services from `agent_runtimes` is circular: the row records where a process is, so a process started from the row cannot be what creates it, and a stale row becomes self-perpetuating. `fleet.yaml` declares intent, `agent_runtimes` records fact, and 7.4 is the reconciliation. `google-adk-plugin` is registered with no runtime today and is absent from `fleet.yaml`, which is the correct expression of "this agent has no process and that is deliberate".
+**The database is not the source.** Generating containers from `agent_runtimes` is circular: the row records where a process is, so a process started from the row cannot be what creates it, and a stale row becomes self-perpetuating. `fleet.yaml` declares intent, `agent_runtimes` records fact, 6.4 is the reconciliation.
 
-**`scripts/gen_fleet_compose.py` emits `compose.fleet.yml`**, one service per entry:
+**No published ports.** This retires 8080-8087 instead of extending it. Orchestration section 5 requires it in writing: `adk api_server` ships with no authentication, and the only real control is that its port is never published. Today's one executor binds `0.0.0.0` on the host, which is worse than the eight published ports it replaced.
 
-```yaml
-  ac-exec-marketing-researcher:
-    image: agent-control-executor:local          # image only, never build:
-    container_name: ac-exec-marketing-researcher
-    profiles: ["fleet"]
-    environment:
-      AGENT_CONTROL_AGENT_NAME: marketing_researcher
-      AGENT_CONTROL_URL: http://server:8000
-      AGENT_CONTROL_API_KEY: ${AGENT_CONTROL_FLEET_API_KEY:?fleet key required}
-      AGENT_CONTROL_MODEL_BASE_URL: ${AGENT_CONTROL_FLEET_MODEL_BASE_URL:-http://host.docker.internal:10531/v1}
-      AGENT_CONTROL_WEB_TOOLS: "1"
-      ADK_SESSION_SERVICE_URI: postgresql://adk:${ADK_DB_PASSWORD:-adk_local}@postgres:5432/adk_runtime
-      EXA_API_KEY: ${EXA_API_KEY:-}
-    extra_hosts: ["host.docker.internal:host-gateway"]
-    depends_on:
-      server: {condition: service_healthy}
-      postgres: {condition: service_healthy}
-      fleet-register: {condition: service_completed_successfully}
-    healthcheck:
-      test: ["CMD", "/usr/local/bin/exec-health", "marketing_researcher"]
-      interval: 15s
-      timeout: 5s
-      retries: 4
-      start_period: 45s
-    restart: unless-stopped
+**Addressing is by container IP, read back after start.** There is no DNS, so `base_url` cannot be a name. It is `http://<ipv4Address>:8000`, read from `container inspect` exactly as `ip_of()` already does for postgres and the server. `validate_executor_base_url` (`models/.../agent_runtimes.py:47`) accepts it.
+
+**The consequence is the important part: an IP is not knowable until the container is running, so the binding write happens after executors start, not before.** That inverts revision 1's single-job ordering and forces two one-shot jobs. Section 6.1.
+
+**Hardening the compose version did not have.** The executor runs `--uid 10003 --gid 10003`, following the uid 10001 and 10002 precedent in `dispatcher/Dockerfile` and `knowledge_sync/Dockerfile`. It runs `--read-only` with `--tmpfs /agents`, because the one thing the entrypoint writes is the materialized agent package and a tmpfs is the correct home for a file regenerated at every start. Revision 1 specified no user at all for the one container that both writes to disk and runs model-driven code with web fetch on.
+
+### 3.4 The app name is the folder name, and the mis-execution defence is weaker than revision 1 claimed
+
+Revision 1 correctly established that `App(name=...)` is never ADK's routing key. Verified again against google-adk 1.37.0: `_validate_agent_name` requires `^[a-zA-Z0-9_]+$` and a matching directory under `agents_dir`; `list_agents()` is `os.listdir` filtered to directories; `_record_origin_metadata` stamps the origin from the folder. `/list-apps` on the running executor returns `["my_agent"]`. All confirmed.
+
+**What was wrong is the failure mode it inferred.** Revision 1 said a row naming the wrong app 404s at session creation, and made that the pass criterion of Probe A. Measured today:
+
+```
+POST /apps/marketing_researcher/users/u/sessions/probe1  ->  200
+{"id":"probe1","appName":"marketing_researcher","userId":"u","state":{},...}
 ```
 
-Five things in that fragment are decisions rather than boilerplate.
+That process serves `my_agent`. Session creation goes straight to the session service and never consults the loader, so a foreign app name is accepted and echoed back. The failure lands one hop later at `POST /run`, where `load_agent` raises `ValueError`, nothing in `google/adk/cli/` catches it, and FastAPI returns **500**. Our client maps `status >= 500` to `ExecutorUnavailableError`, not `ExecutorSessionNotFoundError`.
 
-**No `ports:`.** This is what retires 8080-8087 instead of extending it. Orchestration section 5 already requires it in writing: `adk api_server` ships with no authentication, and the only real control is that its port is never published. Today's eight published ports violate that sentence, tolerated because the server is in Docker and the executors are not. Containerising both removes the reason.
+**So the defence still fails closed, and everything downstream of it changes.** A mis-bound row produces a 500 at first turn rather than a 404 at session open. It reads to an operator as "the executor is broken", not "this row points at the wrong process", and `agent_sessions` has a live row for a session that can never run. Section 8's edge case is rewritten accordingly, and `fleet doctor` becomes the only thing that can tell the two apart, which raises its priority from convenience to necessary.
 
-**`image:` and never `build:`.** Anything with a `build:` block participates in `docker compose build` regardless of profile, which is how a fleet profile leaks into everybody's build. The fleet image is built by an explicit `make fleet-image` target. The existing `agent-dispatcher` service has this bug today, and fixing it is a two-line change that rides along in Phase 1.
+**The fix is unchanged: make the folder real, and materialize exactly one.** The entrypoint creates `/agents/${AGENT_CONTROL_AGENT_NAME}/agent.py`, a shim importing the shared module, then runs `adk api_server /agents`. One directory, so `/list-apps` returns exactly the agent's name and `executor_app_name` equals `agent_name`.
 
-**`AGENT_CONTROL_API_KEY` has no default and the interpolation fails loudly.** An executor that starts without a key registers nothing and runs anyway on local controls, which is the quiet failure this design cannot afford at eight copies.
+Materializing all eight into the image would undo the point: `list_agents()` enumerates directories, so every executor would advertise all eight names and the SDK would refuse the second at plugin construction.
 
-**`depends_on: fleet-register: service_completed_successfully`.** Load-bearing, not tidiness. Section 4.3 is the whole argument.
+Agent names in `agent_runtimes` are already underscore-only identifiers, so nothing needs renaming. Container names use hyphens.
 
-**The healthcheck asserts identity, not just liveness.** `/list-apps` is what the server's own client uses (`adk_executor_client.py:97`, `_HEALTH_PATH = "/list-apps"`), and having two definitions of executor health is how they disagree. But once 3.4 lands, that endpoint returns the agent's own name, so the probe can assert the body equals `["marketing_researcher"]` rather than merely 200. That converts a liveness check into a weak identity check for free. It still cannot see a wedged control cache; section 8.
+### 3.5 The session backend, and the two defects revision 1 shipped in its wiring
 
-### 3.4 The app name is the folder name, and this is what makes a stale row fail closed
+Executors run with no `--session_service_uri`. **Both revisions said that means `InMemorySessionService`, and both were wrong.** Measured against google-adk 1.37.0: `create_session_service_from_options` (`cli/utils/service_factory.py:219-224`) defaults to `create_local_session_service(per_agent=True)`, which is `PerAgentDatabaseSessionService` writing SQLite to `<agents_root>/<app_name>/.adk/session.db`. In-memory is only the `OSError`/`PermissionError` fallback.
 
-An earlier draft proposed setting `App(name=os.getenv("AGENT_CONTROL_EXECUTOR_APP_NAME", AGENT_NAME))` in the example, on the theory that a row pointing at the wrong process would then 404 on the session path. **That does not work, and shipping it would have converted a rare silent mis-execution into a total fleet outage.**
+The conclusion survives and the reason changes. Under 3.3's `--read-only` with `--tmpfs /agents`, that SQLite file lands on tmpfs and dies with the container, so restarts still invalidate every `executor_session_id` and rows still move to `orphaned`. But note the new failure mode the correction exposes: if `/agents` is not writable and there is no tmpfs, ADK does not crash, it silently falls back to in-memory. A strict read-only container without the tmpfs is a quiet behaviour change rather than a startup error, which is exactly the class of thing this plan exists to refuse.
 
-Measured. `adk_web_server.py` resolves a route through `self.agent_loader.load_agent(app_name)`. `AgentLoader._validate_agent_name` requires `^[a-zA-Z0-9_]+$` **and a matching directory or module on disk under `agents_dir`**; `_perform_load` then does `importlib.import_module(f"{agent_name}.agent")`. `list_agents()` is `os.listdir(agents_dir)` filtered to directories. `App(name=...)` is never consulted for routing: `_record_origin_metadata` stamps `_adk_origin_app_name` from the *folder*, not from the `App`. Probed: `curl http://127.0.0.1:8080/list-apps` returns `["my_agent"]`, which is the directory name, on every one of the eight.
+`adk-db-init` already provisions `adk_runtime` owned by a dedicated `adk` role, and `apple-container-up.sh:93` runs the same SQL, so the role exists on this runtime today. Nobody wired it up.
 
-So `executor_app_name` in `agent_runtimes` has to name a directory that exists in the executor's image, or `POST /apps/{app_name}/users/{u}/sessions/{sid}` 404s against a perfectly healthy process.
+Revision 1's wiring had two defects, both caught in review:
 
-**The fix is to make the folder real, and to materialize exactly one of them.** The image installs the example as an ordinary Python package. The entrypoint creates `/agents/${AGENT_CONTROL_AGENT_NAME}/agent.py`, a shim that imports the shared module and exposes `root_agent` and `app`, and then runs `adk api_server /agents`. One directory, so `/list-apps` returns exactly `["marketing_researcher"]`, `executor_app_name` equals `agent_name`, and a row aimed at the wrong container 404s into the `ExecutorSessionNotFoundError` path that already exists (`adk_executor_client.py:410`) instead of running one agent's work under another agent's controls.
+- **Wrong driver.** It wrote `postgresql://adk:...`. `docs/plans/spike-findings.md:350` measured that exact form failing with `ValueError: Database related module not found (no psycopg2)` and says in bold that an explicit driver is mandatory. The working form is `postgresql+asyncpg://`. A sibling plan in the same directory had already answered this.
+- **Wrong transport.** `--session_service_uri` is a click option with no `envvar` binding, so setting `ADK_SESSION_SERVICE_URI` does nothing. The entrypoint has to read the variable and pass the flag.
 
-**Materializing all eight packages into the image would undo the whole point.** `list_agents()` enumerates directories, so an image carrying eight packages would let every executor advertise and route all eight names, and the SDK would then refuse the second one at plugin construction, or worse, load it before the refusal and leave a half-initialized module. One folder per container, created at start from the one environment variable that already decides everything else.
-
-Two consequences worth writing down. ADK calls `envs.load_dotenv_for_agent(agent_name, agents_dir)`, which looks for `agents_dir/<agent_name>/.env`; the generated folder has no `.env`, so all configuration arrives through the container environment, which is where it should be anyway. And agent names in `agent_runtimes` are already underscore-only Python identifiers (`marketing_researcher`), so nothing needs renaming to satisfy `_VALID_AGENT_NAME_RE`. The container and service names use hyphens, because DNS labels do; only the app name uses underscores.
-
-**Honest cost.** This is generator plus Dockerfile plus entrypoint work in Phase 3, not a one-line edit to the example. And Phase 0 probes it before anything writes `executor_app_name`, because the entire mis-execution defence rests on `/list-apps` returning the per-agent name.
-
-### 3.5 The session backend, decided rather than inherited
-
-Today's executors run with no `--session_service_uri`, so ADK sessions live in memory. With `restart: unless-stopped` and a design that makes restarts routine (wedged-executor recovery, image updates, daemon restarts), in-memory means every restart silently invalidates every `agent_sessions.executor_session_id` bound to that container. The next turn 404s and the row moves to `orphaned`, which `models/src/agent_control_models/sessions.py:88` already defines as "the executor lost the state".
-
-`docker-compose.dev.yml` already provisions the answer and nobody wired it up. `adk-db-init` creates `adk_runtime` owned by a dedicated `adk` role and closes the control-plane database to that role, with a comment giving exactly the right reason: the executor runs model-driven agent code, and connecting as `agent_control` would let it rewrite the controls that govern it.
-
-**Fleet executors run `--session_service_uri` against that role, with `depends_on: postgres: service_healthy`.** So a restart is a restart rather than a mass orphaning, the mid-chain restart runbook in section 8 becomes survivable, and the `adk` role finally does the job it was created for.
-
-The host-supervisor fallback keeps in-memory sessions unless the operator passes the flag, and the runbook says what that costs in one sentence rather than leaving it to be discovered.
+Both are one-line fixes in the entrypoint and both would have cost a day of confusion each.
 
 ---
 
 ## 4. The admin-on-every-executor problem
 
-### 4.1 The mechanism, verified
+### 4.1 Registration: the mechanism, verified
 
-`agent_control.init()` always sends `conflict_mode="overwrite"` (default on the signature, `sdks/python/src/agent_control/__init__.py:527`), and nothing in the example overrides it.
+`agent_control.init()` sends `conflict_mode="overwrite"` by default (`sdks/python/src/agent_control/__init__.py:527`), and the example does not override it. `endpoints/agents.py:741` gates that mode on `_authorize_existing_agent_overwrite` before any field is compared, and `providers/header.py:50` maps `AGENTS_UPDATE` to ADMIN.
 
-`endpoints/agents.py:742` is the gate:
+**A correction worth stating, because it changes what Phase 1 buys.** The route itself is not admin: `Operation.AGENTS_CREATE` is `AUTHENTICATED` at `header.py:49`. The 403 an ordinary key gets from `initAgent` comes from the conflict mode, not the endpoint. This was diagnosed the other way round during live debugging on 11 August and the distinction matters: flipping the default to strict is precisely the fix, which is why it sequences first.
 
-```python
-if request.force_replace or request.conflict_mode == ConflictMode.OVERWRITE:
-    await _authorize_existing_agent_overwrite(http_request, principal)
-```
-
-That runs before a single field is compared. `_authorize_existing_agent_overwrite` calls `get_authorizer(Operation.AGENTS_UPDATE).authorize(...)`, and `providers/header.py:50` maps `AGENTS_UPDATE` to `AccessLevel.ADMIN`. So re-registering an unchanged agent on an ordinary key is a 403. The example's `.env` records this in a comment, calls it "ADMIN key, and that is not a typo", says it is "wrong for a real deployment", and tracks it as a follow-up. This plan is that follow-up.
-
-At eight processes it reads like this: eight copies of a credential that can create and unbind controls, held by processes running model-driven agent code with a web-fetch tool on by default. Each can rewrite the controls that govern it. The dispatcher, by contrast, is required in writing not to be admin, and `dispatch preflight` is specced to refuse an admin key, because "its credential must not be the credential that approves its output".
+The example's `.env` records the current state in a comment, calls it "ADMIN key, and that is not a typo", and tracks it as a follow-up. This plan is that follow-up.
 
 ### 4.2 Option A, gate overwrite on the computed diff. Rejected
 
-The obvious fix is to move the `AGENTS_UPDATE` check below the diff, so a no-op overwrite needs no admin. `test_init_agent_overwrite_existing_agent_requires_update_auth` exists to stop exactly that, and reading it before proposing the change is the point: it registers an agent, installs a `CreateOnlyAuthorizer` that refuses only `AGENTS_UPDATE`, re-sends the *same* payload with `conflict_mode="overwrite"`, and asserts 403.
+Moving the `AGENTS_UPDATE` check below the diff would make a no-op overwrite need no admin. `test_init_agent_overwrite_existing_agent_requires_update_auth` exists to stop exactly that.
 
-The test is right and the instinct is wrong. Overwrite is destructive by semantics, not by outcome. `test_init_agent_overwrite_warns_on_removed_referenced_evaluator` in the same file shows what the mode does: an evaluator absent from the incoming payload is removed even when an active control references it, and the response carries `control_ids` and `control_names` so somebody can see what they just broke. Authorizing that mode on the strength of *this* run's diff authorizes a mode whose *next* run's diff is unknown, from a process whose payload is whatever its code says at the moment it restarts. A developer edits `tools=[...]`, the container restarts, and a request authorized as a no-op yesterday removes two steps today.
+The test is right. Overwrite is destructive by semantics, not by outcome: `test_init_agent_overwrite_warns_on_removed_referenced_evaluator` shows an evaluator absent from the payload being removed even when an active control references it. Authorizing that mode on the strength of this run's diff authorizes a mode whose next run's diff is unknown, from a process whose payload is whatever its code says when it restarts.
 
-There is a smaller point in the same direction: `test_init_agent_overwrite_noop_reports_not_applied` already asserts that a no-op overwrite returns `overwrite_applied: false` with every change collection empty. The server can already tell the difference. It refuses anyway, on purpose.
+**Rejected. The test stays as it is.**
 
-**Rejected. The test stays exactly as it is.**
+### 4.3 Option B, ask for the mode that already has the diff gate. Chosen, and it is a third of the fix
 
-### 4.3 Option B, ask for the mode that already has the diff gate. Chosen, and it is only half the fix
+`init(conflict_mode=...)` default flips from `"overwrite"` to `"strict"`. Under strict, `agents.py:980-985` is the diff-based gate, and it already exists. So this is not "add a gate", it is "stop asking for the mode that skips the one already there". Restart-unchanged is already handled: `agents.py:786` preserves `agent_created_at` so a restart is not a metadata change.
 
-`init(conflict_mode=...)` default flips from `"overwrite"` to `"strict"`. Under strict, `endpoints/agents.py:981` is the gate:
+**What it does not fix.** `steps_changed` is set for any step key not already stored (`agents.py:920`), so a new step still demands `AGENTS_UPDATE` under strict, and `test_init_agent_strict_existing_agent_mutation_requires_update_auth` pins that deliberately. `plugin.py:209` calls `_sync_steps_blocking(..., raise_on_error=True)` from `bind()`, so a new agent's first boot on an ordinary key is a 403 and a crash at import.
 
-```python
-if (
-    not request.force_replace
-    and request.conflict_mode != ConflictMode.OVERWRITE
-    and (steps_changed or evaluators_changed or metadata_changed)
-):
-    await _authorize_existing_agent_overwrite(http_request, principal)
-```
+**So step registration is named as an admin act and routed through a one-shot job.** Executors then boot, find every step present, and short-circuit at `plugin.py:1579-1584`.
 
-That is the diff-based gate, and it already exists. So Option B is not "add a diff gate", it is "stop asking for the mode that skips the one already there". The restart case is already handled deliberately: the metadata comparison at `agents.py:786` is preceded by a comment explaining that `agent_created_at` is preserved so that "merely restarting an agent is not seen as a metadata change (which would otherwise demand an admin credential on every restart)". Somebody has already solved part of this.
+**And a residual revision 1 asserted away, now measured rather than reasoned.** It claimed pre-syncing "keeps the runtime path from having anything left to register". Probe B on 11 August established what is actually true, and it is not what either revision said.
 
-**What Option B does not fix, and an earlier draft claimed it did.** `steps_changed` is set for any step key not already stored (`agents.py:915`), so under strict a new step still demands `AGENTS_UPDATE`. There is a deliberate test: `test_init_agent_strict_existing_agent_mutation_requires_update_auth` at `server/tests/test_init_agent_conflict_mode.py:215` sends one new step under strict against `CreateOnlyAuthorizer` and expects 403.
+*The name mismatch is real and it is not MCP-specific.* `_discover_steps` sees a toolset as one entry and `resolve_tool_name` falls through to the class name, while `before_tool_callback` resolves the individual tool. The same thing happens to every plain Python callable: `LlmAgent` stores raw functions, `resolve_tool_name` (`_extractors.py:259`) finds no `.name` and returns `"function"`, so `get_current_time` and `get_weather` collapse into a single step `tool:root_agent.function`. The live registries confirm it: `google-adk-plugin`, `marketing_researcher` and `marketing_copywriter` all carry `tool:root_agent.function` and none carries `root_agent.get_weather`.
 
-And the SDK already reaches that path. `plugin.py:1590` sends `conflict_mode="strict"` for step sync; `plugin.py:209` calls `_sync_steps_blocking(steps, raise_on_error=True)` from `bind()`; the example wraps `bind()` and re-raises as `RuntimeError`. Meanwhile `init()` sends no steps at all in the example (`agent.py:264`, three keyword arguments, none of them `steps`). So on a non-admin fleet key the sequence for a **new** agent is: init creates it with zero steps, bind discovers the ADK tools, register under strict, `steps_changed`, 403, `RuntimeError` at module import, crash loop. And adding one tool to the shared example does the same thing to all eight processes at once. Flipping `AGENT_CONTROL_WEB_TOOLS` from 0 to 1 is also a step addition, because `bind()` registers the toolset object as a step.
+*The consequence both revisions attached to it was wrong.* A control scoped to an unregistered step name does **not** fail open. Control scoping is a pure string comparison against the `step_name` in the evaluation request (`engine/src/agent_control_engine/core.py:589-596`); the step registry is never consulted. Proven live: control `block-web-fetch-private-addresses` is scoped to `root_agent.web_fetch_exa` and `root_agent.web_search_exa` and bound to `marketing_copywriter`, whose registry contains neither name, and it matches anyway. The registry drives console discoverability, not enforcement. **Delete the fail-open claim; it was a security assertion that was not true.**
 
-**Why the earlier draft's Phase 0 could not have caught this.** `_sync_steps_async` short-circuits when every discovered step key already exists on the server (`plugin.py:1579-1584`) and returns without calling `register_agent`. Restarting the eight already-synced executors therefore never touches the register path, so the experiment passes and the defect ships behind a green result. A gate that can only pass is not a gate.
+*A pre-sync does close the mismatch,* verified end to end rather than inferred. `await toolset.get_tools(None)` yields MCPTool objects whose `.name` gives `root_agent.web_search_exa`, byte-identical to the runtime key, with matching schemas, so a pre-sync cannot cause a later 409.
 
-**So step registration is named as an admin act and routed through the credential holder the design already has.** `fleet-register` (section 7.1) runs the executor image with a sync-only entrypoint: for each agent in `fleet.yaml` it imports the agent module with that agent's environment, lets `init()` and `bind()` register the agent and its steps under its admin key, and exits. Executors then boot on an ordinary key, find every step present, short-circuit by construction, and never reach a gate.
+*The unpriced cost nobody named.* The `_ensure_step_known` failure is not cached. `_synced_step_keys` updates only on success and `_step_sync_tasks` pops on completion, so it retries on every single tool call with no backoff. Measured: three calls for one unregistered name produced three GET plus POST pairs, 403 each time. At eight executors with web tools on, that is a 403 per tool invocation, forever.
 
-That is a better answer than relaxing the gate, for the same reason 4.2 gives. A step is the unit the control engine binds to. A process that can add steps at will can add a step whose name a control does not cover and call it, which is `12.3`'s escalation argument arriving by a different door. Registration is deployment configuration; it belongs in the job that already holds deployment configuration and dies before any model runs.
+So the real cost is console discoverability and a permanent 403 storm, not an enforcement hole. Either the register job enumerates tool names by connecting to the toolset, or the residual is accepted with the retry storm written into the runbook. **Decide before Phase 2, on the corrected grounds.**
 
-**What the default flip still breaks, stated plainly.** Under strict, a step whose `input_schema` or `output_schema` changed raises `ConflictError` with `ErrorCode.SCHEMA_INCOMPATIBLE`, a 409, rather than silently replacing the registration. A developer who edits a tool signature and reruns `fleet-register` gets a refusal instead of a quiet update. That is the correct behaviour: replacing a registration that active controls are written against is an administrative act and should require `conflict_mode="overwrite"` on purpose.
+**This is a default flip on a public API, so it is a major-version change** in `sdks/python`, with a release note naming the 409 on schema change and the monotonic registry.
 
-**The second cost goes in the docstring.** Strict merges rather than replaces, so a step deleted from the agent's code stays in the registry and the registered step list is monotonic across restarts. Pruning needs an admin overwrite. Worse for tidiness, better for safety.
+### 4.4 The nudge and halt path is ADMIN, and this blocks the whole plan
 
-**And one quiet failure to name.** `_ensure_step_known` (`plugin.py:1368`) syncs a step discovered at runtime with `raise_on_error=False`. On a non-admin key that call 403s and is swallowed, so the server never learns the schema and the step never appears in the registry. At bind time a missing credential is a crash loop; at runtime it is silence. Pre-syncing in `fleet-register` is what keeps the runtime path from having anything left to register.
+New in revision 2. Revision 1 enumerated registration and stopped, and this is what it missed.
 
-**This is a default flip on a public API, so it is a major-version change** in `sdks/python`, with a release note naming the 409 and the merge semantics, and a one-line migration for anyone who genuinely wants latest-init-wins.
+Measured:
 
-### 4.4 Option C, a registration-only credential tier. Deferred, and honestly
+- `nudges/claim`, `nudges/ack` and `halts/claim` all require `Operation.AGENT_NUDGES_CONSUME`.
+- `header.py:116` maps `AGENT_NUDGES_CONSUME` to `AccessLevel.ADMIN`, deliberately, with a comment arguing that failing closed is right when no session binding is available.
+- These are hot path. `nudges/claim` fires at every model boundary (`plugin.py:293-295`), `halts/claim` at every tool boundary (`plugin.py:459`).
+- The SDK prefers a session bearer token and falls back to the process API key when none was seeded (`nudges.py:486-491`).
+- That token is minted only when `AGENT_CONTROL_RUNTIME_TOKEN_SECRET` is set. **Probed: it is absent from `docker-compose.yml`, `docker-compose.dev.yml`, `server/.env.example` and `apple-container-up.sh`.**
+- On an ordinary key the result is a 403, one warning, and a 300-second per-session backoff.
 
-The clean answer is a key that may register an agent and its steps and may not touch controls. It is not expressible. `AccessLevel` has three values, `DEFAULT_OPERATION_ACCESS` maps them per operation, and there is no per-key operation allowlist; `task-dispatcher.md` section 4 establishes this and section 15 prices the allowlist at 3 days. `Principal.scopes` exists but is populated by providers surfacing a runtime-token grant, not by the header path.
+**So an executor on an ordinary key silently loses the operator STOP button, while the console still shows the halt recorded.** That is a worse failure than the credential it removes.
 
-With 4.3, the fleet's *executor* key needs only `agents.create` at `AUTHENTICATED`, which every ordinary key has, so the tier is no longer load-bearing for the executors. It remains what would close the residual on `fleet-register`, which today needs full admin to write a step. Sized where it already is, not re-sized here.
+**The obvious fix is a trap.** Setting `RUNTIME_TOKEN_SECRET` routes `Operation.RUNTIME_USE` to the JWT provider too. The example calls `init()` with no target, so `POST /evaluation` goes out with no bearer, `LocalJwtVerifyProvider` 401s, and the SDK fails closed on every turn. The session-minted token cannot rescue it: `SESSION_TOKEN_SCOPES` deliberately excludes `runtime.use`.
 
-### 4.5 What all of this is worth when `api_key_enabled` is false
+Three ways out, none free, and the choice is not this plan's to make alone:
 
-`config.py:74` sets `api_key_enabled: bool = False`, `docker-compose.yml` defaults it false, and with it off the authorizer is `NoAuthProvider`, whose entire `authorize` returns a `Principal` with the default namespace and no scopes. Every operation succeeds, including ADMIN ones, and `caller_id` is never set. In that state the whole of section 4 is theatre: the executors do not need an admin key because nothing needs any key, and every credential-hash separation in the dispatch design (`claimed_by_hash`, `created_by_hash`, the self-approval refusal) compares values that are either None or identical.
+1. **Map `AGENT_NUDGES_CONSUME` to `AUTHENTICATED`.** Smallest change, and it argues directly against a comment somebody wrote on purpose. Whoever owns that decision has to reverse it in writing.
+2. **Configure runtime tokens properly**, which means giving the example a target so the JWT path has a bearer, and re-checking every operation that moves to the JWT provider. Larger, and it is the only option that ends with a per-session credential rather than a per-process one, which is the better end state.
+3. **Accept executors keep an admin key for the nudge path.** Honest, and it guts the plan: section 4 exists to take ADMIN out of processes running model-driven code.
 
-**The refusal, and where it can actually be enforced.** Compose has no pre-profile hook, and `check_executor_startup_requirements` (`config.py:699`) governs the server process, not the fleet, so "the profile refuses to start" is not a thing a compose file can say. The refusal goes in `fleet-register`, which runs first, holds a credential, and blocks every executor through `service_completed_successfully`. It probes the server for an ADMIN-tier read **with no credential at all** and exits non-zero if that succeeds, which detects the condition behaviourally rather than by trusting a config field it cannot see. The generator emits a matching check, and the plan says that one is advisory, because a stale generated file bypasses it.
+**This is Phase 0's real gate.** Until it is decided, the fleet buys addressing and lifecycle, and the credential reduction that justifies three weeks of work is not available. Sizing the rest of the plan as though option 1 is free would repeat exactly the error revision 1 made.
 
-Not because eight processes are more dangerous each than one, but because eight is the number at which "I will turn auth on later" stops being recoverable in an afternoon. `AGENT_CONTROL_EXECUTOR_ALLOW_INSECURE_LOCAL_DEV` is honoured for the single-executor dev path and is not honoured here, which is the same asymmetry orchestration 6.4 applies to executor restart.
+**A trap in the shipped refusal, found reviewing the built code on 11 August.** `ServerCalls.refuse_when_executor_credential_cannot_halt` probes `halts/claim` with the executor's `X-API-Key` and refuses on 401 or 403. That is correct today and it inverts under option 2. Once `AGENT_CONTROL_RUNTIME_TOKEN_SECRET` is set, `AGENT_NUDGES_CONSUME` moves to the JWT provider, the executor claims halts with a session-bound bearer, and its API key is *supposed* to be refused on that route. The refusal would then block the very fix it exists to demand.
 
----
+So the probe has to become mode-aware before option 2 lands: under JWT mode the question is not "can this key claim a halt" but "can this key exchange for a runtime token, and does session creation mint a session token carrying `agent_nudges.consume`". Whoever implements option 2 owns that change, and shipping the secret without it turns a working fleet into one that refuses to start.
 
-## 5. Per-team budgets
+### 4.5 Option C, a registration-only credential tier. Deferred
 
-### 5.1 Where it is enforced, and what a turn actually is
+A key that may register an agent and its steps and may not touch controls is not expressible: `AccessLevel` has three values and there is no per-key operation allowlist. `task-dispatcher.md` section 15 prices the allowlist at 3 days. It remains what would close the residual on the register job. Not re-sized here.
 
-Same place as the namespace budget, for the same reason, and moving it would repeat a mistake `task-dispatcher.md` 12.1 already corrected once. The enforcement point is `charge_dispatch_turn` in `services/agent_dispatch_state.py`, called from `_acquire_turn` in `services/agent_turns.py` inside the one short transaction that takes the session row, and only for sessions with `agent_task_id IS NOT NULL`.
+### 4.6 What all of this is worth when `api_key_enabled` is false
 
-```sql
-CREATE TABLE agent_team_dispatch_budgets (
-    namespace_key       TEXT    NOT NULL,
-    team_slug           TEXT    NOT NULL,
-    max_tasks_per_hour  INTEGER NOT NULL DEFAULT 5,
-    max_turns_per_hour  INTEGER NOT NULL DEFAULT 15,
-    max_concurrent_turns INTEGER NOT NULL DEFAULT 1,
-    turns_window_start  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    turns_in_window     INTEGER NOT NULL DEFAULT 0,
-    paused_at           TIMESTAMPTZ,
-    paused_by           VARCHAR(64),
-    paused_reason       VARCHAR(500),
-    updated_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (namespace_key, team_slug)
-);
-```
+`config.py:74` defaults it false, and with it off `NoAuthProvider` returns a principal for whom every operation succeeds. In that state all of section 4 is theatre.
 
-`charge_dispatch_turn` grows a second `INSERT ... ON CONFLICT DO UPDATE ... WHERE ... RETURNING` against this table, written from the same `_WINDOW_EXPIRED` fragment so the roll condition and the charge condition cannot drift, exactly as the existing statement is. It runs after the namespace charge and before the per-agent concurrency count. Every refusal in `_acquire_turn` unwinds without committing, which un-charges both counters, and that is what makes charging two rows safe rather than merely convenient.
+**Where the refusal can be enforced.** Revision 1 put it in a compose one-shot blocked by `service_completed_successfully`. There is no such mechanism here, and the replacement is better: the fleet `up` command is a single Python process that runs the register job, checks its exit code, and refuses to start any executor unless it is zero. An exit code checked in the same process is a stronger gate than a declared dependency.
 
-**`max_turns_per_hour: 15` is not a spend ceiling, and the row has to say so where somebody reads it.** One charge is one `POST /run`, and one `POST /run` is an entry into a loop that can call the model and its tools an unbounded number of times before returning. The only bound on what happens inside is `turn_timeout_seconds`, default 300. So a team with one turn left can outspend a team with fifteen, and the per-team numbers do not order teams by cost even approximately. `task-dispatcher.md` 12.1 makes this point about the namespace row; it is exactly as true one level down, and repeating it is cheaper than letting an operator rediscover it from a bill.
-
-**`max_concurrent_turns` is the one ceiling here that bounds instantaneous pressure**, and it is why the column exists. It is counted in the same statement as the existing per-agent in-flight count, over the same `in_flight_trace_id` predicate, filtered to the team's tasks. `max_concurrent_tasks_per_agent` is pinned `le=1` in `config.py:614`, so today it bounds one agent; four teams with two agents each still means the namespace can have eight turns in flight and one team can own four of them. Default 1, which is the honest starting value for a deployment whose upstream is one subscription.
-
-Settings, `AGENT_CONTROL_DISPATCH_` prefixed like the rest of `DispatchSettings`:
-
-- `DEFAULT_TEAM_MAX_TASKS_PER_HOUR` (5), `DEFAULT_TEAM_MAX_TURNS_PER_HOUR` (15), `DEFAULT_TEAM_MAX_CONCURRENT_TURNS` (1), seeded on first insert. The row is authoritative afterwards, matching `default_max_tasks_per_hour`.
-- `REQUIRE_TEAM` (default false). Section 5.4.
-- A model validator refusing a configuration where the seeded team defaults times the number of teams undershoots the namespace ceiling by more than a stated margin, because a namespace ceiling nobody can reach reads as protection and is not. Same class of refusal as `_fleet_must_not_squeeze_human_chat_out_of_the_session_ceiling` (`config.py:623`), which is the precedent for putting arithmetic like this in `config.py` rather than in a runbook.
-
-**Lock ordering, stated so a reviewer does not have to reconstruct it.** The docstring on `charge_dispatch_turn` already explains that the namespace charge "takes an exclusive lock on this namespace's one state row and holds it to commit, so every concurrent dispatch turn in the namespace is serialized behind it", and that the per-agent count runs afterwards for exactly that reason. Every dispatch turn therefore takes the namespace row first. A per-team row taken second yields a total lock order and cannot deadlock across teams. The cost is one extra lock acquisition behind a lock that already serializes everything, which is a much smaller claim than "two hot rows".
-
-**Rejected: one row per `(namespace, team)` with the namespace ceiling derived as a sum.** It looks cheaper on the lock and it is, which is the problem: removing the single namespace row removes the serialization the per-agent in-flight count depends on, turning a documented invariant into a read-then-write race. The extra lock is the feature.
-
-### 5.2 How the turn path learns the team
-
-Not from the session. Measured: all five dispatch sessions have `team_id` NULL, because `DispatchClient.create_session` posts only `agent_name`, `title` and `task_key`.
-
-**The team is resolved from `agent_tasks.team_slug` by joining on `agent_sessions.agent_task_id`,** in the same transaction, in the same statement that charges. That is the value the import handler committed against a scope the operator confirmed, and a session edit cannot re-point it afterwards. Passing `team_slug` on session creation would be a value chosen by the process being budgeted.
-
-The dispatcher should *also* start sending `team_slug` on `POST /agent-sessions` so the console can filter the step rail by team. This is display and not enforcement, said here and again in the code, because a field on the session row is exactly the field a later reader simplifies the join into.
-
-### 5.3 Which team pays for a cross-team workflow
-
-Measured: `plan-critique-execute` has `team_slug = marketing` and its second step names `engineering_reviewer`, who belongs to `engineering`.
-
-**The task's team pays. Not the agent's team.** The team that pressed play authorized the spend; the team whose agent appears in a step did not. Charging the agent's home team would let any team drain any other team's hourly budget by naming its agent in a workflow step, which turns a budget into an attack surface reachable by anyone holding `agent_workflows.write`.
-
-The cost is that `engineering`'s budget does not reflect work its agent actually did. The per-team numbers are a spend-authorization ledger, not a utilization report, and the console labels them "authorized by" rather than "used by". Put it on the screen, because the number will otherwise be read as the other thing.
-
-### 5.4 A task with no team
-
-Measured: the file-sourced task has `team_slug` NULL. `once --source file://tasks.yaml` does not require `--team`, and `sales-outreach` has no `linear_team_key`, so a teamless task is the normal state of two supported paths.
-
-**A NULL team charges the namespace pool only.** `REQUIRE_TEAM=true` turns it into a refusal, with a written error naming the setting, for a deployment that wants every turn attributable. Default false so nothing that works today stops working.
-
-### 5.5 What happens when a team exhausts its share
-
-429 with `retry_after_seconds`, the same shape the namespace ceiling produces, with a distinct error code so the message can say which ceiling and whose. The dispatcher already handles it: `paused_quota` is in the reclaim predicate, the task keeps heartbeating, and it resumes after the window rolls. Nothing new in the loop.
-
-Two additions, labelled as optimisations in the code and here. `GET /agent-dispatch` grows a `teams` block so the import preview and the dispatcher's opening lines can report a team's remaining allowance rather than only the namespace's; advisory, enforcement stays in `charge_dispatch_turn`. And `POST /agent-tasks/import` counts `max_tasks_per_hour` per team in the same inserting transaction it already uses for the namespace ceiling, refusing with 429 and inserting nothing. That one is enforcement, and it belongs there for the same reason the namespace version does: tasks are created only by import.
-
-### 5.6 Per-team accounting does not create per-team capacity
-
-This has to be the last word, because everything above will otherwise read as a fix.
-
-All four teams reach one model endpoint: `http://127.0.0.1:10531/v1`, one `npx openai-oauth` process, one consumer subscription. That hop has no per-caller identity, no API key, and no way to attribute a request to a team. Probed: `/v1/models` answers 200 and `/v1/files` answers 404, so it is not a service with per-tenant surface hiding behind an unused feature. It is one queue.
-
-So `marketing` burning through the upstream rate limit returns errors to `engineering`, and no arrangement of rows in `agent_team_dispatch_budgets` changes that. Per-team budgets bound what each team is *authorized* to spend from a shared pot. `max_concurrent_turns` bounds how much of the queue one team can occupy at an instant, which is the only fairness lever available on this side of the hop, and it is a lever on contention rather than on capacity.
-
-The only thing that creates per-team capacity is a per-team upstream credential with its own quota. This deployment does not have one and cannot have one on a consumer subscription. That is a purchasing decision, not an engineering one, and the runbook says so in those words rather than implying the budget table solved it.
+The check itself stays behavioural: probe the server for an ADMIN-tier read with no credential at all and refuse if it succeeds. That detects the condition rather than trusting a config field the fleet cannot see. `AGENT_CONTROL_EXECUTOR_ALLOW_INSECURE_LOCAL_DEV` is honoured for the single-executor dev path and is not honoured here.
 
 ---
 
-## 6. Compose lifecycle
+## 5. Lifecycle under Apple `container`
 
-### 6.1 What comes up on `docker compose up`
+### 5.1 What comes up, and what stays opt-in
 
-Postgres and the server. Unchanged. That is the published quick start, it pulls one image from Docker Hub, and adding eight containers that need a model endpoint to the out-of-box experience is exactly what orchestration section 5 refuses for one.
+`scripts/apple-container-up.sh` continues to bring up postgres, the server, the dispatcher and the knowledge sync. Unchanged.
 
-`agent-dispatcher` stays as it is: present, `restart: "no"`, default command `--help`, exits 0 having done nothing. The comment block explaining why is correct and stays. Two small corrections ride along in Phase 1: it gains an explicit profile so the comment's claim becomes true, and it loses its `build:` block in favour of a make target, so it stops participating in every `docker compose build`.
+The fleet is opt-in by the same mechanism the knowledge sync already uses: **the script skips it when the config is absent.** Knowledge skips when the Drive credentials are unset and says so on stdout. The fleet skips when no `fleet.yaml` exists and says so. No profiles needed, and the precedent is three lines away in the same file.
 
-### 6.2 How the fleet profile is actually wired
+### 5.2 Ordering, without `depends_on`
 
-`docker compose --profile fleet up -d` will not start a generated file that compose has never heard of. Compose loads `docker-compose.yml` plus `docker-compose.override.yml` and nothing else, and a profile matching no service prints no warning, so the failure is silent. So `docker-compose.yml` gains:
+Imperative, in `agent-control-fleet up`, each step gated on the previous one's result:
 
-```yaml
-include:
-  - compose.fleet.yml
-```
+1. Server reachable. Poll `/health` until 200 or refuse. Replaces `depends_on: service_healthy`.
+2. **`fleet register`** with the admin key. Registers each agent in `fleet.yaml` and syncs its steps. Runs to completion; a non-zero exit refuses everything below.
+3. Start N executors on the `agent-control` network, no published ports, ordinary key, `--uid 10003`, `--read-only`, `--tmpfs /agents`.
+4. For each, read `ipv4Address` from `container inspect` and poll `/list-apps` until `agent_name` is present. This is where revision 1's healthcheck identity assertion goes, since the runtime has no healthchecks.
 
-`include:` needs Compose 2.20 or newer; local is v5.1.4. The generated file is committed, because an included file that does not exist is a hard error on every `docker compose up`, including the quick start. A committed generated file also means the generator's output is reviewable in a diff, which is how a fleet change gets noticed.
+**The assertion is "contains", not "equals", and that is a concession forced by measurement.** Opening a session materializes the app directory: `PerAgentDatabaseSessionService` creates `<agents_root>/<app_name>/.adk/` and `list_agents()` is `os.listdir` filtered to directories. So one session opened against a wrong app name permanently adds that name to `/list-apps`, on a container that still 500s at `/run` because no `agent.py` exists there. Observed live on 11 August: a single probe against `marketing_researcher` on the executor serving `my_agent` left `/list-apps` returning both names until the directory was deleted by hand.
 
-**One CI assertion in Phase 1, because the claim that the default path is unchanged has to be checkable:** `docker compose config --services` with no profile lists exactly `postgres`, `server`, `agent-dispatcher`; with `--profile fleet` it lists those plus one service per `fleet.yaml` entry plus `fleet-register`. And `docker compose build --dry-run` builds nothing from the fleet profile, which is what the image-only rule buys.
+Equality therefore passes at start and can stop being true later, through no fault of the fleet. The identity check keeps its value at startup and loses it as a steady-state invariant, so `fleet doctor` reports an unexpected extra name as a warning naming the likely cause rather than as a fault.
+5. **`fleet bind`** with the admin key. Writes `PUT /agent-runtimes/{agent_name}` with the observed IP and `executor_app_name = agent_name`. Exits.
 
-### 6.3 The proxy constraint, resolved
+**Two admin jobs, not one, and it is the no-DNS tax.** An IP is not knowable before start, so the binding cannot be written before the container exists. Revision 1's property was "the admin credential exits before any agent code exists". That is no longer literally true: at step 5 the executors are alive.
 
-The constraint as usually stated is that a container cannot reach `127.0.0.1:10531`, so it needs `host.docker.internal`. True and measured: from inside `agent_control_server`, `http://host.docker.internal:10531/v1/models` returned 200.
+**The property that actually holds, stated precisely.** No executor can be given work before step 5 completes, because an agent with no runtime row answers 409 `AGENT_RUNTIME_NOT_BOUND` at session open. So the window in which an admin credential coexists with live executors is a window in which no executor can receive a turn. That is weaker than revision 1's claim and it is the true one. Both jobs still exit, and no long-running process holds admin.
 
-The sharper question is how to do that without putting a consumer-subscription credential into eight containers. **There is no credential to put there.** The proxy holds the OAuth session in the host process and accepts requests with no API key; the example agent's own comment says the local proxy "authenticates upstream itself" and passes `api_key="not-used-by-local-proxy"`. What the containers get is an address.
+### 5.3 There is no restart policy, and that cuts both ways
 
-**That is the good news and it is also the whole risk.** The address *is* the credential. Anything that can open a TCP connection to `host.docker.internal:10531` spends the subscription, with no per-caller identity and therefore no per-team accounting at that hop, which is 5.6 arriving from the other side. Three consequences, all configuration:
+`container run` has no `--restart`. A crashed executor stays down.
 
-The proxy binds loopback only. Bound to `0.0.0.0` it lets every host on the operator's network spend the subscription, and the fleet's `extra_hosts` entry does not cause that but does make it easy to stop noticing.
+**What that removes.** Revision 1's crash-loop storm is gone. Eight containers re-POSTing `initAgent` on every restart cycle against the server was a named risk; it cannot happen here. The edge case in section 8 changes from "eight crash loops, loud and correct" to "N containers exit and nothing tells you", which is quieter and worse.
 
-`AGENT_CONTROL_FLEET_MODEL_BASE_URL` is set once, in `.env`, and interpolated into every generated service. The generator refuses a value whose host is `127.0.0.1` or `localhost`, with an error naming `host.docker.internal`, because that mistake otherwise surfaces at runtime as a connection error nobody attributes correctly.
+**What it costs.** No recovery from a transient failure. A server blip during startup leaves executors dead until an operator re-runs `up`. Revision 1 leaned on `restart: unless-stopped` plus a healthcheck for this; neither exists.
 
-`EXA_API_KEY` is the only real secret copied N times, it is optional, and `AGENT_CONTROL_WEB_TOOLS=0` means the toolset is never constructed. `sales_outreach_drafter` is set that way in 3.3 as the worked example, since its product is drafting text.
+**The mitigation, and it is deliberately not a supervisor.** `up` is idempotent and re-running it restarts what is missing, exactly as the existing script reuses running containers and finishes partial starts. `fleet doctor` reports which agents have no container. Writing a supervisor is orchestration Phase 5's job and section 9 refuses it here.
 
-### 6.4 Health checks, restart policy, ordering
+### 5.4 The proxy constraint, resolved for this runtime
 
-*Health.* The `/list-apps` identity assertion from 3.3. Liveness plus a name, never a control-cache check; section 8 says what it cannot see.
+Revision 1 specified `extra_hosts: ["host.docker.internal:host-gateway"]` and defaulted the model base URL to `http://host.docker.internal:10531/v1`. **Both are wrong here.** `host.docker.internal` does not resolve inside these VMs; probed on 11 August, `getent hosts host.docker.internal` returns nothing. The up script has said so in its closing banner all along.
 
-*Restart.* `unless-stopped`, not `always`. `always` restarts a container the operator stopped, which is level 4 of the fleet stop being quietly undone by the orchestrator. `unless-stopped` survives a daemon restart and respects a deliberate `docker compose stop`.
+The correct value is the network gateway, which `gateway_of()` at `apple-container-up.sh:51` already computes and whose comment already says it is "the address executor runtime rows must use in place of host.docker.internal".
 
-*Ordering.* Executors depend on `server: service_healthy`, `postgres: service_healthy`, and `fleet-register: service_completed_successfully`. The server dependency is load-bearing rather than tidy: the example calls `agent_control.init()` at module import and then `plugin.bind(root_agent)`, and eight containers racing an unready server is eight crash loops with a message about running `setup_controls.py`.
+**So the model base URL is computed, not configured.** `AGENT_CONTROL_FLEET_MODEL_BASE_URL` may override it, but the default is derived from the live gateway at `up` time. Revision 1's generator-side refusal of `127.0.0.1` and `localhost` moves to where the value is read, because a generator cannot validate a value that did not exist yet.
 
-**The `server` service has no healthcheck today.** Adding one is a prerequisite and a four-line config change against the existing `/health` route (`main.py:581`):
-
-```yaml
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).status==200 else 1)"]
-      interval: 10s
-      timeout: 5s
-      retries: 6
-      start_period: 30s
-```
-
-`depends_on` plus a healthcheck does not remove the need for the bounded retry around `_sync_steps_blocking` that orchestration 9.6 asks Phase 1 for. Compose orders startup; it does not keep the server up, and a control plane that blips for two seconds should not leave eight agents down.
+**The address is the credential.** The proxy holds the OAuth session in the host process and accepts requests with no API key. Anything that can open a TCP connection to gateway:10531 spends the subscription. So the proxy stays loopback-bound on the host, and the fleet reaches it through the gateway, which is the VM-to-host path and not a LAN path.
 
 ---
 
-## 7. Runtime registration
+## 6. Runtime registration
 
-### 7.1 One job, one admin credential, one lifetime
+### 6.1 Two one-shot jobs, one credential, both exit
 
-Not the executor. Self-registration needs `agent_runtimes.write`, which orchestration 6.1 puts at ADMIN because binding an agent to an executor URL is deployment configuration, and handing that to the process running model-driven agent code is the escalation section 4 just spent a page removing.
+Not the executor. Self-registration needs `agent_runtimes.write`, which orchestration 6.1 puts at ADMIN because binding an agent to an executor URL is deployment configuration.
 
-**`fleet-register` does three things and exits.** It registers each agent in `fleet.yaml` and syncs its step schemas by importing the agent module under that agent's environment (4.3); it writes each binding with `PUT /agent-runtimes/{agent_name}`; and it refuses to proceed when the server accepts an uncredentialed ADMIN read (4.5). Then it terminates, before any agent code that will handle a turn exists anywhere in the profile.
+**`fleet register`** runs the executor image, because syncing steps means importing the agent module and letting `bind()` discover the tools, which needs the agent's dependencies. It registers each agent, syncs step schemas under the admin key, and refuses to proceed when the server accepts an uncredentialed ADMIN read.
 
-That is not a novel pattern here. `docker-compose.dev.yml` already ships `adk-db-init` with the argument written out: "Superuser credentials for provisioning only. This container exits before any agent code exists; the executor service never gets them."
+**`fleet bind`** writes the runtime rows once IPs are observable. It is a thin HTTP client and could run from any image; it runs from the same one to avoid a second image for four requests.
 
-```yaml
-  fleet-register:
-    image: agent-control-executor:local        # the executor image: it must import agent modules
-    profiles: ["fleet"]
-    entrypoint: ["python", "-m", "agent_control_fleet.register"]
-    command: ["--fleet-file", "/app/fleet.yaml"]
-    environment:
-      AGENT_CONTROL_URL: http://server:8000
-      AGENT_CONTROL_API_KEY: ${AGENT_CONTROL_FLEET_REGISTER_API_KEY:?one admin key required}
-    volumes: [./fleet.yaml:/app/fleet.yaml:ro]
-    depends_on:
-      server: {condition: service_healthy}
-    restart: "no"
-```
+**Neither is the dispatcher and neither may be folded into it.** If they ever share a process, the dispatcher has acquired an admin credential by convenience, which is the failure section 9 names.
 
-**It runs the executor image, not the dispatcher image.** Syncing steps means importing the agent module and letting `bind()` discover the tools, which needs the agent's dependencies. An earlier draft put it in the dispatcher image on the grounds that both are thin HTTP clients; that was true of the binding write and false of the step sync.
+**One process cannot register N agents by importing the module N times, and revision 1 assumed it could.** `my_agent/agent.py` calls `init()`, constructs the plugin and calls `bind()` at import. Python caches the module in `sys.modules`, so eight imports run it once, under whichever `AGENT_CONTROL_AGENT_NAME` was set first. Making it work in-process needs `importlib.reload` plus environment mutation plus tearing down each MCP toolset between iterations. **`fleet register` runs one subprocess per agent instead.** That is the honest shape and it was unpriced in revision 1.
 
-**It is not the dispatcher and must never be folded into it.** If the two ever share a *process*, the dispatcher has acquired an admin credential by convenience, which is the failure section 9 names. Sharing an image with the executor is not sharing a credential: the register job gets the admin key and dies, the executors get an ordinary key and live.
+**The register job's environment must reproduce each executor's exactly.** `AGENT_NAME` defaults to `google-adk-plugin` when unset, which is the one agent deliberately left unbound. `AGENT_CONTROL_WEB_TOOLS` defaults to `"1"`, so a register job with a bare environment would build a toolset for the agent whose `fleet.yaml` entry turns it off. And `_build_web_toolset` catches every construction failure and returns `None` with a warning, so a register job that cannot reach the Exa endpoint registers a smaller step set, exits 0, and leaves every executor to fail on a pending step. **The subprocess inherits the same environment the container would get, computed once, and this is asserted by a test rather than by care.**
 
-**`AGENT_CONTROL_FLEET_REGISTER_API_KEY`, and not `AGENT_CONTROL_ADMIN_API_KEY`.** The server's real setting is `AGENT_CONTROL_ADMIN_API_KEYS`, plural, comma-separated (`config.py:82`, parsed at `config.py:98`). A slot one character off from it, sitting in the same `.env`, gets a comma-joined list pasted into it and produces a 401 that reads as a server fault. The job refuses a value containing a comma and documents that it takes exactly one key drawn from the admin list. The dispatcher has the same bug today at `docker-compose.yml:116`, `${AGENT_CONTROL_DISPATCHER_API_KEY:-${AGENT_CONTROL_API_KEYS:-}}`, which degrades to a joined list whenever more than one ordinary key is configured; it is fixed in the same change, with a smaller blast radius.
+**`AGENT_CONTROL_FLEET_REGISTER_API_KEY`, not `AGENT_CONTROL_ADMIN_API_KEY`.** The server's real setting is `AGENT_CONTROL_ADMIN_API_KEYS`, plural and comma-separated. A slot one character off gets a comma-joined list pasted into it and produces a 401 that reads as a server fault. The job refuses a value containing a comma.
 
-### 7.2 The URL and the app name the job writes
+### 6.2 What gets written
 
-`base_url` is `http://ac-exec-<agent-name-with-hyphens>:8000`, derived from the same generator input that named the container. `validate_executor_base_url` (`models/src/agent_control_models/agent_runtimes.py:47`) accepts it: `http` scheme, a host, no credentials, no query, no fragment. `executor_app_name` is the agent name verbatim, which 3.4 made routable.
+`base_url` is `http://<observed-ip>:8000`. `executor_app_name` is the agent name verbatim, which 3.4 made routable. Nobody types a port again.
 
-Nobody types a port again. Adding a team adds entries to `fleet.yaml`, and "which port is `ops_incident_triage` on" stops having an answer.
+**IPs are not stable across recreation**, so `bind` runs on every `up`, and a row is rewritten whenever the observed IP differs. This is the one place the fleet is chattier than the compose design would have been, and it is a direct consequence of no DNS.
 
-### 7.3 Adoption: the first run rewrites eight rows and does not refuse
+### 6.3 Adoption
 
-All eight rows today carry a hand-written `http://host.docker.internal:80NN` URL and `executor_app_name = 'my_agent'`. Every one of them is a mismatch against what the generator would write. A register job that aborts on any mismatch it did not itself write therefore aborts on row one of its own first run, writes nothing, and produces an error implying the fleet is contested when it is simply new. The obvious operator response is to hand-edit `agent_runtimes` to get past it, which is exactly the drift the abort exists to prevent.
+All eight rows carry a hand-written host-gateway URL and `executor_app_name = 'my_agent'`. Every one is a mismatch against what `bind` would write. A job that aborts on any mismatch aborts on row one of its first run.
 
-**So adoption is an explicit one-time gesture.** `fleet-register --adopt` rewrites the rows for agents named in `fleet.yaml` regardless of their current value. Without `--adopt`, a row whose `base_url` differs from the generated one aborts the whole run and names the row. After adoption every row matches, so any later mismatch is genuinely foreign, and the abort means what it says. Phase 3 carries adoption as a named migration whose stated input is the eight host-port rows.
+**So adoption is an explicit one-time gesture.** `fleet bind --adopt` rewrites rows for agents named in `fleet.yaml` regardless of current value. Without it, a row differing from the generated one aborts and names the row. After adoption any later mismatch is genuinely foreign.
 
-The one-time reset also covers the app-name rename. The five existing `agent_sessions` rows carry `executor_app_name = 'my_agent'` and point at ADK sessions that live only in process memory (2, 3.5), so they are already no more durable than a restart. They are marked `orphaned` by the migration rather than left to fail at the next turn, and `_require_runnable_status` already knows that status. Note the direction on the constraint: `uq_agent_sessions_executor_global` is `(executor_app_name, executor_user_id, executor_session_id)`, so per-agent app names make it strictly easier to satisfy.
+The 33 existing `agent_sessions` rows carry `executor_app_name = 'my_agent'` and point at ADK sessions that live only in process memory, so they are already no more durable than a restart. The migration marks them `orphaned` rather than leaving them to fail at the next turn. Revision 1 sized this against 5 rows.
 
-### 7.4 Reconciliation: `fleet doctor`
+### 6.4 Reconciliation: `fleet doctor`
 
-A read-only subcommand comparing three sources, which refuses to fix anything:
+Read-only, refuses to fix anything, and 3.4 raised its priority: with a mis-bound row now surfacing as a 500 rather than a 404, this is the only thing that distinguishes a binding error from a broken executor.
 
 | Finding | Meaning |
 |---|---|
-| Agent in `fleet.yaml`, no row in `agent_runtimes` | The register job did not run, or failed. Session open answers 409 `AGENT_RUNTIME_NOT_BOUND`. |
-| Row in `agent_runtimes`, agent absent from `fleet.yaml` | A binding with no intended process. The shape of a stale row. |
-| Row whose `base_url` does not match the generated name | Hand-edited, or pre-adoption. All eight rows are in this state today. |
-| Registered agent in neither | `google-adk-plugin`. Informational, not a fault. |
-| `executor_app_name` not equal to `agent_name` | Pre-3.4 row. Session open will 404 against a fleet container. |
-| `/list-apps` on a bound executor not equal to `[agent_name]` | The container is serving a different agent, or a pre-3.4 image. |
-| Two teams sharing one `linear_team_key` | `marketing` and `operations` on OPS. Warning, never an error. |
-| Team with no `linear_team_key` | `sales-outreach`. Informational: the milestone path is unavailable to it. |
+| Agent in `fleet.yaml`, no row in `agent_runtimes` | Bind did not run. Session open answers 409 `AGENT_RUNTIME_NOT_BOUND`. |
+| Agent in `fleet.yaml`, no running container | Crashed, and nothing restarted it. 5.3. |
+| Row in `agent_runtimes`, agent absent from `fleet.yaml` | A binding with no intended process. |
+| Row whose `base_url` is not the observed IP | Stale after recreation, or hand-edited. |
+| `executor_app_name` not equal to `agent_name` | Pre-3.4 row. First turn will 500. |
+| `/list-apps` missing `agent_name` | The container serves a different agent, or a pre-3.4 image. A fault. |
+| `/list-apps` carries an extra name | Somebody opened a session against a wrong app name and ADK materialized the directory. A warning naming that cause, not a fault. |
+| Registered agent in neither | `google-adk-plugin`. Informational. |
 
-It refuses to fix anything because the fix for half of these is to delete a binding, and a tool that deletes bindings needs `agent_runtimes.write`, which is where 7.1 just decided not to put a long-running process.
+It refuses to fix anything because the fix for half of these is to delete a binding, and that needs `agent_runtimes.write`, which 6.1 just decided not to give a long-running process.
+
+---
+
+## 7. Artefact placement and conventions
+
+Revision 1 put its code in `scripts/` and named a package it never gave a home. Both fail this repo's own rules.
+
+**`scripts/` is outside every quality gate.** `make lint` and `make typecheck` enumerate `models/src`, `server/src`, `sdks/python/src`, `dispatcher/src`, `knowledge_sync/src`. Root mypy sets `disallow_untyped_defs = true` and would never see a file in `scripts/`. Today `scripts/` holds one 83-line regex checker; revision 1 proposed putting 150 lines of schema parsing and deployment-config emission there.
+
+**So the fleet is a workspace member: `fleet/`.** A `pyproject.toml`, a `[project.scripts]` console entry `agent-control-fleet`, a `__main__.py` alias, a `tests/` directory, and entries in the root workspace members list and the Makefile's lint, typecheck and test targets. `scripts/tests/test_workspace_test_coverage.py:65` fails the build for a member `make test` does not reach, and the `HOW_TO_FIX` block at `:23` names exactly what is needed.
+
+**The schema gets a typed parser that refuses every ambiguity**, modelled on `knowledge_sync/src/agent_control_knowledge_sync/allowlist.py`. That file declares its key sets as frozensets, refuses an unknown key with the reason attached, refuses a duplicate naming the first occurrence, and refuses a bool-shaped string because "a string here would read as true and turn a channel on by accident". Every one of those has a fleet analogue, and the last is not hypothetical: `web_tools: "false"` would read as true and turn Exa on in the one container the example deliberately turns it off for. At 257 lines for a simpler schema, revision 1's "roughly 150 lines" was light.
+
+**The image follows the three that exist**, which is not free: `examples/google_adk_plugin` is **not** a workspace member, carries its own `uv.lock`, and installs five packages by editable path. All three existing Dockerfiles copy the root lock and run `uv sync --package <name>`. Either the example is promoted to a workspace member, which drags `google-adk` into the root lock that CI resolves for every package, or the image builds from a second lock. **Neither is free and revision 1 priced this at zero.** Recommendation: promote it, accept the lockfile growth, and get lint, typecheck and test coverage over the example for the first time.
+
+**Tests, and the one that matters most.** The plan's core claim is credential separation and revision 1 gave it no test, despite `server/tests/test_knowledge_provisioning_wiring.py` already carrying the template in two halves: `test_the_server_is_never_handed_the_sync_credential` at `:223`, which asserts per container that nothing but the intended holder carries it, and `test_the_sync_container_is_handed_the_credential_it_needs` at `:257`, so nobody satisfies the first by deletion. Note that both are parametrized over `RUNTIMES`, which already includes the Apple container path, so the fleet analogue inherits runtime parity for free. The fleet needs exactly that, plus:
+
+- Env-reaches-container parity, extending `scripts/check_knowledge_env_parity.py`. The example reads twelve environment variables; a fleet container that gets seven has a feature that reads as available and is off. `AGENT_CONTROL_KNOWLEDGE_TOOLS` is precisely this class.
+- Schema refusal tests per ambiguity, mirroring the allowlist's.
+- The register-environment parity assertion from 6.1.
+
+These are file facts and pure functions. They must fail on a laptop with nothing running, which is the discipline `test_knowledge_provisioning_wiring.py:19-21` states outright and is why revision 1's `docker compose config` CI assertions were the wrong mechanism even before the runtime changed.
 
 ---
 
@@ -476,119 +378,105 @@ It refuses to fix anything because the fix for half of these is to delete a bind
 
 | Case | Behaviour |
 |---|---|
-| Executor up but wedged | `/list-apps` answers from the ADK app registry and says nothing about the plugin's control cache, so the healthcheck sees a healthy container even with the identity assertion. The refresh loop logs "Failed to refresh controls; keeping previous cache" and runs the old control set indefinitely, which `task-dispatcher.md` 12.3 documents. Compose cannot catch it. The dry-run canary per task catches it; the real fix is the control-set generation counter already sized in that plan's Phase 8. The fleet's contribution is that recovery is `docker compose restart ac-exec-<agent>` rather than finding a pid. |
-| Wedged mid-turn | The turn 504s at `turn_timeout_seconds` (300), releases with `turn_ended=False`, keeps `in_flight_trace_id`, and the task goes `running_unknown` and is never retried. Unchanged and deliberately so: a retry of a step that may have acted is refused permanently. |
-| Stale row, dead name | 503 `EXECUTOR_UNAVAILABLE`. An outage, correctly reported. In the containerised topology the name does not resolve, which is the same class of failure with a clearer message. |
-| Stale row, reused port, different agent | The case that matters, because it is a mis-execution rather than an outage. Today: `executor_app_name` is `my_agent` on all eight rows, `AdkExecutorClient._headers` names no agent, so the request is accepted, the wrong plugin evaluates it, and `control_execution_events` records the *executing* agent faithfully and wrongly. After 3.4 the app name is the agent name, the wrong container has no such folder, and the session path 404s into `ExecutorSessionNotFoundError`. Port reuse is a property of a flat host port space, which 3.3 deletes. The residual is two containers deliberately given the same `AGENT_CONTROL_AGENT_NAME`, which the generator cannot emit and `fleet doctor` reports. |
-| Two teams sharing one `linear_team_key` | Both teams' milestone panels show OPS milestones. The partial unique index `ux_agent_tasks_open_source_ref` on `(namespace_key, source_kind, source_ref)` means the issue imports once; the second press previews `already_queued` and the first team's budget pays. Not an error, because it may be a deliberate migration state. `fleet doctor` warns, and `LinkLinearTeam` gains one line naming the other team already on that key. |
-| Team with no `linear_team_key` | `sales-outreach` today. No milestone rows render, so no play control exists, and import refuses independently with 409 `TEAM_NOT_LINKED`. The file source and per-team budgets both still work for it, which is why the budget is not tied to the Linear key. |
-| Agent registered with no runtime | `google-adk-plugin`. 409 `AGENT_RUNTIME_NOT_BOUND` at session open, from `require_enabled_binding`, which runs the registration check first so an unknown agent never reads as a configuration gap. `fleet doctor` reports it as informational. |
-| Model endpoint down for the whole fleet | Every turn fails identically and the budget is spent on failures: `_acquire_turn` commits the charge before the executor is contacted, by design, so sixty immediate failures consume the hour. **No refund path**, because a refund is a write on a failure path and it double-refunds under exactly the retry storm that produces it. Instead the dispatcher stops its pass after N consecutive `EXECUTOR_*` failures, which is advisory and lives in the process. Honest residual: the budget is a spend ceiling, not an outage detector, and an outage still burns it. |
-| Fleet restarted mid-chain while a dispatcher holds a lease | The lease is `task_lease_seconds`, default 1800, and restarting executors does not touch it, so a task can sit `running` for up to thirty minutes before reclaim. With the Postgres session backend from 3.5 the ADK session survives, so a resumed step is not starting from an empty transcript. The runbook orders the sequence rather than offering one command: pause dispatch (level 1, independent of the dispatcher), let in-flight steps drain or accept losing them, restart, unpause. There is deliberately no `fleet restart` command, because a single command hides the pause and the pause is the part that matters. |
-| Fleet restarted with in-memory sessions (host fallback) | Every `executor_session_id` for that process is invalid; the next turn 404s and the row moves to `orphaned`. This is the current behaviour of all eight processes and the reason 3.5 exists. |
-| Per-team budget exhausted mid-chain at step 2 of 3 | 429 with `retry_after_seconds`; the task goes `paused_quota`, keeps heartbeating, is reclaimable, and resumes at the same step when the window rolls. Steps 1 and 2 are done and their write-backs stand. Mitigation, and it is an optimisation: at claim time the dispatcher compares the resolved chain's remaining turn requirement against the team's advisory remaining allowance and declines to start a chain that provably cannot finish this window. Advisory, in the process being budgeted, not enforcement. |
-| Namespace budget fine, team budget zero | Refused with the team's error code and `retry_after_seconds`. The console banner names which ceiling, because "budget exhausted" against a namespace figure showing 40 remaining is the report that gets filed as a bug. |
-| Team at `max_concurrent_turns` | 409, same shape as `AGENT_CONCURRENCY_EXCEEDED`, distinct code. The task is not failed; the dispatcher takes the next one. |
-| Task with no team | Charges the namespace only. `REQUIRE_TEAM=true` refuses it. Default false. |
-| Cross-team workflow step | The task's team pays. Section 5.3. |
-| Scaling past the host port range | Does not arise: no host ports are published. On the host-supervisor fallback it does, and that path's documented ceiling is whatever range the operator allocates, stated as a limitation of the fallback rather than of the design. |
-| Adding a ninth agent | One entry in `fleet.yaml`, regenerate, `up -d`. `fleet-register` registers the agent, syncs its steps under the admin key, writes the binding, and exits; the new executor boots non-admin and finds every step present. No port allocation, no hand-edited row, no restart of the other eight. **The step sync is the part that makes this work and the part an earlier draft omitted.** |
-| Adding a fifth team | Teams are rows, not processes. What a team needs is agents, and each agent is one `fleet.yaml` entry, so the path is the row above, twice. The `DispatchSettings` validator refuses a per-team default that oversubscribes the namespace ceiling, which is where the operator learns that adding a team means deciding whose allowance shrinks. |
-| Executor restarts against an unchanged registration | Strict, unchanged payload, no new step keys, `agent_created_at` preserved, so no `AGENTS_UPDATE` path and no admin. Succeeds on the fleet's ordinary key. |
-| A tool is added to the shared example | Every executor's `bind()` would need `AGENTS_UPDATE`. It never gets there: `fleet-register` runs first with the admin key and syncs the new step for all eight, and the executors short-circuit. Forgetting to rerun the job means eight crash loops with a 403, which is loud and correct. |
-| A developer changes a tool signature | 409 `SCHEMA_INCOMPATIBLE` from `fleet-register` under strict. Deliberate. The fix is an explicit admin `conflict_mode="overwrite"`, which is what replacing a registration should cost. |
-| A developer deletes a tool | The step stays in the registry. Strict merges. Pruning needs an admin overwrite. Documented on the SDK docstring, not discovered. |
-| `AGENT_CONTROL_WEB_TOOLS` flipped 0 to 1 in `fleet.yaml` | A step addition, because `bind()` registers the toolset object as a step. Same path as adding a tool: rerun `fleet-register`. Worth naming because it looks like a config flag and is a registration change. |
-| `api_key_enabled` false | Every operation succeeds unauthenticated under `NoAuthProvider` and every credential separation in this plan is inert. `fleet-register` detects it behaviourally and exits non-zero, which blocks every executor through `service_completed_successfully`. The insecure-local-dev hatch does not apply. |
-| Fleet executor key leaked | It is an ordinary key: it can register agents, open sessions and spend within the namespace budget. It cannot create or unbind controls, and it cannot add a step. That is the whole delta from today, and it is the point of the plan. |
-| Register job fails halfway | Some agents registered, some not. Idempotent, so re-running completes it. Executors stay down, because the dependency is `service_completed_successfully`. `fleet doctor` names which agents lack a row. |
-| Two fleets against one server | Two generators, two name prefixes, one `agent_runtimes` table keyed `(namespace_key, agent_name)`, so the second fleet would silently repoint the first's bindings. Refused: after adoption (7.3), any `base_url` that is not the one this fleet would write aborts the run and names the row. |
+| Executor up but wedged | `/list-apps` answers from the ADK app registry and says nothing about the plugin's control cache. The refresh loop logs "Failed to refresh controls; keeping previous cache" and runs the old control set indefinitely. Nothing in the runtime catches it. The dry-run canary per task catches it; the real fix is the control-set generation counter in `task-dispatcher.md` Phase 8. |
+| Stale row, wrong agent | **Revised.** Not a 404 at session open. Session creation returns 200 against any app name, the first `POST /run` returns 500, and the client maps it to `ExecutorUnavailableError`. Reads as a broken executor, is a binding error, and `fleet doctor` is the only thing that distinguishes them. |
+| Stale row, dead IP | 503 `EXECUTOR_UNAVAILABLE`. An outage, correctly reported. |
+| Executor crashes | **Revised.** No restart policy, so it stays down and nothing announces it. `fleet doctor` reports the missing container; re-running `up` restarts it. |
+| Executor whose agent row was deleted | Absent from revision 1. `init()` recreates the agent with zero steps on an ordinary key, `bind()` then finds every step pending and 403s at import. Deleting one agent row takes one executor down until `fleet register` is re-run. |
+| Register job fails halfway | Some agents registered, some not. Idempotent, so re-running completes it. No executor starts, because `up` checks the exit code. |
+| A tool is added to the shared example | Every executor's `bind()` would need `AGENTS_UPDATE`. It never gets there if `fleet register` ran first. Forgetting to re-run it means N containers exit at import, and under 5.3 they stay exited. |
+| A tool name is first seen at runtime | **The residual from 4.3, corrected.** `_ensure_step_known` 403s silently on an ordinary key and the step never registers. Controls still enforce, because scoping is a string comparison and never reads the registry. What is lost is console discoverability, plus a 403 on every subsequent tool call because the failure is not cached. Applies to plain callables as much as MCP tools. |
+| A developer changes a tool signature | 409 `SCHEMA_INCOMPATIBLE` from `fleet register` under strict. Deliberate. The fix is an explicit admin overwrite. |
+| A developer deletes a tool | The step stays in the registry. Strict merges. Pruning needs an admin overwrite. |
+| Fleet restarted mid-chain while a dispatcher holds a lease | The lease is 1800s and restarting executors does not touch it, so a task can sit `running` for up to thirty minutes before reclaim. With the Postgres session backend the ADK session survives. The runbook orders the sequence rather than offering one command: pause dispatch, drain or accept losing in-flight steps, restart, unpause. |
+| Executor restarts against an unchanged registration | Strict, no new step keys, `agent_created_at` preserved, so no admin path. Succeeds on an ordinary key. |
+| `api_key_enabled` false | Every operation succeeds unauthenticated and every credential separation here is inert. `fleet register` detects it behaviourally and exits non-zero, which stops `up` before any executor starts. |
+| Fleet executor key leaked | It is an ordinary key: it can register agents, open sessions and spend within the namespace budget. It cannot create or unbind controls. **Subject to 4.4:** if executors keep an admin key for the nudge path, this row is false and the plan has not delivered its point. |
+| Two fleets against one server | One `agent_runtimes` table keyed `(namespace_key, agent_name)`, so the second fleet silently repoints the first's bindings. After adoption, any `base_url` that is not the one this fleet would write aborts the run and names the row. |
 
 ---
 
 ## 9. What this refuses to do
 
-**It does not make milestone scope schedulable.** The property is not "neither `once` nor `serve` can construct one", because that is a list of two subcommand names and somebody will add a third. The property lives in the endpoint: `POST /agent-tasks/import` accepts `scope.kind == "linear_milestone"` only under `mode: "commit"` carrying an `expected_refs_digest` over a set produced by a preview the caller was shown, refusing with 409 `SCOPE_CHANGED` otherwise. No non-interactive caller can construct that regardless of what process it runs in. Cron reaches only the team-wide label source, where, in `task-dispatcher.md`'s words, "the human press is gone and the label is the sole gate".
+**It does not make milestone scope schedulable.** The property lives in the endpoint: `POST /agent-tasks/import` accepts `scope.kind == "linear_milestone"` only under `mode: "commit"` carrying an `expected_refs_digest` over a preview the caller was shown. No non-interactive caller can construct that.
 
-The fleet-specific clause, and it is checkable in the generator: **no long-running service in the fleet profile holds a credential carrying `agent_tasks.write`.** Executors do not need it. `fleet-register` holds admin, which under a three-level model does carry it, and that is precisely why the job registers and dies rather than idling: a process that both holds admin and runs on a timer could preview and then commit, which is forging the press by doing it twice. Nothing here adds a "start all teams" control, a fleet-wide play button, or a container with a milestone id in its arguments. **If a future reviewer finds any of those traceable to this plan, the plan has been violated.**
+The fleet-specific clause: **no long-running process started by this plan holds a credential carrying `agent_tasks.write`.** Both admin jobs exit. Nothing here adds a fleet-wide play button or a container with a milestone id in its arguments. If a future reviewer finds any of those traceable to this plan, the plan has been violated.
 
-**It does not dissolve the dispatcher's non-admin requirement.** The admin credential lives in exactly one place, a one-shot container that exits before any turn-handling agent code runs. The dispatcher never holds it, the executors stop holding it, and `dispatch preflight` still refuses an admin key when it is written. Sharing an image with the register job is not sharing a process.
+**It does not dissolve the dispatcher's non-admin requirement.** Note that the dispatcher now runs `serve` continuously in the default stack, which revision 1 did not account for. It holds an ordinary key and must keep holding one.
 
-**It does not remove the one-agent-per-process constraint.** Section 3.2 prices it at two to three weeks of SDK surgery plus a permanent widening of blast radius, and refuses.
+**It does not remove the one-agent-per-process constraint.** Section 3.2.
 
-**It does not create per-team model capacity.** Section 5.6. One subscription, one proxy, no per-caller identity at that hop.
+**It does not build a supervisor.** With no restart policy this is more tempting than it was under compose, and it is still orchestration Phase 5's work. Section 5.3 offers idempotent `up` and a doctor instead.
 
-**It does not add per-namespace executor isolation.** Multi-tenant deployments with tool egress need it; orchestration already flags it; this plan is single-namespace by construction, since `HeaderAuthProvider._resolve_namespace_key` returns the default for every caller.
+**It does not create per-team capacity, or per-team anything.** Budgets left this document entirely; see `docs/plans/per-team-budgets.md`.
 
-**It does not build the supervisor.** Executor restart, the derived per-agent secret and the identity route are orchestration Phase 5's work. This plan folds one assertion into that work and does not claim it.
+**It does not add per-namespace executor isolation.** This plan is single-namespace by construction.
 
-**It does not autoscale, and it does not make a second dispatcher useful.** Both are named non-goals in `task-dispatcher.md` 17 and neither becomes easier here.
-
-**It does not put the model endpoint anywhere near the control plane.** `agent-system-prompts.md` already settled that a per-agent `api_base` is data exfiltration wearing a config field. The endpoint stays in the executor's environment, one value, interpolated.
+**It does not target Docker Compose.** Revision 1 did, against a machine that does not run it. If a Docker path is wanted later it is a second driver behind the same `fleet.yaml`, and the parity rule at `apple-container-up.sh:96` applies: a service that exists only in compose does not exist on the machine this stack runs on.
 
 ---
 
 ## 10. Phases and effort
 
-One engineer, including tests, in this repo's convention. Configuration and real work are separated per phase, because conflating them is how a two-day phase becomes a two-week one.
+One engineer, including tests, in this repo's convention.
 
-**Phase 0, two probes that can change the plan. 1 day.**
+**Phase 0, the decisions that can cancel the plan. 2 days.**
 
-*Probe A, the app name.* Build a scratch image that materializes `/agents/marketing_researcher/agent.py` as a shim over the installed example, run it, and confirm `/list-apps` returns exactly `["marketing_researcher"]` and that `POST /apps/marketing_researcher/users/u/sessions/s` succeeds while `POST /apps/my_agent/...` 404s. Nothing writes `executor_app_name` until this passes, because the whole mis-execution defence rests on it.
+*Probe A is done.* Corrected and measured on 11 August: foreign app name returns 200, failure lands at `/run` as a 500. Section 3.4 is rewritten and nothing further is needed.
 
-*Probe B, the credential.* Not a restart of the eight already-synced executors: `_sync_steps_async` short-circuits on empty `pending_steps` and that experiment can only pass. Instead, on a non-admin key: register a **brand new** agent with tools and confirm the 403 at `bind()`; then add one tool to an existing agent and confirm the same. Then run the `fleet-register` sync under the admin key and confirm both cases boot clean afterwards. This is the entry gate for Phase 2, and it is the experiment the earlier draft got wrong.
+*Probe B, the credential path.* Not a restart of already-synced executors, which short-circuits and can only pass. On a non-admin key: register a brand new agent with tools and confirm the 403 at `bind()`; add one tool to an existing agent and confirm the same; then run the sync under the admin key and confirm both boot clean.
 
-**Phase 1, generator, profile and wiring. 3 days.** `fleet.yaml`; `scripts/gen_fleet_compose.py` with a golden-file test; `include: [compose.fleet.yml]` in `docker-compose.yml`; the `server` healthcheck; profiles and the `build:` removal on `agent-dispatcher`; the `AGENT_CONTROL_FLEET_REGISTER_API_KEY` naming and the dispatcher's key-fallback fix; the CI assertion on `docker compose config --services` under both profiles. Roughly 150 lines of generator, the rest compose YAML. **Mostly configuration.**
+*Decision C, and it gates everything.* Section 4.4. Choose among mapping `AGENT_NUDGES_CONSUME` to `AUTHENTICATED`, configuring runtime tokens properly, or accepting admin on executors. **If the answer is the third, stop: the plan's justification is gone and only the addressing work is worth doing.**
 
-**Phase 2, the SDK default flip. 2 days.** `conflict_mode` default to `"strict"` in `sdks/python`; a docstring covering the 409 and the monotonic registry; tests for restart-unchanged on a non-admin key and for the 409 on a changed schema; a major-version bump and a release note; rewriting `examples/google_adk_plugin/.env.example` and the `.env` comment that currently explains why an admin key is needed. **Real work, small.** Entry gate: Probe B. On its own it does not remove admin, and the phase note says so, so nobody ships it and declares the problem solved.
+*Decision D.* The MCP step-name residual from 4.3. Enumerate at register time, turn web tools off on the fleet, or accept and document.
 
-**Phase 3, the executor image, registration and adoption. 1.5 weeks.** A Dockerfile for the example agent plus the entrypoint that materializes one agent package and starts `adk api_server /agents`; the `exec-health` identity probe; `agent_control_fleet.register` with agent registration, step sync, binding write, the uncredentialed-ADMIN refusal, and `--adopt`; the session-service URI wired to the `adk` role `adk-db-init` already provisions; per-agent `executor_app_name` with its orphaning migration; `fleet doctor`; the runbook covering the ordered fleet restart, the proxy binding and adoption. **Real work, and it grew from the earlier draft's one week** because 3.4 and 4.3 are both real engineering rather than one-line edits. Packaging in this repo has been priced at zero once before and orchestration section 15 says so.
+**Phase 1, the SDK default flip. 2 days.** `conflict_mode` default to `"strict"`; a one-line docstring with the reasoning in the commit message; tests for restart-unchanged on a non-admin key and the 409 on a changed schema; a major-version bump and a release note; rewriting the example's `.env` comment that currently explains why an admin key is needed. Entry gate: Probe B. On its own it does not remove admin.
 
-**Phase 4, per-team budgets. 1.5 weeks plus 2 days.** `agent_team_dispatch_budgets` and its migration; the second charge statement and the concurrency predicate inside `charge_dispatch_turn`; the task-to-team resolution in the same transaction; per-team `max_tasks_per_hour` in the import transaction; the `teams` block on `GET /agent-dispatch`; the settings and the oversubscription validator; the console banner naming which ceiling and the "authorized by" label; the dispatcher's advisory chain-fit check and its consecutive-failure circuit break. The 2 days is TypeScript SDK regeneration, which `make sdk-ts-generate-check` gates in CI and is therefore mandatory rather than scope. **Real work, and the two-row charge on the turn path is the highest-risk code here.**
+**Phase 2, the fleet package and the executor image. 2 weeks.** The `fleet/` workspace member with typed schema, `up`, `register`, `bind`, `doctor` and its subprocess-per-agent harness; the executor Dockerfile and the entrypoint that materializes one agent package into tmpfs and maps the session URI to the flag; promoting `examples/google_adk_plugin` to a workspace member; the credential-separation and env-parity tests; wiring into `apple-container-up.sh` and the down script. **Two weeks, not 1.5, and the delta is the workspace promotion plus the subprocess harness, both of which revision 1 priced at zero.**
 
-**Phase 5, deferrable. 3 days.** The identity assertion folded into orchestration's supervisor route, and `fleet doctor` promoted from a CLI subcommand to a read-only server route so the console can render it. Worth doing only once the supervisor exists.
+**Phase 3, adoption and the runbook. 3 days.** `--adopt`; the orphaning migration against 33 rows; `fleet doctor`; the runbook covering ordered restart, the proxy binding, and what to do when an executor exits and nothing restarts it.
 
 | Phase | Effort | Kind |
 |---|---|---|
-| 0. Two probes | 1 d | Measurement, gates 2 and 3 |
-| 1. Generator, profile, wiring | 3 d | Mostly config |
-| 2. SDK default flip | 2 d | Real work, small |
-| 3. Image, registration, adoption | 1.5 wk | Real work |
-| 4. Per-team budgets | 1.5 wk + 2 d | Real work |
-| 5. Identity and doctor route | 3 d | Deferrable |
+| 0. Probes and two decisions | 2 d | Measurement, can cancel the plan |
+| 1. SDK default flip | 2 d | Real work, small |
+| 2. Fleet package and image | 2 wk | Real work |
+| 3. Adoption, doctor, runbook | 3 d | Real work |
 
-Phases 0 to 4: **roughly 4 to 4.5 weeks.** With Phase 5, about 5.
+**Roughly 3 weeks**, down from revision 1's 4 to 4.5, because per-team budgets left and the generator, the committed compose artefact and its drift check no longer exist.
 
 ### 10.1 The minimum useful slice
 
-**Phase 0's Probe B plus the step-sync half of `fleet-register`, run once by hand. Roughly 2 days.** No containers, no generator, no compose changes.
+**Probe B plus the step-sync half of `fleet register`, run once by hand. Roughly 2 days.** No containers, no package, no runtime changes.
 
-Run the sync job against the eight running host processes with the admin key, flip `conflict_mode` to strict, and restart the eight with an ordinary key. That is the smallest change that removes ADMIN from eight processes running model-driven agent code, and it is the highest ratio of risk removed to effort spent in this document. Ports stay at 8080-8087, the budget stays namespace-wide, `executor_app_name` stays `my_agent`, and none of that is worse than it is today.
+Run the sync against the running host executor with the admin key, flip `conflict_mode` to strict, and restart on an ordinary key. Ports stay where they are, `executor_app_name` stays `my_agent`, and none of that is worse than today.
+
+**Both halves are required, which Probe B established and revision 1 obscured.** Measured in sequence on one agent: admin pre-sync under strict succeeds; the same agent then boots on an ordinary key under strict with no POST at all, because the step keys are all present and `_sync_steps_async` short-circuits; but on an ordinary key under today's shipped `overwrite` default, `init()` 403s before `bind()` is ever reached. So the pre-sync unblocks first boot and the flip unblocks every reboot. Neither alone is sufficient, and the slice is not a slice of Phase 2, it is Phase 1 and Phase 2's step-sync together.
+
+**Revision 2 caveat, and it matters.** Revision 1 called this the highest ratio of risk removed to effort spent. Under 4.4 it is not: restarting on an ordinary key is what breaks the STOP button. **The slice is only useful after Decision C.** With Decision C resolved it remains the right first move; before it, it makes things worse in a way that is silent.
 
 ---
 
 ## 11. Riskiest assumptions
 
-**That the per-agent package shim behaves like the example does today.** Probe A checks routing and session creation. It does not check that `envs.load_dotenv_for_agent` looking in a folder with no `.env` is harmless, or that ADK's hot-reload watcher is indifferent to a folder written at container start, or that `App` metadata attached by `_record_origin_metadata` from the folder name matters to anything downstream. The shim is three lines and the failure modes are all at import time, which is the good kind, but this is the plan's newest mechanism and it sits under the mis-execution defence.
+**That Decision C has an acceptable answer.** Everything about credential reduction rests on it and the comment at `header.py:116` argues the current mapping is correct. If the owner of that decision keeps it, this plan delivers addressing and lifecycle only, and should be re-scoped and re-titled rather than built as written.
 
-**That flipping the SDK default to strict does not break real consumers.** Verified against this repo's tests and this repo's example, and not against anyone else's agent. The failure is a 403 at `bind()` for anybody whose code has grown a step since its last registration, which is silent today only because everyone is holding an admin key. Probe B measures it on the agents that exist here. It cannot measure it anywhere else, which is why the change is a major version.
+**That the per-agent package shim behaves like the example does today.** Probe A now covers routing and where the failure lands. It does not cover whether `envs.load_dotenv_for_agent` on a folder with no `.env` is harmless, or whether ADK's hot-reload watcher is indifferent to a folder written into tmpfs at start. Failures are at import time, which is the good kind.
 
-**That a containerised executor reaches the proxy on the operator's platform.** Probed here, from `agent_control_server`, on Docker Desktop for macOS: 200. **Not verified on Linux**, where `host.docker.internal` needs the `host-gateway` mapping and where a proxy bound to `127.0.0.1` is genuinely unreachable from the bridge network no matter what the mapping says. The fallback for a Linux operator is the host-supervisor path from 3.3, with its port range and its in-memory sessions. Half a day to settle; it gates Phase 3's usefulness rather than its correctness.
+**That flipping the SDK default to strict does not break real consumers.** Verified against this repo's tests and example, not against anyone else's agent. Hence the major version.
 
-**That two hot rows on the turn path is acceptable.** The lock-ordering argument in 5.1 says why it is one extra acquisition behind an existing serialization point rather than new contention, and the rejected alternative would break the per-agent count. But `agent_turns.py`'s docstring is proud of how little that transaction does, and the defence that dispatch turns are rate-limited by the very thing being checked is now being made twice about the same transaction. Somebody who cares about that file should say whether the second row is worth it.
+**That no restart policy is livable.** Revision 1 assumed `unless-stopped` and a healthcheck. Neither exists, and the honest position is that this fleet has no automatic recovery at all. Whether that is acceptable at eight containers on a laptop is a real question, and the answer may be that Phase 2 should carry a small supervisor after all, which section 9 currently refuses.
 
-**That `fleet.yaml` stays the source of truth.** The first time somebody adds an agent by hand-editing `agent_runtimes` because it is faster, 7.4 starts reporting a fault that is actually the operator's intent, and a doctor tool that cries wolf gets ignored. The mitigation is that the register job aborts on a post-adoption `base_url` it did not write, converting drift into a refusal at the next `up` rather than a warning nobody reads. Whether that is too strict for a real operator is the thing a reviewer should push on hardest, because it is the one place this plan chooses friction over convenience without a safety argument underneath it.
-
-**That routing step registration through an admin job is a boundary and not a bottleneck.** Every tool change now needs a job run before eight processes will boot. That is correct as a security property and annoying as a development loop, and the annoyance is what gets engineered around. The mitigation is that `fleet-register` is idempotent, fast, and part of `up`; the risk is that somebody adds `--auto-register` to the executor entrypoint to skip it, which quietly restores an admin key to eight processes and undoes section 4 entirely.
+**That IP-based bindings rewritten on every `up` are not a source of drift.** No DNS forces it. A row is now correct only relative to the last `up`, and anything that recreates a container behind the fleet's back leaves a stale row that surfaces as a 500 at first turn.
 
 ---
 
 ## 12. Open questions a reviewer should push on
 
-**Should `steps_changed` really demand ADMIN?** 4.3 accepts the existing gate and works around it. The counter-argument is that adding a step is additive: it cannot remove an evaluator, and the deny-by-default tier-1 control from `task-dispatcher.md` 12.2 already refuses any tool no allowlist names, so a newly-registered step is not thereby callable. If that argument holds, a narrower gate (admin for step *removal* or *schema change*, `AUTHENTICATED` for pure addition) would delete `fleet-register`'s step-sync responsibility and most of Phase 3's registration work. It is not proposed here because it changes a deliberate test and because `_ensure_step_known` would then let a running agent register steps at will. Somebody who owns the control engine should decide.
+**Should `steps_changed` really demand ADMIN?** 4.3 accepts the gate and works around it. The counter-argument is that adding a step is additive and the deny-by-default tier-1 control already refuses any tool no allowlist names, so a newly registered step is not thereby callable. If that holds, a narrower gate would delete most of the register job. Somebody who owns the control engine should decide, and Decision D depends on the same person.
 
-**Is one container per agent right at forty agents?** Eight is comfortable. Forty is forty Python processes each holding a LiteLLM client and an MCP session, on one host, and the answer is probably a scheduler rather than a bigger compose file. This plan is honest that it solves the eight-to-fifteen range and does not claim the shape survives past it.
+**Is one container per agent right at forty agents?** Eight is comfortable. Forty is forty Python processes each holding a LiteLLM client and an MCP session on one laptop, and the answer is a scheduler. This plan solves the eight-to-fifteen range and does not claim the shape survives past it.
 
-**Is `max_concurrent_turns` per team the right fairness lever, or is it just a smaller queue?** It bounds occupancy of a shared upstream that has no notion of teams. Against one subscription that may be all anyone can do; it may also be a number that looks like fairness and delivers none, in which case the honest version is no per-team concurrency at all and a sentence in the runbook.
+**Should the fleet ever have targeted compose?** Revision 1 did, for a stack that has not used it in weeks. Worth asking how that happened, because the answer is that nobody re-read the plan against the tree before building on it, and the parity rule that would have caught it was written in a shell script the plan never opened.
 
-**Should the fleet profile exist in `docker-compose.yml` at all, or in its own file?** `include:` puts eight service definitions one command away from the published quick start. The CI assertion checks that the default path is unchanged, which is the mitigation, not a proof. A separate `docker-compose.fleet.yml` invoked with `-f` is uglier and has no blast radius into the quick start.
+**Is `fleet.yaml.example` plus a gitignored real file the right call?** It matches the knowledge precedent and it gives up the reviewable-in-a-diff property revision 1 wanted. For a single-operator deployment that is probably right and it is worth one dissenting voice.
