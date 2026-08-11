@@ -1,4 +1,4 @@
-"""The two invocations Phase 2 ships, met the way an operator meets them.
+"""The three invocations, met the way an operator meets them.
 
 Through :func:`main`, because the exit code is what a cron wrapper reads.
 """
@@ -218,8 +218,44 @@ def test_a_missing_subcommand_is_refused() -> None:
     assert caught.value.code == 2
 
 
-def test_there_is_no_serve_command_in_this_phase() -> None:
-    """The loop, its SIGTERM discipline and the status endpoint are Phase 4."""
-    with pytest.raises(SystemExit) as caught:
-        cli.main(["serve"])
-    assert caught.value.code == 2
+def test_serve_runs_the_loop_and_returns_what_it_exits_with(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[Any] = []
+
+    async def loop(config: Any) -> int:
+        seen.append(config)
+        return 0
+
+    monkeypatch.setattr(cli, "serve", loop)
+
+    assert cli.main(["serve"]) == 0
+    assert seen[0].root_folder_id == "folder-root", "the loop gets the config from the env"
+
+
+def test_serve_passes_a_configuration_fault_out_as_a_non_zero_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A restart policy needs to see the difference between a clean stop and a fault."""
+    monkeypatch.setattr(cli, "serve", _returns(2))
+
+    assert cli.main(["serve"]) == 2
+
+
+def test_serve_refuses_before_the_first_pass_when_the_environment_is_short(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.delenv(ROOT_FOLDER_ENV)
+
+    assert cli.main(["serve"]) == 2
+    assert ROOT_FOLDER_ENV in capsys.readouterr().err
+
+
+def test_a_second_interrupt_stops_the_loop_with_the_conventional_code(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The first is caught and asks for a clean stop; the second is somebody not waiting."""
+    monkeypatch.setattr(cli, "serve", _raises(KeyboardInterrupt()))
+
+    assert cli.main(["serve"]) == 130
+    assert "cursor stays" in capsys.readouterr().out
