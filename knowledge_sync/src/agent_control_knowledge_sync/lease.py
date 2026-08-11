@@ -35,9 +35,7 @@ _CLAIM = (
     .returning(sync_lease.c.id)
 )
 
-_CURRENT = sa.select(sync_lease.c.holder, sync_lease.c.lease_expires_at).where(
-    sync_lease.c.id == 1
-)
+_CURRENT = sa.select(sync_lease.c.holder, sync_lease.c.lease_expires_at).where(sync_lease.c.id == 1)
 
 # Not "holder": a bindparam named for a column of the table under UPDATE is reserved for
 # that column's SET clause, and colliding is a CompileError.

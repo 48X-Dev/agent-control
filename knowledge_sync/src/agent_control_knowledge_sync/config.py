@@ -147,9 +147,7 @@ class SyncConfig:
             max_file_bytes=_int(env, MAX_FILE_BYTES_ENV, MAX_FILE_BYTES_DEFAULT),
             max_documents_per_run=_int(env, MAX_DOCUMENTS_ENV, 10_000),
             source_max_bytes=_int(env, SOURCE_MAX_BYTES_ENV, SOURCE_MAX_BYTES_DEFAULT),
-            run_max_fetch_bytes=_int(
-                env, RUN_MAX_FETCH_BYTES_ENV, RUN_MAX_FETCH_BYTES_DEFAULT
-            ),
+            run_max_fetch_bytes=_int(env, RUN_MAX_FETCH_BYTES_ENV, RUN_MAX_FETCH_BYTES_DEFAULT),
             tombstone_retention_days=_int(
                 env, TOMBSTONE_RETENTION_ENV, TOMBSTONE_RETENTION_DAYS_DEFAULT
             ),

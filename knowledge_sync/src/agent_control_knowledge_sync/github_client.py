@@ -322,9 +322,7 @@ class GitHubClient:
             external_id=external_id_for(repo, path),
         )
 
-    def _split(
-        self, repo: RepoRef, entries: Sequence[Any]
-    ) -> tuple[list[GitHubFile], list[str]]:
+    def _split(self, repo: RepoRef, entries: Sequence[Any]) -> tuple[list[GitHubFile], list[str]]:
         """Compare's file list into what to re-read and what to tombstone."""
         changed: list[GitHubFile] = []
         removed: list[str] = []

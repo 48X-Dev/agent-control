@@ -473,8 +473,9 @@ async def test_a_spent_budget_is_the_same_counter_the_files_channel_reads() -> N
         await reader.default_branch_of_private_repo(REPO)
         assert client.rate_limit_remaining == 0
         with pytest.raises(GitHubRateLimitedError) as caught:
-            await reader.issue_documents(REPO, OrgMembership(client, org=OWNER), since=None,
-                                         limit=50)
+            await reader.issue_documents(
+                REPO, OrgMembership(client, org=OWNER), since=None, limit=50
+            )
     assert caught.value.code == "rate_limited"
 
 
@@ -646,5 +647,3 @@ async def test_the_stored_chunk_is_searchable_text_not_an_empty_row(corpus: Any)
     chunk = rows(corpus, "SELECT heading_path, body FROM chunks ORDER BY id LIMIT 1")[0]
     assert chunk["heading_path"] == "Laptop policy"
     assert "Badges take about a week" in chunk["body"]
-
-

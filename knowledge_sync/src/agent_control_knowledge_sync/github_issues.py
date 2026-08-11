@@ -35,8 +35,14 @@ from .github_issue_ingest import (
 from .lease import SessionFactory
 
 __all__ = [
-    "COMMIT_SUBJECT_LIMIT", "AuthorKind", "GitHubIssueReader", "IssueChannelRefusedError",
-    "IssueRefusal", "IssueSyncOutcome", "OrgMembership", "sync_issue_channels",
+    "COMMIT_SUBJECT_LIMIT",
+    "AuthorKind",
+    "GitHubIssueReader",
+    "IssueChannelRefusedError",
+    "IssueRefusal",
+    "IssueSyncOutcome",
+    "OrgMembership",
+    "sync_issue_channels",
     "sync_repo_issues",
 ]
 
@@ -153,7 +159,9 @@ class OrgMembership:
         LOGGER.warning(
             "Membership of %s in %s is undetermined (%s); indexing as external. A classic "
             "repo-scoped token carries no read:org and answers this way for every author.",
-            login, self._org, detail,
+            login,
+            self._org,
+            detail,
         )
         return AuthorKind.EXTERNAL
 

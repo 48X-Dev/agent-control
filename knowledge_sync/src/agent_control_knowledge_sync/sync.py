@@ -161,9 +161,7 @@ async def _run_once(config: SyncConfig, channel: GitHubChannel | None) -> RunCou
                     client=client,
                     journal=SyncJournal(sessions),
                     lease=lease,
-                    ingestor_factory=lambda source_id: Ingestor(
-                        sessions, source_id, guard=guard
-                    ),
+                    ingestor_factory=lambda source_id: Ingestor(sessions, source_id, guard=guard),
                     github=github,
                 )
 
@@ -243,9 +241,7 @@ async def run_once_with(
     return counters
 
 
-async def _run_github(
-    github: GitHubPass | None, tally: Tally, budget: FetchBudget
-) -> str | None:
+async def _run_github(github: GitHubPass | None, tally: Tally, budget: FetchBudget) -> str | None:
     """Off unless configured, and skipped rather than silent when the run is out of budget."""
     if github is None:
         return None
