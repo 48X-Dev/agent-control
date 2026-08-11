@@ -13,6 +13,13 @@ dependencies = [
     "google-adk>=1.0.0,<2.0.0",
     "google-genai>=1.0.0",
     "python-dotenv>=1.0.0",
+    # The OpenAI-compatible route, which is the only route the fleet has: this
+    # module and the SDK's managed-model swap both import
+    # google.adk.models.lite_llm. google-adk carries it under `extensions`,
+    # alongside crewai and langchain, so it is named directly instead. The floor
+    # is 1.83.14 because every earlier version pins jsonschema==4.23.0 and
+    # agent-control-server needs >=4.25.1, which one workspace cannot satisfy.
+    "litellm>=1.83.14,<2",
 ]
 
 [build-system]
@@ -23,8 +30,8 @@ build-backend = "hatchling.build"
 packages = ["my_agent"]
 
 [tool.uv.sources]
-agent-control-sdk = { path = "../../sdks/python", editable = true }
-agent-control-models = { path = "../../models", editable = true }
-agent-control-engine = { path = "../../engine", editable = true }
-agent-control-evaluators = { path = "../../evaluators/builtin", editable = true }
-agent-control-telemetry = { path = "../../telemetry", editable = true }
+agent-control-sdk = { workspace = true }
+agent-control-models = { workspace = true }
+agent-control-engine = { workspace = true }
+agent-control-evaluators = { workspace = true }
+agent-control-telemetry = { workspace = true }

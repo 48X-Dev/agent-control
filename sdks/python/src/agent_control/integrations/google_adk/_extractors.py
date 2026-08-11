@@ -5,7 +5,10 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
+
+if TYPE_CHECKING:
+    from google.adk.models import LlmResponse
 
 from ._attachments import (
     AttachmentDescriptor,
@@ -284,18 +287,18 @@ def resolve_tool_agent_name(tool_context: Any) -> str | None:
     return None
 
 
-def build_blocked_llm_response(message: str) -> Any:
+def build_blocked_llm_response(message: str) -> LlmResponse:
     """Create a replacement model response when a request is blocked."""
 
     content = types.Content(role="model", parts=[types.Part(text=message)])
     return _build_llm_response(content)
 
 
-def _build_llm_response(content: Any) -> Any:
+def _build_llm_response(content: Any) -> LlmResponse:
     """Construct an LLM response from a content payload."""
 
     response_type = _resolve_llm_response_type()
-    return response_type(content=content)
+    return cast("LlmResponse", response_type(content=content))
 
 
 def _resolve_llm_response_type() -> type[Any]:
