@@ -12,14 +12,18 @@ front of an agent are all the caller's. This module is the contract between the
 two halves and it is deliberately the whole of it - two names: the key, which
 decides where an answer lives, and the capability fingerprint, which decides
 whether a stored *failure* still describes this deployment.
+
+It sits in models beside the converter it describes, because the knowledge sync
+keys the same conversions from an image that installs no server package.
 """
 
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Sequence
 
-from agent_control_models.attachment_converter import DEFAULT_OPTIONS, ConversionOptions
-from agent_control_models.attachment_converter_backends import (
+from .attachment_converter import DEFAULT_OPTIONS, ConversionOptions
+from .attachment_converter_backends import (
     ConverterBackend,
     default_backends,
     installed_format_support,
@@ -32,11 +36,18 @@ Part of every key, so one increment retires every stored conversion without a
 migration and without anybody hunting for stale rows."""
 
 
+def available_backends(backends: Sequence[ConverterBackend] | None = None) -> str:
+    """The installed converters, as the key spells them. Each probe is a spec lookup."""
+    active = default_backends() if backends is None else backends
+    return ",".join(sorted(b.name for b in active if b.available()))
+
+
 def conversion_cache_key(
     source_sha256: str,
     *,
     options: ConversionOptions = DEFAULT_OPTIONS,
     backends: tuple[ConverterBackend, ...] | None = None,
+    available: str | None = None,
 ) -> str:
     """Return the cache key for converting this content under these conditions.
 
@@ -55,9 +66,11 @@ def conversion_cache_key(
 
     The key carries no content and no filename. It is a hash of a hash and a
     handful of settings, so it is safe in a log line and safe in a URL.
+
+    A caller keying a whole corpus in one process can probe once and pass the
+    result as ``available`` rather than paying a spec lookup per document.
     """
-    active = default_backends() if backends is None else backends
-    available = _available_backend_names(active)
+    probed = available_backends(backends) if available is None else available
     fingerprint = "|".join(
         (
             f"v{CONVERSION_CONTRACT_VERSION}",
@@ -66,15 +79,11 @@ def conversion_cache_key(
             str(options.low_text_threshold_chars),
             str(options.text_max_chars),
             "ocr" if options.allow_ocr else "no-ocr",
-            available,
+            probed,
         )
     )
     digest = hashlib.sha256(fingerprint.encode("utf-8")).hexdigest()
     return f"acv{CONVERSION_CONTRACT_VERSION}:{digest}"
-
-
-def _available_backend_names(backends: tuple[ConverterBackend, ...]) -> str:
-    return ",".join(sorted(b.name for b in backends if b.available()))
 
 
 def installed_capability_fingerprint(
@@ -103,11 +112,10 @@ def installed_capability_fingerprint(
     was installed when this verdict was written - is one an operator asks
     while staring at a failed row in ``psql``.
     """
-    active = default_backends() if backends is None else backends
     return "|".join(
         (
             f"v{CONVERSION_CONTRACT_VERSION}",
-            _available_backend_names(active),
+            available_backends(backends),
             ",".join(installed_format_support()),
         )
     )

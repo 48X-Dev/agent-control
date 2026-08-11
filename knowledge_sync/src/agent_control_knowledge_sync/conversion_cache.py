@@ -7,28 +7,28 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from typing import Any
 
 import sqlalchemy as sa
 from agent_control_models.attachment_converter import DEFAULT_OPTIONS, ConversionOptions
-from agent_control_models.attachment_converter_backends import ConverterBackend, default_backends
+from agent_control_models.attachment_converter_backends import ConverterBackend
+from agent_control_models.attachment_converter_cache import available_backends
+from agent_control_models.attachment_converter_cache import (
+    conversion_cache_key as attachment_cache_key,
+)
 from sqlalchemy.engine import Engine
 
 from .convert import INDEXABLE_STATUSES, Converted, install_conversion_cache
 
 __all__ = [
-    "CONVERSION_CONTRACT_VERSION",
     "NORMALIZER_VERSION",
     "RETENTION_DAYS",
     "CorpusConversionCache",
     "conversion_cache_key",
     "open_conversion_cache",
 ]
-
-CONVERSION_CONTRACT_VERSION = 1
-"""The attachment path's version, mirrored here because the sync image has no server."""
 
 NORMALIZER_VERSION = 1
 """Bumped when a change to ``normalize_for_chunking`` makes stored markdown wrong."""
@@ -71,30 +71,13 @@ def conversion_cache_key(
 ) -> str:
     """The attachment path's key for this content, with the sync's normalizer on it."""
 
-    active = default_backends() if backends is None else backends
-    return _key(source_sha256, options=options, available=available_backends(active))
+    return _generation(attachment_cache_key(source_sha256, options=options, backends=backends))
 
 
-def available_backends(backends: Sequence[ConverterBackend]) -> str:
-    """The installed converters, as the key spells them. Probing costs a spec lookup each."""
+def _generation(key: str) -> str:
+    """The attachment path's key under this normalizer's generation."""
 
-    return ",".join(sorted(b.name for b in backends if b.available()))
-
-
-def _key(source_sha256: str, *, options: ConversionOptions, available: str) -> str:
-    fingerprint = "|".join(
-        (
-            f"v{CONVERSION_CONTRACT_VERSION}",
-            source_sha256,
-            ",".join(sorted(options.accepted_mimes)),
-            str(options.low_text_threshold_chars),
-            str(options.text_max_chars),
-            "ocr" if options.allow_ocr else "no-ocr",
-            available,
-        )
-    )
-    digest = hashlib.sha256(fingerprint.encode("utf-8")).hexdigest()
-    return f"ksn{NORMALIZER_VERSION}:acv{CONVERSION_CONTRACT_VERSION}:{digest}"
+    return f"ksn{NORMALIZER_VERSION}:{key}"
 
 
 def is_empty_success(converted: Converted) -> bool:
@@ -109,7 +92,7 @@ class CorpusConversionCache:
     def __init__(self, engine: Engine, *, retention_days: int = RETENTION_DAYS) -> None:
         self._engine = engine
         self._retention = retention_days
-        self._available = available_backends(default_backends())
+        self._available = available_backends()
         self._live = True
 
     @property
@@ -122,7 +105,7 @@ class CorpusConversionCache:
         """This document's key, with the backend probe done once per process."""
 
         digest = hashlib.sha256(data).hexdigest()
-        return _key(digest, options=DEFAULT_OPTIONS, available=self._available)
+        return _generation(attachment_cache_key(digest, available=self._available))
 
     def get(self, key: str) -> Converted | None:
         """A stored conversion, marked used in the same statement, or None for a miss."""

@@ -27,6 +27,10 @@ from agent_control_models.attachment_converter_backends import (
     FAILURE_CONVERTER_ERROR,
     DoclingBackend,
 )
+from agent_control_models.attachment_converter_cache import (
+    conversion_cache_key,
+    installed_capability_fingerprint,
+)
 from agent_control_models.attachments import AttachmentVariant
 from sqlalchemy import text
 
@@ -37,10 +41,6 @@ from agent_control_server.services.attachment_conversions import (
     STATE_RUNNING,
     ConversionScheduler,
     read_cached,
-)
-from agent_control_server.services.attachment_converter_cache import (
-    conversion_cache_key,
-    installed_capability_fingerprint,
 )
 
 from .conftest import engine

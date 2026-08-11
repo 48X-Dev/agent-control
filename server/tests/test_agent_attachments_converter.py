@@ -38,6 +38,7 @@ from pathlib import Path
 import pytest
 from agent_control_models import attachment_converter as public
 from agent_control_models import attachment_converter_backends as backend_module
+from agent_control_models import attachment_converter_cache as cache_module
 from agent_control_models.attachment_converter import (
     DEFAULT_CONVERTIBLE_MIMES,
     LOW_TEXT_THRESHOLD_CHARS,
@@ -58,6 +59,11 @@ from agent_control_models.attachment_converter_backends import (
     MarkItDownBackend,
     _module_installed,
 )
+from agent_control_models.attachment_converter_cache import (
+    CONVERSION_CONTRACT_VERSION,
+    available_backends,
+    conversion_cache_key,
+)
 from agent_control_models.attachment_converter_containers import (
     OOXML_DOCUMENT,
     OOXML_PRESENTATION,
@@ -65,12 +71,6 @@ from agent_control_models.attachment_converter_containers import (
     refine_container_mime,
 )
 from agent_control_models.files import sniff_mime
-
-from agent_control_server.services import attachment_converter_cache as cache_module
-from agent_control_server.services.attachment_converter_cache import (
-    CONVERSION_CONTRACT_VERSION,
-    conversion_cache_key,
-)
 
 PDF = b"%PDF-1.7\n" + b"trailer\n" * 8
 PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
@@ -111,10 +111,7 @@ CONVERTER_SOURCES = (
     "attachment_converter_containers.py",
 )
 
-CONVERTER_DIRECTORIES = (
-    Path(public.__file__).parent,
-    Path(cache_module.__file__).parent,
-)
+CONVERTER_DIRECTORY = Path(public.__file__).parent
 
 BANNED_IMPORT_ROOTS = frozenset(
     {
@@ -184,12 +181,11 @@ def ocr(**kwargs: object) -> FakeBackend:
 
 
 def converter_source(name: str) -> Path:
-    """The library lives in models; the cache key stays beside its caller."""
-    for directory in CONVERTER_DIRECTORIES:
-        candidate = directory / name
-        if candidate.exists():
-            return candidate
-    raise AssertionError(f"no converter source named {name}")
+    """The whole chain lives in models, the cache key included."""
+    candidate = CONVERTER_DIRECTORY / name
+    if not candidate.exists():
+        raise AssertionError(f"no converter source named {name}")
+    return candidate
 
 
 def stable(result: ConversionResult) -> ConversionResult:
@@ -446,8 +442,7 @@ class TestTheTypeGateAndTheSniffAgree:
 
         assert set(fixtures) == set(DEFAULT_CONVERTIBLE_MIMES)
         assert all(
-            refine_container_mime(data, sniff_mime(data)) == mime
-            for mime, data in fixtures.items()
+            refine_container_mime(data, sniff_mime(data)) == mime for mime, data in fixtures.items()
         )
         assert set(DEFAULT_CONVERTIBLE_MIMES) <= set(_EXTENSION_BY_MIME)
 
@@ -725,15 +720,24 @@ class TestTheCacheKeyIsCompleteAndStable:
     def test_the_contract_version_retires_every_entry_at_once(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from agent_control_server.services import attachment_converter_cache as cache
-
         backends = (text_layer(), ocr())
         before = conversion_cache_key(content_sha256(PDF), backends=backends)
-        monkeypatch.setattr(cache, "CONVERSION_CONTRACT_VERSION", CONVERSION_CONTRACT_VERSION + 1)
+        monkeypatch.setattr(
+            cache_module, "CONVERSION_CONTRACT_VERSION", CONVERSION_CONTRACT_VERSION + 1
+        )
         after = conversion_cache_key(content_sha256(PDF), backends=backends)
 
         assert before != after
         assert after.startswith(f"acv{CONVERSION_CONTRACT_VERSION + 1}:")
+
+    def test_a_probed_availability_gives_the_key_probing_would_have(self) -> None:
+        """The corpus-sized caller's shortcut, which must not become a second recipe."""
+        backends = (text_layer(), ocr())
+        digest = content_sha256(PDF)
+
+        assert conversion_cache_key(
+            digest, backends=backends, available=available_backends(backends)
+        ) == conversion_cache_key(digest, backends=backends)
 
     def test_the_key_takes_no_filename_and_no_declared_type(self) -> None:
         """Proof by absence: two names for one document cannot split the cache."""
@@ -741,6 +745,7 @@ class TestTheCacheKeyIsCompleteAndStable:
             "source_sha256",
             "options",
             "backends",
+            "available",
         }
 
     def test_the_key_survives_a_process_restart(self) -> None:
@@ -753,7 +758,7 @@ class TestTheCacheKeyIsCompleteAndStable:
         catch that, so it is worth the second and a half.
         """
         script = (
-            "from agent_control_server.services.attachment_converter_cache import "
+            "from agent_control_models.attachment_converter_cache import "
             "conversion_cache_key; print(conversion_cache_key('a' * 64))"
         )
         keys = []

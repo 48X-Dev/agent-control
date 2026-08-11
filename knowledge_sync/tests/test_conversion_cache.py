@@ -2,16 +2,17 @@
 
 from __future__ import annotations
 
+import ast
 import dataclasses
 import hashlib
 from collections.abc import Iterator
+from pathlib import Path
 from typing import Any
 
 import pytest
 import sqlalchemy as sa
 from agent_control_knowledge_sync import convert as convert_module
 from agent_control_knowledge_sync.conversion_cache import (
-    CONVERSION_CONTRACT_VERSION,
     NORMALIZER_VERSION,
     CorpusConversionCache,
     conversion_cache_key,
@@ -25,10 +26,7 @@ from agent_control_knowledge_sync.convert import (
 )
 from agent_control_models.attachment_converter import DEFAULT_OPTIONS
 from agent_control_models.attachment_converter_backends import default_backends
-from agent_control_server.services.attachment_converter_cache import (
-    CONVERSION_CONTRACT_VERSION as ATTACHMENT_CONTRACT_VERSION,
-)
-from agent_control_server.services.attachment_converter_cache import (
+from agent_control_models.attachment_converter_cache import (
     conversion_cache_key as attachment_cache_key,
 )
 from sqlalchemy.pool import NullPool
@@ -94,15 +92,33 @@ def shipped(monkeypatch: pytest.MonkeyPatch) -> CountingConverter:
 
 
 def test_the_key_is_the_attachment_paths_key_under_the_syncs_own_generation() -> None:
-    """One recipe spelled twice, so the digest had better be the same digest."""
+    """The generation prefix is the only thing the sync adds to the imported recipe."""
     digest = hashlib.sha256(DOCUMENT).hexdigest()
 
     assert conversion_cache_key(digest) == f"ksn{NORMALIZER_VERSION}:{attachment_cache_key(digest)}"
 
 
-def test_the_contract_version_is_the_one_the_attachment_path_is_on() -> None:
-    """Mirrored constants that drift retire nothing and serve stale markdown forever."""
-    assert CONVERSION_CONTRACT_VERSION == ATTACHMENT_CONTRACT_VERSION
+def test_no_shipped_module_reaches_for_the_server_package() -> None:
+    """The sync image installs models and this package, so such an import is an ImportError.
+
+    The key recipe moved to models for this reason, and spelling it a second
+    time here is the other way to satisfy the constraint. This stops both.
+    """
+    package = Path(convert_module.__file__).parent
+
+    offenders = []
+    for source in sorted(package.rglob("*.py")):
+        for node in ast.walk(ast.parse(source.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Import):
+                names = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                names = [node.module or ""]
+            else:
+                continue
+            if any(name.startswith("agent_control_server") for name in names):
+                offenders.append(f"{source.name}:{node.lineno}")
+
+    assert not offenders
 
 
 @pytest.mark.parametrize(

@@ -30,6 +30,9 @@ import uuid
 from typing import Any
 
 import pytest
+from agent_control_models.attachment_converter_cache import (
+    conversion_cache_key,
+)
 from agent_control_models.errors import ErrorCode
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
@@ -43,9 +46,6 @@ from agent_control_server.auth_framework import (
 from agent_control_server.auth_framework.providers.no_auth import NoAuthProvider
 from agent_control_server.config import executor_settings
 from agent_control_server.errors import ForbiddenError
-from agent_control_server.services.attachment_converter_cache import (
-    conversion_cache_key,
-)
 from agent_control_server.services.attachment_quota import reset_attachment_quota
 from agent_control_server.services.caller_identity import hash_caller_id
 from agent_control_server.services.executor_factory import get_executor_client_factory
@@ -471,9 +471,7 @@ def test_another_namespaces_attachment_key_never_reaches_a_turn(
         namespace_key="tenant-a",
         headers={"X-Requested-With": "XMLHttpRequest", **tenant_a},
     )
-    my_session = _session_row(
-        _bound_agent(intruder, headers=tenant_b), namespace_key="tenant-b"
-    )
+    my_session = _session_row(_bound_agent(intruder, headers=tenant_b), namespace_key="tenant-b")
 
     response = _turn(intruder, my_session, [their_key])
 

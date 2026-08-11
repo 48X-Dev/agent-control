@@ -29,6 +29,9 @@ from typing import Any
 
 import pytest
 from agent_control_models.attachment_converter import ConversionStatus
+from agent_control_models.attachment_converter_cache import (
+    conversion_cache_key,
+)
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
@@ -39,9 +42,6 @@ from agent_control_server.services.attachment_conversions import (
     STATE_RUNNING,
     ConversionScheduler,
     schedule_conversion,
-)
-from agent_control_server.services.attachment_converter_cache import (
-    conversion_cache_key,
 )
 from agent_control_server.services.attachment_quota import reset_attachment_quota
 
@@ -222,9 +222,7 @@ def test_scheduling_with_no_event_loop_refuses_instead_of_raising() -> None:
     already stored the bytes.
     """
     assert (
-        schedule_conversion(
-            namespace_key=_NAMESPACE, attachment_id=1, source_sha256=_sha()
-        )
+        schedule_conversion(namespace_key=_NAMESPACE, attachment_id=1, source_sha256=_sha())
         is False
     )
 
@@ -264,7 +262,7 @@ async def test_shutdown_gives_up_rather_than_holding_the_process_open(
 async def test_a_cancelled_conversion_is_converted_by_the_next_attempt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """"Losing one costs one repeat" has to be true of a cancelled run too.
+    """ "Losing one costs one repeat" has to be true of a cancelled run too.
 
     Measured OCR is about twenty seconds an image against a five second drain,
     so a deploy while anything is converting cancels it. The claim that run
@@ -286,9 +284,7 @@ async def test_a_cancelled_conversion_is_converted_by_the_next_attempt(
     monkeypatch.setattr(conversions, "convert_attachment_async", _slow)
     source_sha256 = _sha()
     scheduler = ConversionScheduler(blobs=_FakeBlobStore(b"%PDF-1.7 body"))
-    assert scheduler.submit(
-        namespace_key=_NAMESPACE, attachment_id=1, source_sha256=source_sha256
-    )
+    assert scheduler.submit(namespace_key=_NAMESPACE, attachment_id=1, source_sha256=source_sha256)
     await asyncio.wait_for(started.wait(), timeout=5.0)
     await asyncio.wait_for(scheduler.drain(timeout=0.05), timeout=5.0)
 
@@ -348,9 +344,7 @@ async def test_a_live_claim_is_not_stolen_by_the_lease(fake_converter: Any) -> N
     _insert_running_claim(source_sha256)
 
     latecomer = ConversionScheduler(blobs=_FakeBlobStore(b"%PDF-1.7 body"))
-    assert latecomer.submit(
-        namespace_key=_NAMESPACE, attachment_id=1, source_sha256=source_sha256
-    )
+    assert latecomer.submit(namespace_key=_NAMESPACE, attachment_id=1, source_sha256=source_sha256)
     await latecomer.drain(timeout=5.0)
 
     assert calls == []
