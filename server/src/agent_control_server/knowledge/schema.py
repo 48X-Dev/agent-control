@@ -17,7 +17,9 @@ from sqlalchemy.dialects.postgresql import JSONB, TSQUERY, TSVECTOR
 # The corpus schema versions this server understands. A version outside this set
 # means the sync has moved ahead of (or behind) the reader, and every search
 # answers ``knowledge_unavailable`` rather than guessing at the row shape.
-SUPPORTED_SCHEMA_VERSIONS = frozenset({3})
+# 4 adds the sync's `conversion_cache`, which nothing on this side reads, so a
+# corpus at either version answers searches out of the same rows.
+SUPPORTED_SCHEMA_VERSIONS = frozenset({3, 4})
 
 KNOWLEDGE_METADATA = sa.MetaData()
 

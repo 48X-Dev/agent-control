@@ -8,7 +8,9 @@ from __future__ import annotations
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 
-SUPPORTED_SCHEMA_VERSIONS = frozenset({3})
+# 4 adds `conversion_cache`, which no reader touches, so a k003 corpus is still
+# a corpus both halves understand: the sync simply converts everything.
+SUPPORTED_SCHEMA_VERSIONS = frozenset({3, 4})
 
 SYNC_METADATA = sa.MetaData()
 
@@ -78,6 +80,17 @@ chunks = sa.Table(
         sa.Computed("to_tsvector('english', body)", persisted=True),
     ),
     sa.UniqueConstraint("document_id", "ordinal"),
+)
+
+conversion_cache = sa.Table(
+    "conversion_cache",
+    SYNC_METADATA,
+    sa.Column("key", sa.Text, primary_key=True),
+    sa.Column("status", sa.Text, nullable=False),
+    sa.Column("error_code", sa.Text),
+    sa.Column("body", sa.Text, nullable=False),
+    sa.Column("stored_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("last_used_at", sa.DateTime(timezone=True), nullable=False),
 )
 
 sync_lease = sa.Table(
