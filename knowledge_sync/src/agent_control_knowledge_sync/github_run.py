@@ -140,9 +140,7 @@ async def run_github(
             reported = sweep.error_code or "github_error"
     tally.secrets_skipped += writer.secrets_skipped
     tally.bytes_fetched += writer.bytes_fetched
-    issues = await _run_issues(
-        channel, tally, config=config, client=client, sessions=sessions
-    )
+    issues = await _run_issues(channel, tally, config=config, client=client, sessions=sessions)
     return reported or issues
 
 

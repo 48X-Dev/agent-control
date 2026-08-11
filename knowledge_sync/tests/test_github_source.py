@@ -259,9 +259,7 @@ class TestTheIncrementalPath:
 
     async def test_a_force_push_relist_that_hits_the_ceiling_keeps_the_ceilings_code(self) -> None:
         hub, _ = _hub("README.md", "docs/a.md", "docs/b.md")
-        sweep = await _sweep(
-            _source(hub, max_documents_per_run=2), FakeWriter(), cursor="b" * 40
-        )
+        sweep = await _sweep(_source(hub, max_documents_per_run=2), FakeWriter(), cursor="b" * 40)
         assert (sweep.status, sweep.error_code) == ("partial", "source_ceiling")
         assert sweep.cursor is None
 
@@ -288,9 +286,7 @@ class TestSweepingEveryRepo:
     async def test_the_stored_cursor_is_looked_up_by_full_name(self) -> None:
         hub, repos = self._two()
         source = _source(hub, repos=repos)
-        sweeps = await source.sweep_all(
-            FakeWriter(), cursors={"earlycore/agent-control": HEAD}
-        )
+        sweeps = await source.sweep_all(FakeWriter(), cursors={"earlycore/agent-control": HEAD})
         assert sweeps[0].seen == 0
         assert sweeps[1].indexed == 1
 
@@ -322,7 +318,5 @@ class TestTheMimeGuess:
             ("docs/page.html", "text/html"),
         ],
     )
-    def test_the_extension_names_a_type_the_converter_reads(
-        self, path: str, expected: str
-    ) -> None:
+    def test_the_extension_names_a_type_the_converter_reads(self, path: str, expected: str) -> None:
         assert source_mime_for(path) == expected

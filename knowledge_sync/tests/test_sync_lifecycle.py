@@ -169,9 +169,7 @@ async def test_a_replay_stops_at_a_ceiling_and_leaves_the_cursor_where_it_was() 
     client = FakeClient(changes=changes)
     journal = FakeJournal(cursor="cursor-1")
 
-    counters = await _run(
-        client, journal, FakeIngestor(), config=_config(max_documents_per_run=2)
-    )
+    counters = await _run(client, journal, FakeIngestor(), config=_config(max_documents_per_run=2))
 
     assert counters.seen == 2
     assert "advance_cursor" not in _kinds(journal)
@@ -200,9 +198,7 @@ async def test_a_github_repo_that_went_short_makes_the_run_partial_and_drive_sta
     await _run(FakeClient(), journal, FakeIngestor(), github=github)
 
     assert ("mark_verified", ("ok", None)) in journal.events
-    status, error_code, _ = next(
-        payload for name, payload in journal.events if name == "close_run"
-    )
+    status, error_code, _ = next(payload for name, payload in journal.events if name == "close_run")
     assert (status, error_code) == ("partial", "repo_unreachable")
 
 
@@ -233,8 +229,6 @@ async def test_every_pass_sweeps_the_tombstones_past_their_window() -> None:
     """4.4: nothing else deletes them, so a pass that skips this accumulates forever."""
     journal = FakeJournal(cursor="cursor-1")
 
-    await _run(
-        FakeClient(), journal, FakeIngestor(), config=_config(tombstone_retention_days=30)
-    )
+    await _run(FakeClient(), journal, FakeIngestor(), config=_config(tombstone_retention_days=30))
 
     assert ("sweep_tombstones", 30) in journal.events

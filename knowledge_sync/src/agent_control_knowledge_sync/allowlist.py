@@ -122,9 +122,7 @@ def parse_repo(raw: object, *, origin: str = "<allowlist>") -> RepoRef:
             "every repository that owner has, which this never does.",
         )
     if "/" in name:
-        raise AllowlistError(
-            "allowlist_repo_form", f"{origin}: {value!r} has more than one '/'."
-        )
+        raise AllowlistError("allowlist_repo_form", f"{origin}: {value!r} has more than one '/'.")
     if not _OWNER_RE.match(owner):
         raise AllowlistError("allowlist_repo_form", f"{origin}: {owner!r} is not a GitHub owner.")
     if not _NAME_RE.match(name) or name in {".", ".."}:
