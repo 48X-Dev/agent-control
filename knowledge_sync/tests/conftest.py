@@ -18,9 +18,13 @@ import sqlalchemy as sa
 from sqlalchemy.pool import NullPool
 
 from tests.fakes.drive import FakeDrive
+from tests.fakes.github import API_HOST, FakeGitHub
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PROVISIONING = REPO_ROOT / "server" / "tests" / "knowledge_provisioning.py"
+
+REAL_ASYNC_CLIENT = httpx.AsyncClient
+"""Captured before any fixture patches it, so a second patch cannot wrap the first."""
 
 TRUNCATE = "TRUNCATE chunks, documents, sources, sync_runs RESTART IDENTITY CASCADE"
 RELEASE_LEASE = "UPDATE sync_lease SET holder = NULL, lease_expires_at = '-infinity' WHERE id = 1"
@@ -79,11 +83,27 @@ def corpus(_corpus_database: Any) -> Any:
 def drive(monkeypatch: pytest.MonkeyPatch) -> FakeDrive:
     """A Drive on a stubbed transport, wired into every client the sync builds."""
     fake = FakeDrive()
-    real_client = httpx.AsyncClient
 
     def build(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
         kwargs["transport"] = fake.transport()
-        return real_client(*args, **kwargs)
+        return REAL_ASYNC_CLIENT(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", build)
+    return fake
+
+
+@pytest.fixture()
+def github(monkeypatch: pytest.MonkeyPatch, drive: FakeDrive) -> FakeGitHub:
+    """A GitHub beside the Drive fake, on one transport that routes by host."""
+    fake = FakeGitHub()
+
+    def route(request: httpx.Request) -> httpx.Response:
+        answer = fake if request.url.host == API_HOST else drive
+        return answer.handle(request)
+
+    def build(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
+        kwargs["transport"] = httpx.MockTransport(route)
+        return REAL_ASYNC_CLIENT(*args, **kwargs)
 
     monkeypatch.setattr(httpx, "AsyncClient", build)
     return fake

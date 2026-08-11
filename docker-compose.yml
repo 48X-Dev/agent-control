@@ -191,7 +191,8 @@ services:
       context: .
       dockerfile: knowledge_sync/Dockerfile
     profiles: ["knowledge"]
-    command: ["once"]
+    # Phase 4. `once` is still there for a cron entry or a manual pass.
+    command: ["serve"]
     environment:
       # The sync's own role, passed through like the reader DSN above. No Agent
       # Control API key at all: this process never calls the server.
@@ -208,15 +209,30 @@ services:
       # two defaults drift apart.
       AGENT_KNOWLEDGE_FILE_MAX_BYTES: ${AGENT_KNOWLEDGE_FILE_MAX_BYTES:-}
       AGENT_KNOWLEDGE_MAX_DOCUMENTS_PER_RUN: ${AGENT_KNOWLEDGE_MAX_DOCUMENTS_PER_RUN:-}
+      AGENT_KNOWLEDGE_SOURCE_MAX_BYTES: ${AGENT_KNOWLEDGE_SOURCE_MAX_BYTES:-}
+      AGENT_KNOWLEDGE_RUN_MAX_FETCH_BYTES: ${AGENT_KNOWLEDGE_RUN_MAX_FETCH_BYTES:-}
       AGENT_KNOWLEDGE_REQUEST_TIMEOUT_SECONDS: ${AGENT_KNOWLEDGE_REQUEST_TIMEOUT_SECONDS:-}
+      AGENT_KNOWLEDGE_TOMBSTONE_RETENTION_DAYS: ${AGENT_KNOWLEDGE_TOMBSTONE_RETENTION_DAYS:-}
+      # `serve` waits this long between passes, jittered.
+      AGENT_KNOWLEDGE_SYNC_INTERVAL_SECONDS: ${AGENT_KNOWLEDGE_SYNC_INTERVAL_SECONDS:-}
+      # Phase 5's repo list. The path is useless unless the file is mounted below.
+      AGENT_KNOWLEDGE_ALLOWLIST_PATH: ${AGENT_KNOWLEDGE_ALLOWLIST_PATH:-/config/knowledge.yaml}
       AGENT_KNOWLEDGE_LOG_LEVEL: ${AGENT_KNOWLEDGE_LOG_LEVEL:-INFO}
       # The agent-output ingest guard (section 11). A guard keyed on a variable
       # the container never receives is the bug this block exists to prevent.
       AGENT_CONTROL_EXECUTOR_DRIVE_ROOT_ID: ${AGENT_CONTROL_EXECUTOR_DRIVE_ROOT_ID:-}
     depends_on:
       - postgres
-    # `unless-stopped` would turn one sync into an endless loop.
-    restart: "no"
+    volumes:
+      # The example lists no repos, so an unconfigured stack keeps GitHub off.
+      # A path with no file behind it fails as "off", quietly, which is why the
+      # mount and AGENT_KNOWLEDGE_ALLOWLIST_PATH ship together.
+      - ${AGENT_KNOWLEDGE_ALLOWLIST_FILE:-./knowledge.yaml.example}:/config/knowledge.yaml:ro
+    restart: unless-stopped
+    # Longer than a realistic pass. SIGTERM stops new passes and lets the one in
+    # flight finish; `serve` warns past 300s that a shorter grace kills it
+    # mid-batch and leaves the lease to expire on its own clock.
+    stop_grace_period: 330s
 
 volumes:
   pgdata:
