@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import agent_control
 from agent_control.integrations.google_adk import AgentControlPlugin
 from dotenv import load_dotenv
 from google.adk.agents import LlmAgent
 from google.adk.apps import App
+
+if TYPE_CHECKING:
+    from google.adk.models import BaseLlm
 
 load_dotenv()
 
@@ -31,12 +34,16 @@ OPENAI_BASE_URL = os.getenv("AGENT_CONTROL_MODEL_BASE_URL") or os.getenv("OPENAI
 # pointed at an OpenAI-compatible base URL sends traffic to Google with a key this
 # deployment may not even hold, and the operator sees a working agent either way.
 DEFAULT_OPENAI_MODEL = os.getenv("AGENT_CONTROL_DEFAULT_MODEL", "gpt-5.6-sol")
-MODEL_NAME = os.getenv("AGENT_MODEL") or (
-    DEFAULT_OPENAI_MODEL if OPENAI_BASE_URL else os.getenv("GOOGLE_MODEL", "gemini-2.5-flash")
-)
+_ENV_MODEL = os.getenv("AGENT_MODEL")
+if _ENV_MODEL:
+    MODEL_NAME = _ENV_MODEL
+elif OPENAI_BASE_URL:
+    MODEL_NAME = DEFAULT_OPENAI_MODEL
+else:
+    MODEL_NAME = os.getenv("GOOGLE_MODEL", "gemini-2.5-flash")
 
 
-def _build_model(model_name: str, base_url: str | None) -> object:
+def _build_model(model_name: str, base_url: str | None) -> str | BaseLlm:
     """Return a Gemini model name, or route through LiteLLM for any
     OpenAI-compatible endpoint (a local proxy, Ollama, vLLM, OpenAI itself).
 
