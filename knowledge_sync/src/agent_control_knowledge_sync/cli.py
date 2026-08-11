@@ -1,4 +1,4 @@
-"""``agent-knowledge-sync``: make one pass, or say what the mirror currently holds."""
+"""``agent-knowledge-sync``: one pass, a pass per interval, or what the mirror holds."""
 
 from __future__ import annotations
 
@@ -10,9 +10,15 @@ import sys
 
 from sqlalchemy.exc import SQLAlchemyError
 
-from .config import ConfigError, SyncConfig
+from .config import (
+    SYNC_INTERVAL_ENV,
+    SYNC_INTERVAL_SECONDS_DEFAULT,
+    ConfigError,
+    SyncConfig,
+)
 from .drive_client import DriveError
 from .lease import LeaseHeldError
+from .serve import serve
 from .sync import CorpusStatus, RunCounters, SyncFailedError, corpus_sessions, read_status, run_once
 
 STALENESS_WARN_SECONDS = 86_400
@@ -24,8 +30,9 @@ def build_parser() -> argparse.ArgumentParser:
         prog="agent-knowledge-sync",
         description=(
             "Mirror the allowlisted Drive subtree into the company knowledge corpus. "
-            "`once` makes a single pass and stops; `status` reads the corpus and "
-            "reports what is in it and how fresh it is."
+            "`once` makes a single pass and stops; `serve` makes one every sync "
+            "interval until it is signalled; `status` reads the corpus and reports "
+            "what is in it and how fresh it is."
         ),
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -38,6 +45,19 @@ def build_parser() -> argparse.ArgumentParser:
             "pass completed - refused documents are counted and named, not fatal. "
             "Exit 2 means it did not run: a held lease, an unreachable root, a "
             "corpus schema this build does not write, or missing configuration."
+        ),
+    )
+    subparsers.add_parser(
+        "serve",
+        help="Make a pass every sync interval until signalled.",
+        description=(
+            "The same pass `once` makes, repeated on a jittered interval "
+            f"({SYNC_INTERVAL_ENV}, default {SYNC_INTERVAL_SECONDS_DEFAULT}s), until "
+            "SIGTERM or SIGINT. A failed pass is logged and retried at the next "
+            "interval, so a held lease or an unreachable Drive does not end the "
+            "process. The signal stops it starting a pass and lets the one in flight "
+            "finish. Exit 0 means a clean stop; exit 2 a fault no interval fixes, "
+            "such as a corpus schema this build does not write."
         ),
     )
     subparsers.add_parser(
@@ -68,7 +88,18 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "status":
         return _status(config)
+    if args.command == "serve":
+        return _serve(config)
     return _once(config)
+
+
+def _serve(config: SyncConfig) -> int:
+    try:
+        return asyncio.run(serve(config))
+    except KeyboardInterrupt:
+        # A second interrupt: the first is caught and asks the loop to finish.
+        print("\ninterrupted. The cursor stays where the last committed batch left it.")
+        return 130
 
 
 def _once(config: SyncConfig) -> int:
