@@ -15,7 +15,7 @@ the database picks:
 
 * the lock is always cleared, and no cleanup reports having lost;
 * the halt never ends up ``applied`` with the turn recorded as never having
-  ended, and never ``pending`` after its turn is over.
+  ended, and never survives the next turn's acquire still ``pending``.
 """
 
 from __future__ import annotations
@@ -194,11 +194,14 @@ async def test_a_halt_created_as_its_turn_ends_never_leaks_into_the_next_one(
 ) -> None:
     """Creation races the ending too, and the loser must not bind to nothing.
 
-    Creation reads the live trace inside the insert rather than before it, so
-    the two outcomes are "a halt bound to the turn that was running" and "409,
-    nothing was running". A read-then-write would produce a third: a row bound
-    to a turn that had already finished, which the next turn's claim would then
-    have to be trusted not to pick up.
+    Creation reads the live trace inside the insert rather than before it,
+    which closes the read-then-write window but not every window: the insert's
+    snapshot can see a turn whose release is mid-transaction, and that release
+    cannot see a halt that has not committed yet, so a halt can still commit
+    ``pending`` against a turn that just ended. The design's answer is not
+    prevention. The claim join refuses to deliver such a halt, and the next
+    turn's acquire expires it - so after the racing, one more turn is started,
+    and only then may nothing be left ``pending``.
     """
     client = live_server.client(headers={"X-API-Key": TEST_ADMIN_API_KEY})
     (session_key,) = await _open_sessions(client, 1)
@@ -228,6 +231,30 @@ async def test_a_halt_created_as_its_turn_ends_never_leaks_into_the_next_one(
         assert created.status_code in (200, 409), created.text
         if created.status_code == 200:
             assert created.json()["halt"]["target_trace_id"] == trace
+
+    # Each round may have committed its halt ``pending`` after that round's
+    # cleanup already ran. Rounds two to six healed the rounds before them as
+    # a side effect, every acquire expiring what earlier turns left behind;
+    # the final round has no successor, so start one. This acquire, not the
+    # listing below, is the event at which the design promises nothing stays
+    # pending.
+    closing_trace = new_trace_id()
+    async with AsyncSessionLocal() as db:
+        session_id = await acquire_turn_lock(
+            db,
+            namespace_key="default",
+            session_key=session_key,
+            trace_id=closing_trace,
+            stale_after_seconds=600.0,
+        )
+        await db.commit()
+    assert session_id is not None
+    await release_turn_lock(
+        session_id=session_id,
+        namespace_key="default",
+        trace_id=closing_trace,
+        turn_ended=True,
+    )
 
     listed = await client.get(f"{_SESSIONS_URL}/{session_key}/halts")
     assert listed.status_code == 200, listed.text
