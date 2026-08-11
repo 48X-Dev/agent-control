@@ -16,9 +16,12 @@ __all__ = [
     "INDEXABLE_STATUSES",
     "PASSTHROUGH_MIMES",
     "REFLOW_TARGET_CHARS",
+    "ConversionCache",
     "Converted",
     "RawConverter",
     "convert_document",
+    "install_conversion_cache",
+    "installed_conversion_cache",
     "normalize_for_chunking",
     "shipped_converter",
 ]
@@ -75,6 +78,33 @@ class RawConverter(Protocol):
     def __call__(self, data: bytes, *, declared_mime: str | None) -> Converted: ...
 
 
+class ConversionCache(Protocol):
+    """Where a past conversion is looked up and a fresh one left; a failure reads as a miss."""
+
+    def key_for(self, data: bytes) -> str: ...
+
+    def get(self, key: str) -> Converted | None: ...
+
+    def put(self, key: str, converted: Converted) -> None: ...
+
+
+_installed: ConversionCache | None = None
+
+
+def install_conversion_cache(cache: ConversionCache | None) -> ConversionCache | None:
+    """Install the process-wide cache, returning whatever it replaced."""
+
+    global _installed
+    previous, _installed = _installed, cache
+    return previous
+
+
+def installed_conversion_cache() -> ConversionCache | None:
+    """The cache this process is converting through, if any."""
+
+    return _installed
+
+
 def convert_document(
     data: bytes,
     *,
@@ -90,7 +120,26 @@ def convert_document(
         text = data.decode("utf-8", errors="replace")
         return Converted(text=normalize_for_chunking(text), status=STATUS_EXPORTED)
 
-    raw = (converter or shipped_converter)(data, declared_mime=declared_mime)
+    # The key describes the shipped pipeline, so an injected converter goes round it.
+    if converter is not None:
+        return _for_the_chunker(converter(data, declared_mime=declared_mime))
+
+    cache = _installed
+    if cache is None:
+        return _for_the_chunker(shipped_converter(data, declared_mime=declared_mime))
+
+    key = cache.key_for(data)
+    hit = cache.get(key)
+    if hit is not None:
+        return hit
+    fresh = _for_the_chunker(shipped_converter(data, declared_mime=declared_mime))
+    cache.put(key, fresh)
+    return fresh
+
+
+def _for_the_chunker(raw: Converted) -> Converted:
+    """Reflow what carries text; hand back what does not, status and all."""
+
     if not raw.indexable:
         return raw
     return Converted(

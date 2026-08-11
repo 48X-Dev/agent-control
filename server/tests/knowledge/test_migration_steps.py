@@ -32,7 +32,15 @@ from sqlalchemy.pool import NullPool
 
 from tests.knowledge_provisioning import ALEMBIC_DIR, ALEMBIC_INI, Corpus, migrate
 
-CORPUS_TABLES = ("sources", "documents", "chunks", "sync_lease", "sync_runs", "synonyms")
+CORPUS_TABLES = (
+    "sources",
+    "documents",
+    "chunks",
+    "sync_lease",
+    "sync_runs",
+    "synonyms",
+    "conversion_cache",
+)
 
 
 def _config(sync_url: str) -> Config:
@@ -117,12 +125,21 @@ def test_each_revision_leaves_the_version_it_declares(corpus: Corpus) -> None:
     upgrade_to(corpus.sync_url, "k003")
     assert schema_version(corpus.sync_url) == 3
     assert table_exists(corpus.sync_url, "synonyms")
+    assert not table_exists(corpus.sync_url, "conversion_cache")
+    assert schema_version(corpus.sync_url) in SUPPORTED_SCHEMA_VERSIONS
+
+    upgrade_to(corpus.sync_url, "k004")
+    assert schema_version(corpus.sync_url) == 4
+    assert table_exists(corpus.sync_url, "conversion_cache")
     assert schema_version(corpus.sync_url) in SUPPORTED_SCHEMA_VERSIONS
 
 
 def test_a_downgrade_puts_the_version_back_where_it_found_it(corpus: Corpus) -> None:
     """Otherwise a rollback leaves the marker claiming a schema that is gone."""
     assert schema_version(corpus.sync_url) == max(SUPPORTED_SCHEMA_VERSIONS)
+
+    downgrade_to(corpus.sync_url, "k003")
+    assert schema_version(corpus.sync_url) == 3
 
     downgrade_to(corpus.sync_url, "k002")
     assert schema_version(corpus.sync_url) == 2
