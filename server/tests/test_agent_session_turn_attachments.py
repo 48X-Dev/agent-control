@@ -17,15 +17,15 @@ import uuid
 from typing import Any
 
 import pytest
+from agent_control_models.attachment_converter_cache import (
+    conversion_cache_key,
+)
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
 from agent_control_server.config import executor_settings
 from agent_control_server.services import attachment_delivery as delivery
-from agent_control_server.services.attachment_converter_cache import (
-    conversion_cache_key,
-)
 from agent_control_server.services.attachment_quota import reset_attachment_quota
 from agent_control_server.services.executor_factory import get_executor_client_factory
 from agent_control_server.services.turn_quota import reset_turn_quota

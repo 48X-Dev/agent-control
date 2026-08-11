@@ -33,8 +33,7 @@ from agent_control_models.attachment_converter_backends import (
     ConverterUnsupportedError,
     EncryptedDocumentError,
 )
-
-from agent_control_server.services.attachment_converter_cache import (
+from agent_control_models.attachment_converter_cache import (
     CONVERSION_CONTRACT_VERSION,
     conversion_cache_key,
 )

@@ -70,6 +70,10 @@ from agent_control_models.attachment_converter import (
     ConversionStatus,
     convert_attachment_async,
 )
+from agent_control_models.attachment_converter_cache import (
+    conversion_cache_key,
+    installed_capability_fingerprint,
+)
 from agent_control_models.attachments import AttachmentVariant
 from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -80,10 +84,6 @@ from sqlalchemy.orm import undefer
 from ..db import AsyncSessionLocal
 from ..models import AgentAttachmentConversion
 from .attachment_blobs import AttachmentBlobStore, get_attachment_blob_store
-from .attachment_converter_cache import (
-    conversion_cache_key,
-    installed_capability_fingerprint,
-)
 from .executor_metrics import (
     ATTACHMENT_CONVERSION_DROPPED,
     ATTACHMENT_CONVERSION_DURATION,

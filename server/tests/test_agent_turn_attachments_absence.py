@@ -40,6 +40,9 @@ import base64
 from typing import Any
 
 import pytest
+from agent_control_models.attachment_converter_cache import (
+    conversion_cache_key,
+)
 from agent_control_models.sessions import TURN_MESSAGE_MAX_LENGTH
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -47,9 +50,6 @@ from sqlalchemy import text
 
 from agent_control_server.config import executor_settings
 from agent_control_server.services import attachment_binding
-from agent_control_server.services.attachment_converter_cache import (
-    conversion_cache_key,
-)
 from agent_control_server.services.attachment_quota import reset_attachment_quota
 from agent_control_server.services.executor_client import (
     EXECUTOR_TURN_TIMEOUT_MESSAGE,
