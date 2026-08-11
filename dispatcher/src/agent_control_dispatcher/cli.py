@@ -1,52 +1,6 @@
-"""``agent-control-dispatch``.
+"""``agent-control-dispatch``: ``once`` makes one pass over a source, ``serve`` polls the queue.
 
-The invocation section 14 specifies. It did not change when the server's
-``agent_tasks`` claim replaced the SQLite ledger, which was the promise::
-
-    agent-control-dispatch once --source file://tasks.yaml \\
-        --agent researcher --max-tasks 3 --dry-run
-
-    agent-control-dispatch once --source linear-milestone:<id> --team operations \\
-        --agent ops_runbook_agent --max-tasks 3 --dry-run
-
-``--dry-run`` is the default, so passing it is a statement of intent rather
-than a switch. Turning it off takes ``--no-dry-run`` and prints a warning that
-says what is and is not being enforced.
-
-A chain of agents is ``--workflow`` instead of ``--agent``::
-
-    agent-control-dispatch once --source linear-milestone:<id> --team marketing \\
-        --workflow research-then-write --max-tasks 3 --dry-run
-
-``--agent`` names the agent for a task with **no** configured workflow, which is
-the implicit one-step plan every team has by default. It is not an override: a
-workflow that pins its own agents ignores it entirely, and it cannot fill more
-than one unresolved step. Agent selection is server-side configuration - the
-workflow step, then the team's ``default_agent_name`` - and picking one here
-would put the decision in the wrong process (plan section 8).
-
-``--workflow`` and ``--ledger`` are mutually exclusive. A chain needs
-``agent_task_steps`` to carry one agent's report to the next, and the local
-SQLite file records one output per item.
-
-Neither invocation writes anything to Linear. There is no comment, no state
-change, no label, and no route on the server that would accept one.
-
-The claim now lives in ``agent_tasks``: atomic, leased, and reclaimable from a
-dispatcher that died. ``--ledger`` still exists and now means the opposite of
-what it used to - it opts *out* of that, back to a local SQLite file that
-coordinates nothing.
-
-``serve`` is the other half of the play button, and it takes no ``--source``::
-
-    agent-control-dispatch serve --team operations --poll-seconds 5
-
-It polls ``GET /agent-tasks?status=queued`` and claims what it finds, so a
-press in the console runs within seconds without anybody opening a terminal. It
-imports nothing and names no scope: section 4 makes the human press the whole
-authorization for milestone scope, so a process a scheduler can start must not
-be able to construct one. ``--dry-run`` is absent for the same shape of reason
-- each row carries the value it was created with, and this reads it.
+``--dry-run`` is the default; ``serve`` takes no ``--source``, so a scheduler cannot forge scope.
 """
 
 from __future__ import annotations
@@ -206,17 +160,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _add_serve(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
-    """The long-running loop: poll the queue, claim, run, repeat.
-
-    It is the other half of the play button. The console writes a queued row;
-    this claims it within seconds and runs it, so nobody has to open a terminal
-    to make a press mean something.
-
-    **It reads no source and imports nothing.** There is no ``--source`` here
-    and there cannot be one: a milestone scope is authorized by a human
-    pressing play over the issues themselves, so a process a scheduler starts
-    must not be able to construct one. Every row this touches already existed.
-    """
+    """The long-running loop: poll the queue, claim, run, repeat."""
 
     serve_parser = subparsers.add_parser(
         "serve",
@@ -365,13 +309,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _serve(args: argparse.Namespace, *, api_key: str) -> int:
-    """Run the loop until a signal stops it.
-
-    A task that failed is not a failure of this process, so it exits 0. The
-    exit code has to mean "the dispatcher broke", because it is what a restart
-    policy reads, and a loop that exited non-zero every time an agent tripped a
-    control would restart on the system working correctly.
-    """
+    """Run the loop until a signal stops it."""
 
     try:
         options = ServeOptions(

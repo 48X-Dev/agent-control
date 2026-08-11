@@ -1,47 +1,6 @@
-"""The poll-claim-execute-release cycle, section 4's ``serve``.
+"""The poll-claim-execute-release cycle behind ``serve``.
 
-``once`` reads a source, imports what it finds and then claims it. **This does
-neither.** It polls ``GET /agent-tasks?status=queued`` for rows somebody has
-already pressed play on, claims one, walks its chain with the same
-:func:`~.dispatch._run_one` that ``once`` uses, and goes back to polling. The
-press is what put the row there; this is what makes the press mean something
-within seconds rather than whenever an operator next opens a terminal.
-
-**What it must never do, and the reason is section 4's authorization rule.**
-Milestone scope is reachable only from an interactive ``mode: "commit"``
-import, because the human pressing play over a displayed set of issues *is* the
-authorization for that scope. A scheduler that could construct one would be a
-scheduler that could forge the authorization. So this module imports nothing
-from :mod:`.sources`, never calls ``client.import_tasks``, and cannot name a
-scope: the only way work reaches it is a row that already exists.
-
-Nor does it choose ``dry_run``. That was fixed on the row at creation and is
-read back off the claim, so a run started with the wrong intent cannot widen
-what a human already agreed to.
-
-Four operational properties, in the order they bite:
-
-*Quiet when idle.* A line every five seconds is a log nobody reads. The fleet
-state and the queue are polled every pass; the terminal only hears about a
-transition - work started, the namespace paused, the server stopped answering.
-
-*It does not spin on a stopped namespace.* :func:`~.dispatch._report_fleet_state`
-answers before the queue is read, and a pause backs off to
-:data:`HELD_POLL_SECONDS` rather than hammering a control plane whose operator
-is mid-incident.
-
-*It survives the server going away, without spending the queue on it.* A 503
-while the server restarts is the observed case, not a hypothetical. Reads back
-off to :data:`MAX_BACKOFF_SECONDS` and recover on the first good answer, and an
-executor that is not answering is a hold rather than a row of failures: nothing
-reached a model, so the tasks keep their slots and the operator finds the queue
-where they left it.
-
-*A claim always comes back.* SIGTERM and SIGINT stop it claiming and let the
-task in flight close its own row. What is stranded anyway - SIGKILL after the
-grace period, a write-back the server could not take - is recovered by
-:func:`_expired_leases`, without which a lapsed lease means nothing because
-``?status=queued`` cannot see the row.
+It imports nothing and names no scope: only a row somebody already pressed play on reaches it.
 """
 
 from __future__ import annotations
@@ -138,14 +97,7 @@ class ServeOptions:
 
 
 class ShutdownRequest:
-    """A stop that has been asked for but not forced.
-
-    The distinction is the whole point. Setting this stops the loop *claiming*;
-    it does not interrupt a turn already running on an executor, which this
-    process could not stop anyway. What it buys is the task in flight reaching
-    its own ``finish``, so the row ends ``completed`` or ``failed`` rather than
-    sitting at ``running`` waiting for a lease to lapse.
-    """
+    """A stop that has been asked for but not forced."""
 
     def __init__(self) -> None:
         self._event = asyncio.Event()
@@ -161,12 +113,7 @@ class ShutdownRequest:
         self._event.set()
 
     async def sleep(self, seconds: float) -> None:
-        """Wait, or return early because a stop was asked for.
-
-        An idle dispatcher must not take another five seconds to notice
-        SIGTERM: a container slow to die gets SIGKILLed, which is the case this
-        class exists to avoid.
-        """
+        """Wait, or return early because a stop was asked for."""
         try:
             await asyncio.wait_for(self._event.wait(), timeout=seconds)
         except TimeoutError:
@@ -179,17 +126,7 @@ async def serve(
     out: TextIO | None = None,
     shutdown: ShutdownRequest | None = None,
 ) -> int:
-    """Poll, claim, run, repeat, until a stop is asked for.
-
-    Returns a process exit code. Zero covers every ordinary end, including
-    every task that failed on its own content: a task failing is the system
-    working, and a restart policy that treats it as a crash would restart the
-    dispatcher every time an agent said something a control did not like.
-
-    ``shutdown`` is for a caller that already has a way to ask, and passing one
-    leaves the signal handlers uninstalled. Most tests use it so they are not
-    rewiring signals in the process running them.
-    """
+    """Poll, claim, run, repeat, until a stop is asked for."""
 
     stream = out if out is not None else sys.stdout
     stop = shutdown if shutdown is not None else ShutdownRequest()
@@ -288,12 +225,7 @@ async def serve(
 
 @dataclass(frozen=True, slots=True)
 class PassOutcome:
-    """What one pass over a page of the queue established.
-
-    ``hold`` is how long to wait, ``None`` meaning the ordinary interval.
-    ``server_failed`` is separate because it answers a different question:
-    whether this pass counts towards the escalating backoff curve.
-    """
+    """What one pass over a page of the queue established."""
 
     hold: float | None = None
     server_failed: bool = False
@@ -308,13 +240,7 @@ async def _run_a_pass(
     stream: TextIO,
     stop: ShutdownRequest,
 ) -> PassOutcome:
-    """Claim and run up to ``max_tasks`` of one page.
-
-    A hold is a refusal the next task would meet identically: a switch thrown
-    mid-pass, a spent hour, an executor that is not answering. Running the page
-    against it produces a screen of identical failures and, for the ones that
-    keep their slots, parks the whole queue at once.
-    """
+    """Claim and run up to ``max_tasks`` of one page."""
 
     ran = 0
     for summary in queue:
@@ -358,13 +284,7 @@ async def _claim_and_run(
     options: ServeOptions,
     stream: TextIO,
 ) -> TaskResult | None:
-    """Take one queued row and walk its chain. ``None`` means somebody else won.
-
-    The row is adopted rather than imported. Nothing here creates a task, names
-    a scope or reaches ``POST /agent-tasks/import``; the only rows this can
-    touch are rows that already exist, which is what keeps a scheduler on the
-    far side of section 4's human press.
-    """
+    """Take one queued row and walk its chain. ``None`` means somebody else won."""
 
     source_kind = str(summary.source_kind)
     ref = str(summary.source_ref)
@@ -425,16 +345,7 @@ async def _claim_and_run(
 async def _expired_leases(
     client: DispatchClient, options: ServeOptions
 ) -> list[AgentTaskSummary]:
-    """Rows whose holder stopped existing, once their lease has lapsed.
-
-    ``?status=queued`` never sees these, and without this nothing recovers them:
-    a dispatcher killed mid-task leaves ``running``, and an executor outage
-    parks ``paused_quota``. The row an operator pressed play on would just stop,
-    showing a status nothing would ever move it off.
-
-    The claim predicate is still the authority on whether a lease has really
-    expired. This only decides which rows are worth asking about.
-    """
+    """Rows whose holder stopped existing, once their lease has lapsed."""
     now = dt.datetime.now(dt.UTC)
     stale: list[AgentTaskSummary] = []
     for status in sorted(status.value for status in RECLAIMABLE_TASK_STATUSES):
@@ -450,12 +361,7 @@ async def _expired_leases(
 
 
 def _wanted(task: AgentTaskSummary, options: ServeOptions) -> bool:
-    """Whether this dispatcher takes this row.
-
-    Filtered here rather than in the query because the list route takes a
-    status and a limit and nothing else. Skipping a row is free; claiming one
-    that belongs to another dispatcher's team is not.
-    """
+    """Whether this dispatcher takes this row."""
     if options.team_slug is not None and task.team_slug != options.team_slug:
         return False
     if options.workflow_key is not None and task.workflow_key != options.workflow_key:
@@ -468,34 +374,17 @@ def _jittered(seconds: float) -> float:
 
 
 def _pass_remainder(elapsed: float, options: ServeOptions) -> float:
-    """What is left of one poll interval after a pass that ran something.
-
-    A pass that spent four minutes on a turn polls again immediately, which is
-    what an operator watching the console expects. A pass that ended in
-    milliseconds did not do the work its bookkeeping says it did - it recorded
-    a refusal and counted it as a run - and re-polling on that walks the whole
-    queue at HTTP speed. One row per interval, whatever ended it.
-    """
+    """What is left of one poll interval after a pass that ran something."""
     return max(0.0, _jittered(options.poll_seconds) - elapsed)
 
 
 def _backoff_seconds(failures: int, options: ServeOptions) -> float:
-    """Exponential, capped, jittered.
-
-    The cap matters more than the curve: an unbounded backoff turns a
-    two-minute restart into a dispatcher that notices half an hour later.
-    """
+    """Exponential, capped, jittered."""
     return _jittered(min(options.poll_seconds * 2.0**failures, MAX_BACKOFF_SECONDS))
 
 
 def _install_signal_handlers(stop: ShutdownRequest, *, stream: TextIO) -> None:
-    """Catch the first SIGTERM or SIGINT; let a second one through.
-
-    The first asks for a clean stop and is worth waiting for: it is what lets
-    the task in flight close its own row. The second is somebody who has
-    decided not to wait, and a process that ignores two signals is how you
-    teach operators to reach for ``kill -9`` first.
-    """
+    """Catch the first SIGTERM or SIGINT; let a second one through."""
 
     loop = asyncio.get_running_loop()
 

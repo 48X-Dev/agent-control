@@ -1,64 +1,4 @@
-"""One pass over a source: claim, then walk the task's chain of agents.
-
-Each hop is one session, one turn and one step row. The control flow is
-deliberately short and the ledger is behind a protocol, so this module does not
-know whether the claim it just took was arbitrated by Postgres or by a file on
-disk. The default is the former (:mod:`.server_ledger`), which is what makes
-the claim survive a second dispatcher and a dead one.
-
-**The agents in a chain never talk to each other, and this module is the whole
-reason they appear to.** When A's work feeds B, what happens is: this process
-receives A's ``TurnResponse`` over HTTP, extracts text from it, writes that
-text to ``agent_task_steps``, formats it into a new prompt under the same
-untrusted framing the issue body gets, and starts a separate turn on a separate
-session against a separate executor. A never learns B exists. B receives text
-from what looks to it like an operator. There is no agent-to-agent channel in
-this system and nothing here adds one - which is not a limitation to apologise
-for, but the property that makes every hop individually controlled, individually
-haltable and individually visible.
-
-Which agent runs which hop is decided on the server and only read here. The
-plan comes back with each step's agent already resolved from the workflow row
-and the team row; the one gap this process fills is a single unresolved step on
-a task with no configured workflow, from ``--agent``. Everything else is
-refused, because an agent chosen in the process an operator started is one
-argument away from an agent chosen by whoever filed the issue.
-
-The budget and the fleet stop now exist, and neither is in this process. The
-namespace's hourly turn ceiling, the pause and the executor kill switch are
-refusals inside the server's ``_acquire_turn``, so a dispatcher in a retry loop
-or a second one started by somebody else meets them too. Nothing here is the
-enforcement point for any of them; what this module does is stop cleanly when
-one of them answers.
-
-What is still absent: a write-back of any kind. Linear is a *read*, and a
-source can produce items but can record nothing back onto it.
-
-Five refusals stop the whole run rather than the one task, because in each
-case continuing would make things worse rather than merely repeat a failure:
-
-* ``paused_quota`` - the credential is over its ceiling. More turns is the one
-  thing that cannot help.
-* an executor that is not answering - the client has spent its retries and
-  nothing reached a model, so every remaining task would be refused the same
-  way and each one keeps its slot.
-* a fleet ceiling - the namespace is paused, its executors are halted, its hour
-  is spent, or the agent is already running something. Every remaining task
-  would meet the same refusal, and each one keeps its slot.
-* ``running_unknown`` - a turn timed out, so an invocation is still running and
-  still spending. Starting another one puts a second concurrent invocation on
-  an executor whose plugin has never been shown to be concurrency-safe
-  (section 9.1), which is why per-agent concurrency is 1.
-* ``blocked`` - no runtime binding, no agent the plan could resolve, or the
-  content-access predicate refused. All three are configuration, and all three
-  refuse the next task identically.
-
-Two failures end one task without ending the run, because both are about that
-task's own content: a control block, and an empty report. Neither is forwarded
-to the next agent. Handing B a refusal or a blank as though it were a finding
-is the worst-quality failure available here, so the chain stops where it went
-wrong and says so.
-"""
+"""One pass over a source: claim the task, then walk its chain of agents."""
 
 from __future__ import annotations
 
@@ -417,25 +357,7 @@ async def dispatch_once(options: DispatchOptions, *, out: TextIO | None = None) 
 async def _report_fleet_state(
     client: DispatchClient, *, stream: TextIO, strict: bool = False
 ) -> str | None:
-    """Print the namespace's ceilings, and say so if a switch is already thrown.
-
-    An optimisation and nothing more. Every refusal it anticipates is enforced
-    on the server's turn path, where this process cannot reach it, and a run
-    that skipped this check would meet exactly the same answer one HTTP call
-    later. What it buys is that a paused namespace does not get four rows
-    imported, four sessions opened and four refusals logged before anybody sees
-    the word "paused".
-
-    A server that cannot answer is not treated as a stop. Refusing to run
-    because a *read* failed would put an advisory call on the critical path,
-    which is the shape of the mistake this whole phase exists to avoid.
-
-    ``strict`` re-raises instead, and exists because ``None`` otherwise means
-    two different things - nothing is held, and nothing is known. A one-shot run
-    can conflate them and carry on. A loop cannot: it would announce a clear
-    namespace on the strength of a read that failed, every time the server went
-    away.
-    """
+    """Print the namespace's ceilings, and say so if a switch is already thrown."""
 
     try:
         state = await client.read_dispatch_state()
@@ -475,12 +397,7 @@ def _because(reason: str | None) -> str:
 
 
 def _build_ledger(options: DispatchOptions, *, client: DispatchClient) -> TaskLedger:
-    """The server's ``agent_tasks``, unless a path asks for the local file.
-
-    The default moved with the ledger and the flag did not: ``--ledger`` is now
-    how an operator asks for the old, uncoordinated behaviour, and the
-    invocation section 14 published still means what it said.
-    """
+    """The server's ``agent_tasks``, unless a path asks for the local file."""
 
     if options.ledger_path is not None:
         return LocalTaskLedger(ClaimLedger(options.ledger_path))
@@ -503,18 +420,7 @@ async def _claim(
     options: DispatchOptions,
     stream: TextIO,
 ) -> bool:
-    """Take one item immediately before running it, never earlier.
-
-    Claiming the whole batch up front strands whatever the run does not reach:
-    a stop reason on task 1 would leave tasks 2..N sitting at ``claimed``, which
-    is neither terminal nor re-claimable, so a re-run skips them permanently.
-    One claim per dispatch keeps the un-run items untouched and the window
-    between claiming and the first HTTP call microseconds wide.
-
-    On the server ledger a refusal is a lost race rather than an error, and it
-    is not retried: the next poll hands out a different task, and hammering a
-    row another dispatcher holds produces conflict logs and no throughput.
-    """
+    """Take one item immediately before running it, never earlier."""
 
     if await ledger.claim(
         source_kind=source_kind,
@@ -534,12 +440,7 @@ async def _claim(
 
 @dataclass(frozen=True, slots=True)
 class ChainStep:
-    """One hop of a plan, with its agent already decided by the server.
-
-    ``agent_name`` is never ``None`` here: an unresolved step blocks the task
-    before any of this is built, because filling it in would be this process
-    choosing an agent.
-    """
+    """One hop of a plan, with its agent already decided by the server."""
 
     index: int
     agent_name: str
@@ -549,19 +450,7 @@ class ChainStep:
 
 @dataclass(frozen=True, slots=True)
 class ChainRefusal:
-    """Why a claimed task will not run, in the words the ledger keeps.
-
-    ``code`` is carried rather than assumed. Every refusal here used to be
-    written down as ``NO_AGENT_SELECTED``, which is the audit record telling an
-    operator to go and pin an agent on a workflow that had already resolved one
-    for every step - and the ledger keeps that answer after the terminal
-    scrollback is gone.
-
-    ``stops_the_run`` is separate from the code for the same reason. A refusal
-    about *configuration* refuses the next task identically, so the run ends. A
-    refusal about *this row* says nothing about the next one, and ending the
-    batch on it strands work that would have run.
-    """
+    """Why a claimed task will not run, in the words the ledger keeps."""
 
     code: str
     detail: str
@@ -576,23 +465,7 @@ async def _plan_chain(
     ref: str,
     options: DispatchOptions,
 ) -> tuple[list[ChainStep], ChainRefusal | None]:
-    """Read the plan for one claimed task, or say why it cannot run.
-
-    Returns ``(steps, refusal)``. Every refusal this function returns is a
-    ``blocked`` outcome about configuration, so the next pass produces it
-    identically, nothing retries it, and the run ends.
-
-    **Agent selection happens on the server and is only read here.** The plan
-    comes back with each step's agent resolved from the workflow row and the
-    team row, and with the ones it could not resolve *named* rather than filled
-    in. The single gap this process is allowed to fill is a one-step plan whose
-    only step resolved to nobody, filled from ``--agent``: that is the implicit
-    workflow every team has by default, and the operator naming the agent at
-    the terminal is the path slice 1 shipped. Two or more unresolved steps and
-    one ``--agent`` is refused rather than reused, because one agent running
-    two hops of a chain and being recorded as a hand-off is a lie the ledger
-    would then keep.
-    """
+    """Read the plan for one claimed task, or say why it cannot run."""
     task_key = ledger.session_task_key(source_kind=source_kind, ref=ref)
     if task_key is None:
         # The local ledger. There is no server row to hold a plan, so there is
@@ -656,15 +529,7 @@ async def _plan_chain(
 
 
 def _fallback_brief(implicit: bool, options: DispatchOptions) -> str:
-    """What a step with an empty brief is asked to do.
-
-    The operator's ``--brief`` only applies to the implicit one-step plan,
-    where it is the whole configuration there is. A configured workflow whose
-    author left a brief empty gets the neutral chain wording instead: letting
-    a command-line flag fill in for an ADMIN-authored step would put operator
-    text into the one part of the turn message that is *not* framed as
-    untrusted data, on a step somebody else configured.
-    """
+    """What a step with an empty brief is asked to do."""
     return options.brief if implicit else CHAIN_STEP_FALLBACK_BRIEF
 
 
@@ -675,18 +540,7 @@ def _refuse_an_unsendable_envelope_before_claiming(
     source_kind: str,
     options: DispatchOptions,
 ) -> str | None:
-    """Reject an over-long envelope before the claim, where that is possible.
-
-    Only on the path where this process already knows the brief: the local
-    ledger's single step, whose brief is ``--brief``. It costs nothing to
-    refuse there, so a shortened brief has to be able to pick the item back up,
-    which means not claiming it.
-
-    On the server path the brief comes from the plan and the plan comes from
-    the claimed task, so the same check happens per step inside the chain and
-    the task records a failure instead. That is the honest ordering: guessing
-    here with ``--brief`` would refuse items whose configured brief is fine.
-    """
+    """Reject an over-long envelope before the claim, where that is possible."""
     if ledger.session_task_key(source_kind=source_kind, ref=item.ref) is not None:
         return None
     try:
@@ -705,22 +559,7 @@ async def _run_one(
     options: DispatchOptions,
     stream: TextIO,
 ) -> TaskResult:
-    """Walk one task's chain: one session, one turn and one step row per hop.
-
-    **The agents in this loop never meet.** Each hop is an ordinary ``POST
-    /turns`` against a session opened for one agent, and what the next agent
-    receives is text this process read out of the previous response, wrote to
-    ``agent_task_steps``, and formatted into a fresh prompt under the same
-    untrusted framing the issue body gets. A never learns B exists; B receives
-    text from what looks to it like an operator. Everything that resembles
-    collaboration is this function holding both ends, and that is the property
-    that makes every hop individually controlled, haltable and visible.
-
-    A hop that is not ``ok`` ends the task there. The rest of the chain is
-    never started, and the reason is quality rather than caution: forwarding a
-    control's refusal, or an empty report, as if it were a finding is the worst
-    failure available here.
-    """
+    """Walk one task's chain: one session, one turn and one step row per hop."""
     _emit(stream, f"\n--- {item.ref}: {item.title}")
 
     try:
@@ -803,12 +642,7 @@ async def _run_one(
 
 
 def _delivered_keys(files: StepFilesSummary | None) -> list[str]:
-    """The attachment keys to send with the turn, and nothing else.
-
-    A key is an opaque server-minted handle. This process never sees a tracker
-    URL and could not construct one, which is the property that keeps the
-    Linear credential on the server side of the wire where it was issued.
-    """
+    """The attachment keys to send with the turn, and nothing else."""
     if files is None:
         return []
     return [entry.attachment_key for entry in files.files if entry.attachment_key is not None]
@@ -1005,20 +839,7 @@ async def _run_step(
 async def _delete_sessions(
     client: DispatchClient, session_keys: Sequence[str], *, stream: TextIO
 ) -> set[str]:
-    """Delete every session this task opened, once the task has ended.
-
-    Section 6's ``session_retention_seconds`` grace is deliberately absent, and
-    it is absent rather than forgotten: ``dispatch once`` is one pass that then
-    exits, so a fifteen-minute grace here would be fifteen minutes of a process
-    sitting idle holding nothing anybody can see. The grace belongs to the
-    long-running loop that does not exist yet, and this flag is off by default
-    precisely because the transcript is what an operator reads.
-
-    Returns the keys that actually went. A failed delete is reported and not
-    retried: the steps are already recorded, a transcript nobody asked to keep
-    is not a reason to lose the result of the turns that produced it, and the
-    session is still on the server, so the run must keep naming it.
-    """
+    """Delete every session this task opened, once the task has ended."""
     deleted: set[str] = set()
     for session_key in session_keys:
         try:
@@ -1039,17 +860,7 @@ async def _blocked(
     refusal: ChainRefusal,
     stream: TextIO,
 ) -> TaskResult:
-    """Nothing ran on this task, and the refusal says which kind of nothing.
-
-    ``blocked`` rather than ``failed`` on purpose: the work was never
-    attempted, and a loop retrying it produces the same answer forever.
-
-    Whether the *run* stops is the refusal's own answer rather than this
-    function's. A plan that resolved no agent refuses the next task
-    identically, so the batch ends; a task that turned out to have already
-    finished says nothing at all about the next one, and ending the batch there
-    would strand every task behind it for the least alarming reason available.
-    """
+    """Nothing ran on this task, and the refusal says which kind of nothing."""
     await ledger.finish(
         source_kind=source_kind,
         ref=item.ref,
@@ -1112,12 +923,7 @@ async def _unclassified(
     session_key: str,
     stream: TextIO,
 ) -> TaskResult:
-    """The turn ran; the deny query did not answer.
-
-    The step is failed rather than completed, and the run stops. Treating the
-    silence as "no deny" would forward a possible refusal downstream as a
-    finding; carrying on would spend another turn nobody can classify either.
-    """
+    """The turn ran; the deny query did not answer."""
 
     detail = (
         f"The turn completed but the control-execution query failed ({exc}). Whether a "

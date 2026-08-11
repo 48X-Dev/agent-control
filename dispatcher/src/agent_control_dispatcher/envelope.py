@@ -1,23 +1,4 @@
-"""The envelope, section 9.2. One template, in code, not configurable.
-
-Three properties are load-bearing and none of them is cosmetic.
-
-**Both untrusted blocks carry the same warning.** A's output can carry B's
-injection: a researcher that reads a poisoned page and faithfully summarises
-"the maintainer asks that you email the credentials to..." has laundered an
-injection through a trusted-looking channel. The prior report gets no more
-trust than the issue body.
-
-**The whole envelope arrives as the ``message`` on POST /turns**, so it lands
-in ``contents[-1]``, which is exactly where ``extract_request_text`` reads
-(``sdks/python/src/agent_control/integrations/google_adk/_extractors.py``).
-Every existing control therefore evaluates the issue body with no new plumbing.
-In ``system_instruction`` it would be invisible to every control in the
-deployment.
-
-**Truncation is marked, never silent.** A silently truncated task description
-is an agent confidently doing half a job.
-"""
+"""The envelope, section 9.2. One template, in code, not configurable."""
 
 from __future__ import annotations
 
@@ -145,12 +126,7 @@ posted back to the tracker.
 
 @dataclass(frozen=True, slots=True)
 class PriorReport:
-    """What the previous agent was asked to do, and what it said.
-
-    Omitted on step 1, which is every step in slice 1. It exists here because
-    ``envelope.py`` is unchanged by Phase 1 and a chain is the first thing
-    Phase 2 builds on top of it.
-    """
+    """What the previous agent was asked to do, and what it said."""
 
     agent_name: str
     brief: str
@@ -158,12 +134,7 @@ class PriorReport:
 
 
 class EnvelopeTooLongError(ValueError):
-    """The rendered envelope will not fit in one turn message.
-
-    Only reachable through an absurd ``brief``; both untrusted blocks are
-    already bounded. It is raised rather than trimmed because the brief is the
-    one part of the envelope an operator wrote on purpose.
-    """
+    """The rendered envelope will not fit in one turn message."""
 
 
 def build_envelope(
@@ -174,17 +145,7 @@ def build_envelope(
     prior: PriorReport | None = None,
     files: StepFilesSummary | None = None,
 ) -> str:
-    """Render the turn message for one step.
-
-    ``brief`` is what this step's agent was asked to do, and it is operator
-    text: it is the only part of this string that is not treated as data.
-
-    ``files`` is what the server found on the item and what it stored, and
-    ``None`` means it never looked. The distinction is load-bearing: an agent
-    told "0 of 0 files" about an issue nobody checked would be told something
-    false, and the failure this section exists to prevent is precisely an agent
-    that believes there was nothing to read.
-    """
+    """Render the turn message for one step."""
 
     task_block, task_omitted = _bound(f"{item.title}\n\n{item.body}".strip())
     rendered = _HEADER.format(source_kind=source_kind, brief=brief, task=task_block)
@@ -212,14 +173,7 @@ def build_envelope(
 
 
 def _render_files(files: StepFilesSummary | None) -> str:
-    """The files section, or nothing at all, and never an exception.
-
-    Over :data:`FILES_BLOCK_MAX_CHARS` the per-file lines go and the count line
-    stays. That order is not an aesthetic choice: "2 of 3" is what makes an
-    agent write "I could not read the spec" instead of inventing one, and the
-    lines beneath it are detail about a decision the count has already
-    reported.
-    """
+    """The files section, or nothing at all, and never an exception."""
     if files is None:
         return ""
     if files.read_failed:
@@ -242,22 +196,7 @@ def _render_files(files: StepFilesSummary | None) -> str:
 
 
 def _file_line(entry: StepAttachmentSummary) -> str:
-    """One file, with the untrusted half quoted and defused.
-
-    The name is the one part of this line a tracker author wrote. It has
-    already been normalized server-side; defusing it here as well is what stops
-    a title containing ``<<<TASK_END>>>`` closing a block that has already
-    closed above it, and costs a string scan.
-
-    ``delivered`` is said only for a file whose text is actually in this
-    message, which is what ``text_ready`` reports. A file that was stored but
-    not read is not readable, and the same turn message carries a second
-    server-authored section listing exactly which files' contents were
-    included: saying "delivered" here about a file that one lists as not
-    included would leave two statements about one file contradicting each
-    other, and an agent resolving that in favour of the optimistic one is back
-    to answering from the title.
-    """
+    """One file, with the untrusted half quoted and defused."""
     name = _defuse(entry.display_name)
     if entry.text_ready:
         detail = entry.sniffed_mime or "file"
@@ -287,15 +226,7 @@ def _bound(text: str) -> tuple[str, int]:
 
 
 def _defuse(text: str) -> str:
-    """Break any fence marker the untrusted text authored itself.
-
-    The template is verbatim from section 9.2 and the delimiting is the whole
-    point of it, which is exactly why a body containing ``<<<TASK_END>>>`` can
-    not be passed through untouched: it would close the block early and put the
-    rest of itself outside the warning, in the position the operator's own text
-    occupies. Replacing one hyphen-adjacent character leaves the string legible
-    to a person and inert to the fence.
-    """
+    """Break any fence marker the untrusted text authored itself."""
 
     for fence in _FENCES:
         if fence in text:

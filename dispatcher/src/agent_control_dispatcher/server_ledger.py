@@ -1,35 +1,6 @@
-"""The shipped ledger: ``agent_tasks``, over HTTP, and why it is not local.
+"""The shipped ledger: ``agent_tasks`` over HTTP, claimed atomically and held by lease.
 
-The SQLite ledger in :mod:`.ledger` records a claim one process believes in.
-This one records a claim **two processes contend for**, and the difference is
-not a refinement - it is the difference between a dispatcher that can run
-unattended and one that cannot. Three properties come from the server and
-cannot be had on this side of the wire at all:
-
-*The claim is atomic.* One ``UPDATE ... WHERE ... RETURNING`` inside Postgres.
-Zero rows back means somebody else won, which is a 409 and a signal to move on.
-A read-then-write here would pass every test its author wrote and fail under
-exactly the concurrency it was added to prevent.
-
-*The claim expires.* A lease, refreshed by a heartbeat, so a dispatcher that is
-killed mid-task does not hold its row forever. Nothing in a local file can
-notice that this process has stopped existing.
-
-*A dead holder's work is recoverable and visible.* On reclaim the server marks
-steps still ``running`` as ``abandoned``, and the console shows the gap rather
-than papering over it.
-
-**What this module still does not do**, said plainly because the shape invites
-the assumption: it does not enforce anything. The pause, the executor kill
-switch and the namespace turn budget are refusals on the turn path inside the
-server, and the checks a dispatcher makes are optimisations so it does not open
-sessions it cannot use. A ceiling enforced by the process being budgeted is not
-a ceiling.
-
-Section 14 promised the CLI signature would not change when the ledger landed.
-It did not: ``dispatch once --source ... --agent ... --max-tasks N --dry-run``
-is unchanged, and the only new thing is that ``--ledger`` is now how you ask
-for the *old* behaviour rather than how you configure the new one.
+One ``UPDATE ... WHERE ... RETURNING``; a read-then-write fails under concurrency.
 """
 
 from __future__ import annotations
@@ -84,12 +55,7 @@ _CLAIM_STATUS_FOR: dict[str, ClaimStatus] = {
 
 
 def default_instance_id() -> str:
-    """A stable-enough name for this process, or the operator's own.
-
-    Host plus pid plus four random characters. The random half matters: two
-    containers can share a hostname and a pid namespace, and two instances that
-    hash to one name would each be able to write to the other's tasks.
-    """
+    """A stable-enough name for this process, or the operator's own."""
     override = os.environ.get(INSTANCE_ID_ENV, "").strip()
     if override:
         return override[:64]
@@ -97,14 +63,7 @@ def default_instance_id() -> str:
 
 
 class ServerTaskLedger:
-    """``agent_tasks`` behind the :class:`~.ledger.TaskLedger` protocol.
-
-    Holds one thing of its own: the map from a source ref to the task key the
-    server minted for it. That map is built by reading the queue rather than by
-    trusting what an import returned, because the queue is the authority on
-    what is still claimable and an import's answer is a snapshot that another
-    dispatcher may already have acted on.
-    """
+    """``agent_tasks`` behind the :class:`~.ledger.TaskLedger` protocol."""
 
     def __init__(
         self,
@@ -140,15 +99,7 @@ class ServerTaskLedger:
         dry_run: bool,
         workflow_key: str | None = None,
     ) -> None:
-        """Import the set, then read the queue back to learn which key is which.
-
-        The import is preview-then-commit against the digest of the preview, so
-        what is created is the set that was read a moment earlier and not a set
-        that moved in between. Items that already have an open task are
-        reported as ``already_queued`` and are not re-created; the queue read
-        that follows picks them up anyway, which is what makes re-running this
-        over the same source resumable rather than duplicative.
-        """
+        """Import the set, then read the queue back to learn which key is which."""
         if not items:
             return
         await self._client.import_tasks(
@@ -168,30 +119,11 @@ class ServerTaskLedger:
                     self._task_keys[(source_kind, task.source_ref)] = task.task_key
 
     def adopt(self, *, source_kind: str, ref: str, task_key: str) -> None:
-        """Learn a task key from the queue rather than from an import.
-
-        This is what lets a poll loop use this ledger without creating
-        anything. :meth:`register` imports a set and then reads the queue to
-        find the keys; a dispatcher that only claims rows somebody else pressed
-        play on has the key already, in the page it just read, and must not
-        call the import route to get it. Section 4's authorization rule depends
-        on that: the press is what authorizes milestone scope, so nothing on a
-        scheduled path may reach ``POST /agent-tasks/import``.
-        """
+        """Learn a task key from the queue rather than from an import."""
         self._task_keys[(source_kind, ref)] = task_key
 
     def forget(self, *, source_kind: str, ref: str) -> None:
-        """Drop everything this ledger holds about one finished task.
-
-        ``once`` never needed it: the process exited and took the dicts with it.
-        A loop keeps one ledger for weeks, and every entry here is per task -
-        the claimed row includes the issue body - so without this the resident
-        set grows with the number of tasks ever run and never falls.
-
-        Safe only once the task has reached a terminal state, which is what the
-        caller's ``finally`` establishes. Forgetting a key mid-chain would make
-        the next step's writes no-ops, silently.
-        """
+        """Drop everything this ledger holds about one finished task."""
         key = (source_kind, ref)
         self._task_keys.pop(key, None)
         self._step_index.pop(key, None)
@@ -200,23 +132,13 @@ class ServerTaskLedger:
         self._open_steps.discard(key)
 
     def claimed_task(self, *, source_kind: str, ref: str) -> AgentTaskDetail | None:
-        """The row as it came back from this dispatcher's own claim.
-
-        The claim response carries the full row, ``body`` included, and a
-        caller that needs the issue text would otherwise have to re-read it.
-        Only a claim this instance won puts anything here.
-        """
+        """The row as it came back from this dispatcher's own claim."""
         return self._claimed.get((source_kind, ref))
 
     async def claim(
         self, *, source_kind: str, ref: str, agent_name: str, dry_run: bool
     ) -> bool:
-        """Take one task, or report that this dispatcher cannot have it.
-
-        ``dry_run`` is not passed: it was fixed on the row at import and is not
-        a per-claim choice. A dispatcher that could flip it would be able to
-        turn a dry run into a live one after a human had agreed to the former.
-        """
+        """Take one task, or report that this dispatcher cannot have it."""
         del dry_run
         key = self._task_keys.get((source_kind, ref))
         if key is None:
@@ -245,36 +167,13 @@ class ServerTaskLedger:
         return True
 
     def resume_step_index(self, *, source_kind: str, ref: str) -> int:
-        """Where the chain starts, as the server decided at claim time.
-
-        ``MAX(step_index) WHERE status='completed'`` plus one, computed from the
-        step rows rather than from ``current_step``. The two disagree exactly
-        when a dispatcher died between a 200 from ``POST /turns`` and its own
-        bookkeeping, and the counter is the half that is allowed to be wrong.
-        Recomputing it here would be a second implementation of the resume rule,
-        and the second implementation is the one that re-runs a step that
-        already spent money.
-        """
+        """Where the chain starts, as the server decided at claim time."""
         return self._step_index.get((source_kind, ref), 0)
 
     async def prior_report(
         self, *, source_kind: str, ref: str, step_index: int
     ) -> PriorReport | None:
-        """The completed step immediately before ``step_index``, from the ledger.
-
-        Read over the wire rather than from this process's memory, and that is
-        the point of the method existing. A reclaimed task resumes mid-chain in
-        a *different* dispatcher: the one that ran the earlier steps is gone,
-        and holding the previous report in a local dict would mean the
-        successor either invents an empty one or fails a step that actually
-        succeeded. ``agent_task_steps`` is where that text survives, which is
-        the whole reason the table is there.
-
-        Only a ``completed`` step at exactly ``step_index - 1`` answers. An
-        abandoned or failed one is not a report, and neither is a step two
-        positions back: skipping the gap would hand the next agent a report
-        whose place in the chain is not the place it thinks it is.
-        """
+        """The completed step immediately before ``step_index``, from the ledger."""
         if step_index <= 0:
             return None
         key = self._task_keys.get((source_kind, ref))
@@ -295,16 +194,7 @@ class ServerTaskLedger:
         return None
 
     def session_task_key(self, *, source_kind: str, ref: str) -> str | None:
-        """The claimed task this item's session belongs to.
-
-        Sent when the session is opened rather than recorded afterwards,
-        because the column it lands in is what the turn path reads: a session
-        that reaches ``POST /turns`` without it is a fleet turn the server
-        cannot tell from a human's chat, and every ceiling that keys off it -
-        the namespace budget, the dispatch pause, the kill switch - silently
-        does not apply to it. It is also what lets an operator without an admin
-        key read and halt this task's session.
-        """
+        """The claimed task this item's session belongs to."""
         return self._task_keys.get((source_kind, ref))
 
     async def record_session(
@@ -317,27 +207,7 @@ class ServerTaskLedger:
         brief: str,
         step_index: int | None = None,
     ) -> StepFilesSummary | None:
-        """Open the step row, carrying the session, before the turn starts.
-
-        This is also where the server fetches whatever the tracker has attached
-        to the item, which is why it now returns something. It has to happen
-        here and not earlier: the envelope is built from the answer, and an
-        envelope built before the fetch could not describe it.
-
-        The heartbeat immediately before it is not ceremony, and on a chain it
-        is what the lease depends on. The claim's lease started when the claim
-        did; a four-step chain of five-minute turns runs for twenty minutes
-        under one claim, so the refresh between hops is the thing that stops a
-        second dispatcher taking the task out from under a running one.
-        Section 5.4 puts the heartbeat *between* steps for exactly this reason:
-        a step can legitimately take five minutes, so it cannot be inside one.
-
-        ``step_index`` is the position about to run, and ``None`` means the one
-        the claim reported - which is where a single-step task starts and where
-        a reclaimed one resumes. A chain passes each position explicitly, so a
-        later ``finish`` closes the hop that actually ran rather than the index
-        the claim named several hops ago.
-        """
+        """Open the step row, carrying the session, before the turn starts."""
         key = self._task_keys.get((source_kind, ref))
         if key is None:
             return None
@@ -369,14 +239,7 @@ class ServerTaskLedger:
         output_text: str,
         turn_trace_id: str | None = None,
     ) -> None:
-        """Close a hop that another hop follows. The task stays running.
-
-        The task-level write is deliberately absent. A chain's task is finished
-        once, by whatever ends it: the last hop's success, or the first hop's
-        failure. Writing a task status between hops would mean a two-agent task
-        reaching ``completed`` when its researcher finished, and an operator
-        reading that would believe the writer had run.
-        """
+        """Close a hop that another hop follows. The task stays running."""
         key = self._task_keys.get((source_kind, ref))
         if key is None or (source_kind, ref) not in self._open_steps:
             return
@@ -402,18 +265,7 @@ class ServerTaskLedger:
         output_text: str | None = None,
         step_index: int | None = None,
     ) -> None:
-        """Close the step, then the task. Never the task alone when a step ran.
-
-        The step write carries the agent's output, and that output is the
-        durable record: the session is deleted when the task ends, so there is
-        no transcript to go back to and a task row that recorded only a status
-        would have thrown the work away.
-
-        A failure before the session existed has no step to close, which is
-        the one case where only the task is written. On a chain, the hops before
-        this one are already closed by :meth:`complete_step` and are not touched
-        again: this call ends the hop that was open and the task with it.
-        """
+        """Close the step, then the task. Never the task alone when a step ran."""
         key = self._task_keys.get((source_kind, ref))
         if key is None:
             return

@@ -1,34 +1,4 @@
-"""Extracting a step's output, section 9.3.
-
-Read ``TurnResponse.messages``, keep the agent's own messages, keep the text
-parts, join them. Then three things can be true of the result, and only one of
-them is a usable report.
-
-**Empty after stripping** fails the step with ``EMPTY_STEP_OUTPUT``. An empty
-report is never passed onward, because B receiving "the previous agent
-reported: (nothing)" is how B invents the missing work and reports it
-confidently.
-
-**The text is a control block.** Section 9.3 says the dispatcher must recognise
-the plugin's blocked-response shape. Slice 1 observed one, and *there is no
-shape to recognise*: see :data:`BLOCK_DETECTION_NOTE`. Block detection here
-therefore takes deny evidence from the observability store as an argument, and
-the payload text is only ever corroboration.
-
-**Spike A9's rendering wrinkle applies.** A ``skip_summarization`` halt's
-terminal event has ``content.role == "user"`` and carries raw JSON. Key off
-``author``, never ``role``. The spike says it twice; this is the third place it
-matters, so :func:`_is_agent_output` prefers ``author`` and falls back to
-``role`` only when the executor reported no author at all.
-
-One trap, paid for once already. ``agent_control_models.base.BaseModel`` sets
-``use_enum_values=True``, so ``message.role`` and ``part.kind`` arrive as plain
-strings even though they are *declared* as ``StrEnum``. ``part.kind is
-SessionMessagePartKind.TEXT`` is therefore always false, mypy cannot see it
-because the declared type is the enum, and the symptom is every step reporting
-``EMPTY_STEP_OUTPUT`` while the transcript plainly holds the answer. Compare
-with ``==``, which works in both directions because these are ``StrEnum``.
-"""
+"""Extracting a step's output, section 9.3."""
 
 from __future__ import annotations
 
@@ -70,13 +40,7 @@ class StepOutputCode(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class StepOutput:
-    """The step's report, and whether it is one.
-
-    ``text`` is populated even when ``code`` is ``BLOCKED_BY_CONTROL``, because
-    an operator watching the terminal wants to see what the model was made to
-    say. It is never forwarded to another step: forwarding a refusal downstream
-    as if it were a finding is the worst-quality failure available here.
-    """
+    """The step's report, and whether it is one."""
 
     text: str
     code: StepOutputCode
@@ -95,13 +59,7 @@ def extract_step_output(
     deny_events: Sequence[ControlExecutionEvent] = (),
     required_output: str = "text",
 ) -> StepOutput:
-    """Turn one turn's messages into a step result.
-
-    ``deny_events`` are control executions the caller has already narrowed to
-    this turn (see ``client.deny_events_for_turn``). Any of them makes the step
-    terminal: a turn the guardrails blocked is a completed turn with a
-    substituted answer, so nothing in the payload will say so.
-    """
+    """Turn one turn's messages into a step result."""
 
     text = join_agent_text(messages)
 
@@ -154,11 +112,7 @@ def _deny_detail(event: ControlExecutionEvent) -> str:
 
 
 def _deny_message(event: ControlExecutionEvent) -> str | None:
-    """The verdict string the plugin substitutes, when the event carries one.
-
-    Corroboration only. Its absence proves nothing and its presence is not what
-    makes the step blocked.
-    """
+    """The verdict string the plugin substitutes, when the event carries one."""
 
     metadata: dict[str, Any] | None = event.metadata
     if not isinstance(metadata, dict):
