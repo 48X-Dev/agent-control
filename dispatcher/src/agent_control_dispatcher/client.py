@@ -1,25 +1,6 @@
 """Every endpoint this tool calls, and the failure table behind them.
 
-Three session routes - ``POST /api/v1/agent-sessions``, ``POST
-/api/v1/agent-sessions/{key}/turns``, ``DELETE /api/v1/agent-sessions/{key}`` -
-plus ``POST /api/v1/observability/events/query``, which is how a block is
-detected and where :data:`TRACE_CORRELATION_NOTE` explains why the obvious
-correlation key does not work.
-
-And the dispatch ledger under ``/api/v1/agent-tasks``: import, list, claim,
-heartbeat, steps, plan, finish. Those are the ones that make a claim mean
-something when a second dispatcher exists, and every one of them is a request
-about rows. None of them starts anything on the server.
-
-``get_task_plan`` is the one that decides nothing here. It reads which agent
-runs which hop, already resolved from server-side configuration, and reports
-the hops that resolved to nobody rather than filling them in. This process does
-not choose an agent.
-
-Failure handling is section 11.3, in one table, in one place. The line that
-matters most is the 504: **the invocation did not stop.** A retry there buys a
-second concurrent invocation on an executor whose plugin has never been shown
-to be concurrency-safe, on top of a first one that is still spending money.
+The 504 matters most: the invocation did not stop, so a retry buys a second concurrent one.
 """
 
 from __future__ import annotations
@@ -140,12 +121,7 @@ class Disposition(StrEnum):
 
 
 class DispatchHTTPError(Exception):
-    """A refusal from the server, classified.
-
-    ``detail`` is the server's written message. It is shown to the operator and
-    never parsed: section 11.4 is about exactly the failure mode of regexing a
-    hand-written English sentence.
-    """
+    """A refusal from the server, classified."""
 
     def __init__(
         self,
@@ -165,19 +141,7 @@ class DispatchHTTPError(Exception):
 
 
 def classify(status_code: int, error_code: str | None) -> Disposition:
-    """Section 11.3, plus 401.
-
-    Anything unlisted is ``FAILED``. Guessing that an unrecognised refusal is
-    retryable is how a dispatcher hammers a server that has already said no.
-
-    401 is the one addition, and it is an addition rather than a reading:
-    section 11.3's table covers the turn path, where a bad credential fails at
-    the first call and the operator is watching. On a poll loop nobody is
-    watching, and ``FAILED`` there means one line at startup and then a process
-    that looks alive and polls forever while every press of play sits in the
-    queue. A key the server does not recognise is not going to start being
-    recognised, which is what ``BLOCKED`` means.
-    """
+    """Section 11.3's table, plus 401."""
 
     match (status_code, error_code):
         case (504, _):
@@ -250,13 +214,7 @@ class _BoundedIdSet:
 
 
 class DispatchClient:
-    """A thin, typed client over the session and ledger routes.
-
-    One instance per run. It holds an ``httpx.AsyncClient`` and a set of
-    already-attributed deny ids, and nothing else: the state two dispatchers
-    contend for is a row in ``agent_tasks``, arbitrated by one statement inside
-    Postgres, which is the only place it can be arbitrated at all.
-    """
+    """A thin, typed client over the session and ledger routes."""
 
     def __init__(
         self,
@@ -288,19 +246,7 @@ class DispatchClient:
     async def create_session(
         self, *, agent_name: str, title: str, task_key: str | None = None
     ) -> str:
-        """Open a session and return its key.
-
-        ``task_key`` binds the session to the task's row, and it is not
-        bookkeeping. That column is what lets the turn path tell a fleet turn
-        from a human chat turn, so it is where a namespace budget, a dispatch
-        pause and a kill switch become refusals *on the turn* rather than
-        checks inside the process being budgeted. It is also what opens the
-        session to oversight: a task's session has no human owner, so without
-        it every non-admin operator is 403'd out of the step rail and out of
-        halting one runaway task. Sending it is therefore part of the claim,
-        not a nicety - a session that omits it is a fleet turn the control
-        plane cannot recognise as one.
-        """
+        """Open a session and return its key."""
 
         body: dict[str, Any] = {"agent_name": agent_name, "title": title}
         if task_key is not None:
@@ -316,13 +262,7 @@ class DispatchClient:
         message: str,
         attachment_keys: Sequence[str] = (),
     ) -> TurnResponse:
-        """Run one turn to completion.
-
-        ``EXECUTOR_UNAVAILABLE`` is the only status retried, three attempts,
-        because nothing reached the executor. A read timeout is surfaced as
-        ``RUNNING_UNKNOWN`` and never retried: locally it looks the same as a
-        504, and a 504 means the agent is still running.
-        """
+        """Run one turn to completion."""
 
         attempt = 0
         while True:
@@ -347,17 +287,7 @@ class DispatchClient:
     async def fetch_milestone_issues(
         self, *, team_slug: str, milestone_id: str
     ) -> ListMilestoneIssuesResponse:
-        """Read one milestone's eligible issues and its skip counts.
-
-        A GET, and the only route slice 2 adds. The server holds the Linear
-        credential, applies the team scope and applies both eligibility
-        predicates; this side cannot widen any of the three, which is the point
-        of the read living there rather than here.
-
-        Both segments are quoted rather than interpolated raw. httpx resolves
-        ``..`` in a path before sending, so an id carrying dot segments would
-        otherwise send this GET to a different route than the one named here.
-        """
+        """Read one milestone's eligible issues and its skip counts."""
 
         payload = await self._request(
             "GET",
@@ -379,16 +309,7 @@ class DispatchClient:
     # thing two dispatchers share.
 
     async def read_dispatch_state(self) -> DispatchStateSnapshot:
-        """The namespace's stop switches and what is left of its hour.
-
-        **Advisory, and this method exists to be advisory.** Reading it before a
-        run stops the dispatcher opening sessions it cannot use and importing
-        rows nobody will ever see move. It is not the ceiling: the ceiling is a
-        refusal inside the server's ``_acquire_turn`` that this process cannot
-        reach, which is the entire reason it was put there. A future change that
-        makes this call the thing deciding whether work happens has moved the
-        budget back into the process being budgeted.
-        """
+        """The namespace's stop switches and what is left of its hour."""
 
         payload = await self._request("GET", "/agent-dispatch")
         return GetDispatchStateResponse.model_validate(payload).state
@@ -402,21 +323,7 @@ class DispatchClient:
         team_slug: str | None = None,
         workflow_key: str | None = None,
     ) -> ImportAgentTasksResponse:
-        """Preview the set, then commit it against the digest of what came back.
-
-        Two calls rather than one, and the second quotes the first. That is
-        what makes the commit an agreement to a *set* rather than to a count:
-        four items swapped for four different items between the two calls has
-        the same count, a different digest, and is refused with 409
-        ``SCOPE_CHANGED``.
-
-        A ref that already has an open task is reported under
-        ``skipped.already_queued`` and never re-created, and a ref whose task
-        already finished is reported under ``skipped.already_worked`` and left
-        alone. So running this twice over the same YAML file queues nothing the
-        second time and spends nothing - re-running finished work is a decision
-        somebody makes on purpose, not what a loop does by default.
-        """
+        """Preview the set, then commit it against the digest of what came back."""
 
         scope = {
             "kind": "items",
@@ -452,12 +359,7 @@ class DispatchClient:
     async def list_tasks(
         self, *, status: str | None = None, limit: int = 100
     ) -> ListAgentTasksResponse:
-        """A page of tasks, oldest first.
-
-        This is the queue. Two dispatchers polling it get the same page in the
-        same order, so both attempt the head and one wins every race: safe, and
-        no faster.
-        """
+        """A page of tasks, oldest first."""
 
         params = [f"limit={limit}"]
         if status is not None:
@@ -470,22 +372,7 @@ class DispatchClient:
         return GetAgentTaskResponse.model_validate(payload).task
 
     async def get_task_plan(self, *, task_key: str) -> AgentTaskPlan:
-        """Which agents run this task's steps, resolved by the server.
-
-        **This process does not choose an agent, and this method is why.** The
-        plan comes back with each step's agent already decided from server-side
-        configuration - the workflow step, then the team's default - and with
-        the steps that resolved to nothing named in
-        ``unresolved_step_indexes`` rather than filled in. A dispatcher that
-        picked one would be putting agent selection in the process an operator
-        started, which is one argument away from putting it somewhere an issue
-        label can reach.
-
-        The read is per claimed task rather than cached per workflow: a
-        workflow rewritten between two tasks of one run should affect the
-        second one, and a plan held in memory across a run is a plan that
-        outlives the configuration it copied.
-        """
+        """Which agents run this task's steps, resolved by the server."""
 
         payload = await self._request(
             "GET", f"/agent-tasks/{quote(task_key, safe='')}/plan"
@@ -523,17 +410,7 @@ class DispatchClient:
         brief: str,
         session_key: str | None,
     ) -> StepFilesSummary | None:
-        """Open the step row before the turn, so a death leaves a mark.
-
-        The server fetches the issue's files inside this call and answers with
-        what it found against what it stored. ``None`` means no fetch ran at
-        all, which is not the same as a fetch that found nothing: this side
-        renders the second and says nothing about the first.
-
-        No URL crosses this boundary in either direction. What comes back is
-        attachment keys and server-authored refusal codes, which is the whole
-        reason the fetch is on that side.
-        """
+        """Open the step row before the turn, so a death leaves a mark."""
 
         payload = await self._request(
             "POST",
@@ -561,12 +438,7 @@ class DispatchClient:
         failure_code: str | None = None,
         failure_detail: str | None = None,
     ) -> None:
-        """Close the step and move the task's counters, in one server transaction.
-
-        The ordering rule - step row first, task row second - is enforced on
-        that side rather than here, which is the point of the route existing.
-        Two calls from this process could not have that property.
-        """
+        """Close the step and move the task's counters, in one server transaction."""
 
         await self._request(
             "POST",
@@ -609,19 +481,7 @@ class DispatchClient:
         settle_seconds: float = DENY_SETTLE_SECONDS,
         poll_interval_seconds: float = 0.5,
     ) -> list[ControlExecutionEvent]:
-        """Deny events plausibly belonging to this turn.
-
-        Two things make this harder than it looks, both observed rather than
-        assumed. :data:`TRACE_CORRELATION_NOTE` says why it is a time window
-        and not a join on ``trace_id``. :data:`DENY_INGESTION_LAG_NOTE` says
-        why it polls: the deny is written to the event store *after* the turn
-        response comes back, so asking once, immediately, reliably finds
-        nothing.
-
-        An empty result means "no deny was visible within ``settle_seconds``".
-        It does not mean the turn was not blocked, and no caller should render
-        it as if it did.
-        """
+        """Deny events plausibly belonging to this turn."""
 
         body: dict[str, Any] = {
             "agent_name": agent_name,

@@ -1,9 +1,4 @@
-"""The file source: a YAML list of items, section 14 slice 1.
-
-This is the source the whole of Phase 2 tests against, months before Linear
-read access exists anywhere, so it is written to be permanent rather than
-scaffolding. It is also the honest answer to "can it just read a todo list?".
-"""
+"""The file source: a YAML list of items, section 14 slice 1."""
 
 from __future__ import annotations
 
@@ -19,22 +14,11 @@ _FILE_SCHEME = "file://"
 
 
 class SourceParseError(ValueError):
-    """The source file is not something this can dispatch from.
-
-    Raised loudly and early. A malformed item silently skipped is an item a
-    person wrote, expected to be worked, and never heard about again.
-    """
+    """The source file is not something this can dispatch from."""
 
 
 def resolve_source(spec: str) -> FileTaskSource:
-    """Build a file source from a ``--source`` argument.
-
-    Only ``file://`` is understood here. The Linear milestone source is spelled
-    ``linear-milestone:<id>`` and is resolved by
-    :mod:`agent_control_dispatcher.sources.resolve`, which is the only module
-    that knows both schemes; the refusal below names the right spelling because
-    somebody reaching it has almost certainly guessed at the wrong one.
-    """
+    """Build a file source from a ``--source`` argument."""
 
     if spec.startswith(_FILE_SCHEME):
         return FileTaskSource(Path(spec[len(_FILE_SCHEME) :]).expanduser())
@@ -50,10 +34,7 @@ def resolve_source(spec: str) -> FileTaskSource:
 
 
 class FileTaskSource:
-    """A YAML file of items, read whole on every poll.
-
-    Implements :class:`~agent_control_dispatcher.sources.base.TaskSource`.
-    """
+    """A YAML file of items, read whole on every poll."""
 
     kind = "file"
 
@@ -68,15 +49,7 @@ class FileTaskSource:
         return f"file://{self._path}"
 
     async def poll(self, *, cursor: str | None) -> list[SourceItem]:
-        """Items eligible for claiming, oldest first.
-
-        The cursor is the ``ref`` of the last item handed out. Items are
-        returned in file order unless every item carries ``updated_at``, in
-        which case that ordering wins - a file whose author bothered to date
-        every row means the dates, and a file that half-dates them means
-        nothing consistent, so guessing would be worse than reading top to
-        bottom.
-        """
+        """Items eligible for claiming, oldest first."""
 
         items = _load(self._path)
         if cursor is None:
@@ -89,13 +62,7 @@ class FileTaskSource:
     async def write_back(
         self, *, item_ref: str, body: str, idempotency_marker: str
     ) -> WriteBackOutcome:
-        """Not in this slice, and not faked.
-
-        Section 14 lists write-back among the things slice 1 does not have.
-        Returning a success-shaped outcome that wrote nothing would make the
-        ledger claim a report exists on the source when none does, so this
-        refuses instead. Nothing in the dispatcher calls it.
-        """
+        """Not in this slice, and not faked."""
 
         raise NotImplementedError(
             "The file source has no write-back. Slice 1 does not write to the source; "
@@ -130,12 +97,7 @@ def _load(path: Path) -> list[SourceItem]:
 
 
 def _ordering_key(item: SourceItem) -> dt.datetime:
-    """Naive and aware timestamps in one file must not crash the sort.
-
-    YAML gives a bare timestamp back naive and an offset one aware, and Python
-    refuses to compare the two. A file that mixes them is a file whose author
-    meant one clock, so read the naive ones as UTC and order them together.
-    """
+    """Naive and aware timestamps in one file must not crash the sort."""
 
     moment = item.updated_at or dt.datetime.min
     return moment if moment.tzinfo is not None else moment.replace(tzinfo=dt.UTC)

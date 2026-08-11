@@ -1,11 +1,4 @@
-"""Turning a ``--source`` argument into a source, for both of them.
-
-Kept out of :mod:`.file` on purpose. ``file.py`` is the test source and stays
-exactly as it is forever; it has no business importing an HTTP client to answer
-a question about a path. So the file source's own ``resolve_source`` keeps
-refusing everything but ``file://``, and this is the one place that knows both
-schemes exist.
-"""
+"""Turning a ``--source`` argument into a source, for both of them."""
 
 from __future__ import annotations
 
@@ -50,12 +43,7 @@ _EMPTY_MILESTONE_ID = (
 def build_source(
     spec: str, *, team_slug: str | None, reader: MilestoneIssueReader
 ) -> TaskSource:
-    """Build the source named by ``--source``.
-
-    ``reader`` is the server client. It is passed in rather than constructed
-    here because the file source must not need one: a run against a YAML file
-    should not depend on a server being reachable.
-    """
+    """Build the source named by ``--source``."""
 
     if spec.startswith(SOURCE_PREFIX):
         milestone_id = spec[len(SOURCE_PREFIX) :].strip()

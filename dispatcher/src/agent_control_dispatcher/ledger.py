@@ -1,25 +1,4 @@
-"""The claim ledger, and the local SQLite one that is no longer the default.
-
-``agent_tasks`` has landed, so the shipped ledger is the server's: an atomic
-claim, a lease, and reclaim of a holder that died. :mod:`.server_ledger` is
-that one, and it is what ``dispatch once`` uses unless a path is passed.
-
-**This file is what remains, and it is deliberately still here.** A run pointed
-at a local file needs no server rows, which keeps the offline path in section
-14's spirit available for a developer poking at a YAML file. What it is not is
-a claim: two dispatchers with two ledger files both claim every item and both
-spend money on it. The docstrings below say so, and nothing about that changed
-when the server ledger arrived.
-
-The seam that made the swap cheap is :class:`TaskLedger`. Both implementations
-expose the same five verbs, ``dispatch.py`` knows only the protocol, and
-section 14's promise held: the invocation did not change when the ledger moved
-onto the server.
-
-One process-local guard is real and worth having: ``UNIQUE(source_kind, ref)``
-means a single run cannot dispatch the same ref twice, and a re-run skips refs
-that already reached a terminal state. That is resumability, not safety.
-"""
+"""The claim ledger, and the local SQLite one that is no longer the default."""
 
 from __future__ import annotations
 
@@ -57,12 +36,7 @@ CREATE TABLE IF NOT EXISTS claims (
 
 
 class ClaimStatus(StrEnum):
-    """Where a claimed item got to.
-
-    ``RUNNING_UNKNOWN`` is the 504 case and it is deliberately not terminal-
-    looking. The turn outlived the server's patience, the invocation did not
-    stop, and the only honest thing to record is that nobody knows.
-    """
+    """Where a claimed item got to."""
 
     CLAIMED = "claimed"
     COMPLETED = "completed"
@@ -88,19 +62,7 @@ class Claim:
 
 
 class TaskLedger(Protocol):
-    """What a ledger has to be able to do, whichever side of the wire it is on.
-
-    Async because the shipped implementation is HTTP. The local one wraps
-    synchronous SQLite in :class:`LocalTaskLedger` rather than making the
-    protocol synchronous, because a protocol shaped around the weaker
-    implementation is a protocol the stronger one cannot satisfy.
-
-    ``register`` is the verb the SQLite ledger did not need. On the server it
-    is the import - preview, then commit against the digest of what was
-    previewed - and it is the point at which one row per item comes into
-    existence. Locally it is a no-op, because the local ledger creates a row
-    when it claims one.
-    """
+    """What a ledger has to be able to do, whichever side of the wire it is on."""
 
     async def register(
         self,
@@ -110,13 +72,7 @@ class TaskLedger(Protocol):
         dry_run: bool,
         workflow_key: str | None = None,
     ) -> None:
-        """Make sure a row exists for each item, without claiming any of them.
-
-        ``workflow_key`` is fixed on the row here and never afterwards, for the
-        same reason ``dry_run`` is: a dispatcher that could change which agents
-        a task runs *after* an operator agreed to the set would have turned the
-        confirm into a different question than the one that was answered.
-        """
+        """Make sure a row exists for each item, without claiming any of them."""
 
     async def claim(
         self, *, source_kind: str, ref: str, agent_name: str, dry_run: bool
@@ -124,25 +80,10 @@ class TaskLedger(Protocol):
         """Take one item, or report that this ledger cannot."""
 
     def resume_step_index(self, *, source_kind: str, ref: str) -> int:
-        """Which step of the chain to start at, from what the claim returned.
-
-        ``MAX(step_index) WHERE status='completed'`` plus one, decided by the
-        server and read here rather than recomputed: a dispatcher that arrived
-        at a different number would re-run a step that already spent money and
-        may already have acted through a tool. Synchronous, for the same reason
-        :meth:`session_task_key` is - it sits between the claim and the first
-        turn, and a round trip there is a second thing that can fail in the
-        window the claim exists to make small.
-        """
+        """Which step of the chain to start at, from what the claim returned."""
 
     def session_task_key(self, *, source_kind: str, ref: str) -> str | None:
-        """The task row a session for this item must be bound to, if there is one.
-
-        Synchronous and answered from what the claim already returned, because
-        it is read on the path to opening a session and a round trip there
-        would be a second thing that can fail between the claim and the turn.
-        ``None`` from the local ledger, which has no server row to bind to.
-        """
+        """The task row a session for this item must be bound to, if there is one."""
 
     async def record_session(
         self,
@@ -154,22 +95,7 @@ class TaskLedger(Protocol):
         brief: str,
         step_index: int | None = None,
     ) -> StepFilesSummary | None:
-        """Record the session this item's step is running on, before its turn.
-
-        Returns what the server found attached to the item, when it looked.
-        ``None`` means it did not look - no tracker behind this task, or the
-        source switched off - and an envelope says nothing at all in that case
-        rather than claiming an issue carries no files.
-
-        ``step_index`` defaults to the position the claim reported, which is
-        where a one-step task and a reclaimed task both resume. A chain passes
-        the position it is about to run instead, and each position
-        gets its own session: reuse is not available, because
-        ``release_turn_lock`` fences on the in-flight trace and
-        ``uq_agent_session_halts_turn`` is a full unique constraint on the
-        session's turn, so two turns of one session sharing a trace would let a
-        late release clear a live lock and let step 1's halt row block step 3's.
-        """
+        """Record the session this item's step is running on, before its turn."""
 
     async def complete_step(
         self,
@@ -180,27 +106,12 @@ class TaskLedger(Protocol):
         output_text: str,
         turn_trace_id: str | None = None,
     ) -> None:
-        """Close one hop of a chain that carries on afterwards.
-
-        Only for a step that succeeded and is followed by another. The last
-        step of any chain, and every step that failed, goes through
-        :meth:`finish`, which closes the step and the task together in the one
-        server transaction that gets the write order right.
-        """
+        """Close one hop of a chain that carries on afterwards."""
 
     async def prior_report(
         self, *, source_kind: str, ref: str, step_index: int
     ) -> PriorReport | None:
-        """What the step before ``step_index`` reported, for the envelope.
-
-        Read from the ledger rather than remembered in this process, because a
-        reclaimed task resumes mid-chain in a *different* dispatcher: the one
-        that ran step 0 is gone, and its memory with it. ``None`` means no
-        completed step precedes this one, which the caller must treat as a
-        refusal rather than as an empty report - handing the next agent "the
-        previous agent reported: (nothing)" is how it invents the missing work
-        and reports it confidently.
-        """
+        """What the step before ``step_index`` reported, for the envelope."""
 
     async def finish(
         self,
@@ -214,12 +125,7 @@ class TaskLedger(Protocol):
         output_text: str | None = None,
         step_index: int | None = None,
     ) -> None:
-        """Close the claim out, however it ended.
-
-        ``step_index`` names the hop this outcome belongs to; ``None`` means the
-        one this ledger last opened, which is the only hop a single-step task
-        has.
-        """
+        """Close the claim out, however it ended."""
 
     async def get(self, *, source_kind: str, ref: str) -> Claim | None:
         """What this ledger currently believes about one item."""
@@ -259,17 +165,7 @@ class ClaimLedger:
         return self._path
 
     def claim(self, *, source_kind: str, ref: str, agent_name: str, dry_run: bool) -> bool:
-        """Take the item, or report that this ledger already has it.
-
-        Returns ``False`` when a row exists and is terminal or in flight. This
-        is an insert against a local file: another process holding its own
-        ledger sees nothing, which is the whole limitation restated.
-
-        ``paused_quota`` is the one status that re-claims, because the step did
-        not run and is meant to resume. A ``claimed`` row does not: the turn may
-        have reached the executor before this process stopped, and re-running it
-        would spend twice for one item.
-        """
+        """Take the item, or report that this ledger already has it."""
 
         now = _now()
         with self._conn:
@@ -342,26 +238,7 @@ class ClaimLedger:
 
 
 class LocalTaskLedger:
-    """:class:`ClaimLedger` behind the :class:`TaskLedger` protocol.
-
-    An adapter and nothing else: every method here is one synchronous call.
-    It exists so a local run and a server run go through one code path in
-    ``dispatch.py``, which is what stops the offline path drifting into a
-    second, differently-behaved dispatcher.
-
-    ``register`` does nothing, and that is the honest difference between the
-    two ledgers: there is nothing to register with, because there is nobody
-    else to tell.
-
-    **It records one step, not a chain**, and that is the second honest
-    difference. The ``claims`` table has one row per item with one
-    ``session_key`` and one ``turn_trace_id``, so a second hop would overwrite
-    the first and the prior report would be gone. Rather than half-supporting a
-    chain, :meth:`prior_report` answers ``None`` for every index and
-    :meth:`resume_step_index` answers zero, and ``dispatch.py`` refuses a
-    multi-step plan on this ledger with a reason rather than running the first
-    step and silently losing the rest.
-    """
+    """:class:`ClaimLedger` behind the :class:`TaskLedger` protocol."""
 
     def __init__(self, ledger: ClaimLedger) -> None:
         self._ledger = ledger
@@ -392,12 +269,7 @@ class LocalTaskLedger:
         output_text: str,
         turn_trace_id: str | None = None,
     ) -> None:
-        """Unreachable: a multi-step plan is refused before it gets here.
-
-        Kept so the adapter satisfies the protocol whole. Raising rather than
-        passing, because a silent no-op would mean a chain that appeared to run
-        and recorded none of it.
-        """
+        """Unreachable: a multi-step plan is refused before it gets here."""
         del output_text, turn_trace_id
         raise NotImplementedError(
             f"The local ledger records one step per item, so step {step_index} of "

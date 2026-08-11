@@ -1,11 +1,4 @@
-"""The task source protocol, section 5.1.
-
-A source yields items and records outcomes. It does not carry an agent, a
-workflow, a tool list, a priority or labels: nothing a source can express
-reaches a decision the dispatcher makes. Section 8 deletes label-driven agent
-selection explicitly, and the shape of :class:`SourceItem` is what keeps that
-deletion enforced rather than remembered.
-"""
+"""The task source protocol, section 5.1."""
 
 from __future__ import annotations
 
@@ -17,14 +10,7 @@ from typing import Protocol, runtime_checkable
 
 @dataclass(frozen=True, slots=True)
 class SourceItem:
-    """One unit of work as the source describes it.
-
-    ``ref`` is a stable id within the source. Everything else is description,
-    and every character of ``title`` and ``body`` is untrusted: it was written
-    by a person with access to the tracker, which is not the same person as the
-    operator, and it reaches the model inside the delimited block that
-    :mod:`agent_control_dispatcher.envelope` builds.
-    """
+    """One unit of work as the source describes it."""
 
     ref: str
     title: str
@@ -51,11 +37,7 @@ class WriteBackOutcome:
 
 @runtime_checkable
 class TaskSource(Protocol):
-    """Where work comes from.
-
-    ``kind`` is ``"linear"`` or ``"file"``. Slice 1 shipped only ``"file"``, and
-    ``sources/file.py`` stays as the test source forever.
-    """
+    """Where work comes from."""
 
     kind: str
 
@@ -76,15 +58,7 @@ class TaskSource(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class ScopeReport:
-    """What a scoped read saw, and what it left alone.
-
-    Every number here exists so that a person watching the terminal can weigh
-    the set before anything spends money on it. The skip counts in particular
-    are the reason the eligibility predicates are applied after the read rather
-    than inside the query: you cannot count rows a filter removed, and *"2
-    issues are assigned to a person and were skipped"* is the sentence that
-    tells an operator the override worked.
-    """
+    """What a scoped read saw, and what it left alone."""
 
     fetched: int
     eligible: int
@@ -117,11 +91,6 @@ class ScopeReport:
 
 @runtime_checkable
 class ScopedTaskSource(Protocol):
-    """A source that read a bounded set and can say what it skipped.
-
-    Deliberately separate from :class:`TaskSource`, which is section 5.1's
-    protocol and is not widened by this. The file source has no scope to report
-    and does not implement this; the dispatcher asks with ``isinstance``.
-    """
+    """A source that read a bounded set and can say what it skipped."""
 
     scope_report: ScopeReport | None
