@@ -23,6 +23,8 @@ members = [
     "evaluators/builtin",
     "dispatcher",
     "knowledge_sync",
+    "fleet",
+    "examples/google_adk_plugin",
     # NOTE: evaluators/contrib/* excluded - install separately when needed
 ]
 
@@ -80,6 +82,7 @@ version_toml = [
     "models/pyproject.toml:project.version",
     "engine/pyproject.toml:project.version",
     "sdks/python/pyproject.toml:project.version",
+    "fleet/pyproject.toml:project.version",
     "telemetry/pyproject.toml:project.version",
     "server/pyproject.toml:project.version",
     "evaluators/builtin/pyproject.toml:project.version",

@@ -1,0 +1,57 @@
+# Which registered agents get an executor process. Copy to fleet.yaml and edit.
+#
+# READ THIS BEFORE ADDING AN AGENT.
+#
+# 1. This file declares intent; `agent_runtimes` records fact. Generating
+#    containers from the table instead would be circular: the row records where
+#    a process is, so a process started from the row cannot be what created it,
+#    and a stale row would perpetuate itself. `agent-control-fleet doctor`
+#    is the reconciliation between the two, and it fixes nothing.
+#
+# 2. One agent is one process. The SDK holds a single agent per process and the
+#    ADK plugin refuses to initialize under a second name, so eight agents here
+#    means eight containers. Nothing publishes a host port: the executor's HTTP
+#    API has no authentication of its own, and the only real control is that its
+#    port is reachable from the server's network and nowhere else.
+#
+# 3. `agent_name` is also a directory name inside the container. ADK routes on
+#    the folder, not on App(name=...), so the name must be lowercase letters,
+#    digits and underscores. A hyphen or a colon is accepted by the server and
+#    unroutable as an app, which surfaces as a 500 on the first turn rather than
+#    as anything an operator can read.
+#
+# 4. `web_tools` is the Exa toolset, on by default. An agent with an outbound
+#    fetch tool is an SSRF pivot onto the network its own executor sits on, and
+#    with company knowledge also on it is a retrieval-plus-egress pair. Turning
+#    both on is a decision; see docs/plans/agent-fleet-topology.md section 3.2.
+#
+# The model base URL is NOT configured here. It is computed from the live
+# network gateway at `up` time, because the gateway is what the host is from
+# inside these VMs and host.docker.internal resolves to nothing on this runtime.
+# AGENT_CONTROL_FLEET_MODEL_BASE_URL overrides it and refuses a loopback address.
+#
+# Resources are environment too. Each executor is a VM, and the runtime default
+# is 1024MB and 4 CPUs apiece, which at eight agents reserves 8GB and 32 CPUs to
+# run a process measured at 37MB idle and 105MB through a turn with a tool call.
+# The fleet asks for 512MB and 2 CPUs instead; AGENT_CONTROL_FLEET_EXECUTOR_MEMORY
+# and AGENT_CONTROL_FLEET_EXECUTOR_CPUS override that.
+#
+# Credentials are environment, not file: AGENT_CONTROL_FLEET_REGISTER_API_KEY is
+# the admin key the two one-shot jobs hold, and AGENT_CONTROL_FLEET_EXECUTOR_API_KEY
+# is the key every executor runs on. `up` refuses to start anything when the
+# second cannot claim a halt, because an executor that cannot has lost the
+# operator STOP button while the console still shows the halt recorded.
+
+version: 1
+image: agent-control-executor:local
+
+defaults:
+  web_tools: true
+
+# Adding an agent is a reviewed decision about a container that runs
+# model-driven code. Keep this list to agents somebody is actually using.
+agents:
+  - agent_name: marketing_researcher
+  - agent_name: marketing_copywriter
+  - agent_name: sales_outreach_drafter
+    web_tools: false
