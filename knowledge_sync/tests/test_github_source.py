@@ -1,6 +1,6 @@
 """The GitHub half of a run, driven directly rather than through ``run_once``.
 
-The adapter is not wired into the run loop yet, so these drive it against a fake writer.
+A fake writer keeps these on the sweep itself; ``test_integration_github`` covers the wiring.
 """
 
 from __future__ import annotations

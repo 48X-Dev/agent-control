@@ -5,20 +5,21 @@ from __future__ import annotations
 import logging
 from collections import Counter
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from .lease import SessionFactory
-from .schema import SUPPORTED_SCHEMA_VERSIONS, schema_meta, sources, sync_runs
-
-SOURCE_KIND = "drive_folder"
-
-_LOG = logging.getLogger(__name__)
+from .schema import SUPPORTED_SCHEMA_VERSIONS, documents, schema_meta, sources, sync_runs
 
 # 4.2 spells the Drive cursor {"start_page_token": ...}, and the status endpoint
-# and the console panel both read this column by that documented name.
-CURSOR_KEY = "start_page_token"
+# and the console panel both read this column by that documented name. GitHub's
+# pair lives on `github_source`, which is where the sweep that mints it lives.
+DRIVE_SOURCE_KIND = "drive_folder"
+DRIVE_CURSOR_KEY = "start_page_token"
+
+_LOG = logging.getLogger(__name__)
 
 
 class SyncFailedError(RuntimeError):
@@ -75,27 +76,39 @@ class SourceState:
     cursor: str | None
 
 
-_CURSOR_JSON = sa.func.jsonb_build_object(
-    sa.cast(sa.literal(CURSOR_KEY), sa.Text), sa.cast(sa.bindparam("cursor"), sa.Text)
-)
+def _cursor_json(cursor_key: str) -> sa.Function[str]:
+    return sa.func.jsonb_build_object(
+        sa.cast(sa.literal(cursor_key), sa.Text), sa.cast(sa.bindparam("cursor"), sa.Text)
+    )
 
-_INSERT_SOURCE = pg_insert(sources).values(
-    kind=SOURCE_KIND,
-    ref=sa.bindparam("ref"),
-    display_name=sa.bindparam("display_name"),
-    trust="workspace",
-)
-_ENSURE_SOURCE = _INSERT_SOURCE.on_conflict_do_update(
-    index_elements=[sources.c.kind, sources.c.ref],
-    set_={"display_name": _INSERT_SOURCE.excluded.display_name},
-).returning(sources.c.id, sources.c.cursor[CURSOR_KEY].astext.label("cursor"))
+
+def _ensure_source_statement(kind: str, cursor_key: str) -> sa.Executable:
+    insert = pg_insert(sources).values(
+        kind=kind,
+        ref=sa.bindparam("ref"),
+        display_name=sa.bindparam("display_name"),
+        trust="workspace",
+    )
+    return insert.on_conflict_do_update(
+        index_elements=[sources.c.kind, sources.c.ref],
+        set_={"display_name": insert.excluded.display_name},
+    ).returning(sources.c.id, sources.c.cursor[cursor_key].astext.label("cursor"))
 
 
 class SyncJournal:
-    """The corpus rows a run owns: its ``sync_runs`` entry and its source's cursor."""
+    """The corpus rows a run owns, for one ``sources.kind`` and the cursor it stores."""
 
-    def __init__(self, sessions: SessionFactory) -> None:
+    def __init__(
+        self,
+        sessions: SessionFactory,
+        *,
+        kind: str = DRIVE_SOURCE_KIND,
+        cursor_key: str = DRIVE_CURSOR_KEY,
+    ) -> None:
         self._sessions = sessions
+        self._kind = kind
+        self._cursor_json = _cursor_json(cursor_key)
+        self._ensure_source = _ensure_source_statement(kind, cursor_key)
 
     async def assert_schema(self) -> int:
         """Refuse a corpus this build does not know how to write."""
@@ -180,7 +193,9 @@ class SyncJournal:
     async def ensure_source(self, *, ref: str, display_name: str) -> SourceState:
         async with self._sessions() as session:
             row = (
-                await session.execute(_ENSURE_SOURCE, {"ref": ref, "display_name": display_name})
+                await session.execute(
+                    self._ensure_source, {"ref": ref, "display_name": display_name}
+                )
             ).one()
             await session.commit()
         return SourceState(id=int(row.id), cursor=row.cursor)
@@ -191,10 +206,26 @@ class SyncJournal:
             await session.execute(
                 sa.update(sources)
                 .where(sources.c.id == sa.bindparam("source_id"))
-                .values(cursor=_CURSOR_JSON, cursor_advanced_at=sa.func.now()),
+                .values(cursor=self._cursor_json, cursor_advanced_at=sa.func.now()),
                 {"source_id": source_id, "cursor": cursor},
             )
             await session.commit()
+
+    async def sweep_tombstones(self, retention_days: int) -> int:
+        """4.4: a tombstone past its window is deleted, and the count is the point."""
+        cutoff = datetime.now(UTC) - timedelta(days=retention_days)
+        async with self._sessions() as session:
+            rows = (
+                await session.execute(
+                    sa.delete(documents)
+                    .where(documents.c.tombstoned_at < cutoff)
+                    .returning(documents.c.id)
+                )
+            ).all()
+            await session.commit()
+        if rows:
+            _LOG.info("deleted %d tombstone(s) older than %d days", len(rows), retention_days)
+        return len(rows)
 
     async def mark_verified(self, source_id: int, *, status: str, error_code: str | None) -> None:
         """Section 10: every completed check stamps this, zero-change runs included."""
@@ -215,7 +246,7 @@ class SyncJournal:
         async with self._sessions() as session:
             await session.execute(
                 sa.update(sources)
-                .where(sources.c.kind == SOURCE_KIND, sources.c.ref == ref)
+                .where(sources.c.kind == self._kind, sources.c.ref == ref)
                 .values(last_run_status="failed", last_run_error_code=error_code)
             )
             await session.commit()

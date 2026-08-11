@@ -1,4 +1,4 @@
-"""Write one Drive item into the corpus, idempotently.
+"""Write one source's items into the corpus, idempotently.
 
 A failed conversion still gets its row with zero chunks: unfindable on purpose.
 """
@@ -25,7 +25,6 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from .convert import INDEXABLE_STATUSES, Converted, RawConverter, convert_document
-from .drive_client import DriveItem, FetchedContent
 from .ingest_guard import AGENT_OUTPUT_REFUSAL, AgentOutputGuard
 from .schema import chunks, documents
 
@@ -35,11 +34,12 @@ __all__ = [
     "IngestOutcome",
     "IngestRefusal",
     "Ingestor",
+    "SourceItem",
     "TombstoneReason",
 ]
 
-# Drive's API carries no owner for a file the reader can only see, so the
-# honest value is 'unknown' and trust comes from the source's own tier.
+# Neither source names an owner the corpus can trust for a file it can only
+# read, so the honest value is 'unknown' and trust comes from the source's tier.
 AUTHOR_KIND_UNKNOWN = "unknown"
 
 _CONFLICT_KEYS = ("source_id", "external_id")
@@ -88,6 +88,26 @@ whole argument and 5.4's ``tombstone_reason='oversize'`` in particular.
 
 
 @dataclass(frozen=True, slots=True)
+class SourceItem:
+    """One document from any source, with its bytes, as the corpus stores it."""
+
+    external_id: str
+    path: str
+    """Raw; 4.2's normalization runs here so no source can skip it."""
+    title: str
+    data: bytes
+    media_type: str
+    """What the bytes actually are, which a Drive export changes and the type declares."""
+    source_mime: str | None = None
+    modified_at: datetime | None = None
+    size: int | None = None
+    deleted: bool = False
+    """Upstream says this is gone, so it is tombstoned rather than converted."""
+    shortcut: bool = False
+    """A pointer rather than content; refused without following it."""
+
+
+@dataclass(frozen=True, slots=True)
 class IngestOutcome:
     """What one ``ingest`` call did to the corpus."""
 
@@ -121,38 +141,48 @@ class Ingestor:
 
         return self._secrets_skipped
 
-    async def ingest(self, item: DriveItem, content: FetchedContent) -> IngestOutcome:
+    async def ingest(self, item: SourceItem) -> IngestOutcome:
         """Convert, chunk, scrub and store one item; skip it if nothing changed."""
 
         refusal = await self._refuse_before_conversion(item)
         if refusal is not None:
-            logger.info("document %s refused before conversion: %s", item.id, refusal)
+            logger.info("document %s refused before conversion: %s", item.external_id, refusal)
             return IngestOutcome(None, 0, False, refusal)
 
         converted = convert_document(
-            content.data, declared_mime=content.media_type, converter=self._converter
+            item.data, declared_mime=item.media_type, converter=self._converter
         )
         digest = _content_sha256(converted.text)
         scrubbed = chunk_and_scrub(converted.text) if converted.indexable else _NOTHING_INDEXED
 
         async with self._session_factory() as session, session.begin():
-            existing = await self._existing(session, item.id)
+            existing = await self._existing(session, item.external_id)
             if _is_unchanged(existing, digest):
-                refreshed = await self._refresh_metadata(session, existing, item, content)
+                refreshed = await self._refresh_metadata(session, existing, item)
                 return IngestOutcome(str(existing.id), 0, True, None, refreshed)
-            document_id = await self._write_document(session, item, content, converted, digest)
+            document_id = await self._write_document(session, item, converted, digest)
             await self._replace_chunks(session, document_id, scrubbed.chunks)
 
         self._secrets_skipped += scrubbed.secrets_skipped
         refused = _refusal_for(converted, scrubbed.chunks)
         if refused is not None:
-            logger.info("document %s stored with no chunks: %s", item.id, refused)
+            logger.info("document %s stored with no chunks: %s", item.external_id, refused)
         return IngestOutcome(
             document_id=str(document_id),
             chunks_written=len(scrubbed.chunks),
             skipped_unchanged=False,
             refusal_code=refused,
         )
+
+    async def live_external_ids(self) -> set[str]:
+        """Every id this source still holds, which a complete walk diffs against."""
+
+        stmt = sa.select(documents.c.external_id).where(
+            documents.c.source_id == self._source_id,
+            documents.c.tombstoned_at.is_(None),
+        )
+        async with self._session_factory() as session:
+            return set((await session.execute(stmt)).scalars().all())
 
     async def refuse_fetch(self, external_id: str, code: str) -> bool:
         """Bury what the corpus holds for a document the fetch refused, when the code says to."""
@@ -188,19 +218,19 @@ class Ingestor:
             logger.info("document %s tombstoned: %s", external_id, reason)
             return True
 
-    async def _refuse_before_conversion(self, item: DriveItem) -> str | None:
+    async def _refuse_before_conversion(self, item: SourceItem) -> str | None:
         """Refuse the items that must never be converted, cheapest check first."""
 
-        if item.trashed:
-            await self.tombstone(item.id, reason=TombstoneReason.DELETED)
+        if item.deleted:
+            await self.tombstone(item.external_id, reason=TombstoneReason.DELETED)
             return IngestRefusal.TRASHED
-        if item.shortcut_target_id:
+        if item.shortcut:
             return IngestRefusal.SHORTCUT
-        if is_secret_filename(item.name):
-            await self.tombstone(item.id, reason=TombstoneReason.SECRET_FILE)
+        if is_secret_filename(item.title):
+            await self.tombstone(item.external_id, reason=TombstoneReason.SECRET_FILE)
             return IngestRefusal.SECRET_FILE
-        if self._guard is not None and await self._guard.refuses(item.id):
-            await self.tombstone(item.id, reason=TombstoneReason.EXCLUDED)
+        if self._guard is not None and await self._guard.refuses(item.external_id):
+            await self.tombstone(item.external_id, reason=TombstoneReason.EXCLUDED)
             return IngestRefusal.AGENT_OUTPUT
         return None
 
@@ -220,12 +250,11 @@ class Ingestor:
         self,
         session: AsyncSession,
         existing: Any,
-        item: DriveItem,
-        content: FetchedContent,
+        item: SourceItem,
     ) -> bool:
         """A rename moves the citation without rewriting the chunks."""
 
-        wanted = _metadata(item, content)
+        wanted = _metadata(item)
         drifted = {
             name: value for name, value in wanted.items() if getattr(existing, name) != value
         }
@@ -234,21 +263,22 @@ class Ingestor:
         await session.execute(
             sa.update(documents).where(documents.c.id == existing.id).values(**drifted)
         )
-        logger.info("document %s metadata refreshed: %s", item.id, ", ".join(sorted(drifted)))
+        logger.info(
+            "document %s metadata refreshed: %s", item.external_id, ", ".join(sorted(drifted))
+        )
         return True
 
     async def _write_document(
         self,
         session: AsyncSession,
-        item: DriveItem,
-        content: FetchedContent,
+        item: SourceItem,
         converted: Converted,
         digest: str,
     ) -> Any:
         values = {
             "source_id": self._source_id,
-            "external_id": item.id,
-            **_metadata(item, content),
+            "external_id": item.external_id,
+            **_metadata(item),
             "author_kind": AUTHOR_KIND_UNKNOWN,
             "content_sha256": digest,
             "synced_at": _now(),
@@ -287,22 +317,16 @@ class Ingestor:
         )
 
 
-def _metadata(item: DriveItem, content: FetchedContent) -> dict[str, Any]:
+def _metadata(item: SourceItem) -> dict[str, Any]:
     """The columns that change when a file is renamed, moved or touched but not edited."""
 
     return {
-        "path": _index_path(item),
-        "title": normalize_index_name(item.name) or item.id,
-        "source_mime": item.mime_type,
-        "source_modified_at": item.modified_time,
-        "bytes": item.size if item.size is not None else len(content.data),
+        "path": normalize_index_path(item.path) or item.external_id,
+        "title": normalize_index_name(item.title) or item.external_id,
+        "source_mime": item.source_mime,
+        "source_modified_at": item.modified_at,
+        "bytes": item.size if item.size is not None else len(item.data),
     }
-
-
-def _index_path(item: DriveItem) -> str:
-    """The citation: the folders under the corpus root, then the file's own name."""
-
-    return normalize_index_path("/".join((*item.folder_path, item.name))) or item.id
 
 
 def _is_unchanged(existing: Any, digest: str) -> bool:
