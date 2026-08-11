@@ -585,11 +585,6 @@ class ConversionScheduler:
 _scheduler = ConversionScheduler()
 
 
-def get_conversion_scheduler() -> ConversionScheduler:
-    """The process-wide scheduler."""
-    return _scheduler
-
-
 def reset_conversion_scheduler() -> None:
     """Forget what this process thinks is in flight.
 

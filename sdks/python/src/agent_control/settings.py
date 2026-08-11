@@ -153,11 +153,6 @@ class SDKSettings(BaseSettings):
 settings = SDKSettings()
 
 
-def load_settings_from_env() -> SDKSettings:
-    """Load a fresh settings snapshot directly from environment variables."""
-    return SDKSettings()
-
-
 def get_settings() -> SDKSettings:
     """Get the current settings instance."""
     return settings
