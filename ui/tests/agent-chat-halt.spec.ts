@@ -77,7 +77,10 @@ test.describe('Agent chat: stopping the agent', () => {
       )
     ).toBeVisible();
 
-    expect(chat.haltsRequested).toEqual([SESSION]);
+    // Polled, not read once: the click starts a request and this assertion is
+    // about what that request carried, so reading the recorder on the very
+    // next tick is a race the assertion loses whenever the suite is busy.
+    await expect.poll(() => chat.haltsRequested).toEqual([SESSION]);
     expect(chat.halts[SESSION]?.[0]?.target_trace_id).toBe(LIVE_TRACE);
     // Pending is not stopped, so nothing is drawn in the transcript yet.
     await expect(mockedPage.getByTestId('chat-halt-marker')).toHaveCount(0);
@@ -95,7 +98,7 @@ test.describe('Agent chat: stopping the agent', () => {
     await expect(mockedPage.getByTestId('chat-halt-state')).toBeVisible();
 
     await expect(mockedPage.getByTestId('chat-stop-responding')).toHaveCount(0);
-    expect(chat.haltsRequested).toEqual([SESSION]);
+    await expect.poll(() => chat.haltsRequested).toEqual([SESSION]);
   });
 
   test('an acknowledged stop says the executor blocked, not that the turn ended', async ({
