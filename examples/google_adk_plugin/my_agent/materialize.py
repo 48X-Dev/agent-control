@@ -21,7 +21,9 @@ __all__ = [
     "validated_session_service_uri",
 ]
 
-AGENTS_DIR = Path("/agents")
+# ``/agents`` in the image; overridable so a host run gets the same one-package
+# root rather than serving the example directory, where every sibling is an app.
+AGENTS_DIR = Path(os.getenv("AGENT_CONTROL_AGENTS_DIR", "/agents"))
 
 # One ``<agent_name>:<port>`` per process in this container.
 FLEET_AGENTS_ENV = "AGENT_CONTROL_FLEET_AGENTS"
