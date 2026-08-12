@@ -1,6 +1,7 @@
 # The agent executor. One image for the whole fleet; a container differs from its
-# siblings only by AGENT_CONTROL_AGENT_NAME, which the entrypoint turns into the
-# single agent package this process serves (agent-fleet-topology.md 3.3-3.5).
+# siblings only by AGENT_CONTROL_FLEET_AGENTS, which the entrypoint turns into one
+# `adk api_server` per agent, each with its own package, port and agents root
+# (agent-fleet-topology.md 3.3-3.5).
 #
 # Build from the REPO ROOT, because the example is a uv workspace member:
 #   container build -t agent-control-executor:local -f examples/google_adk_plugin/Dockerfile .

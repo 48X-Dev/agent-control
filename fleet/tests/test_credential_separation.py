@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 from agent_control_fleet import container as container_module
-from agent_control_fleet.config import AgentSpec
+from agent_control_fleet.config import AgentSpec, GroupSpec
 from agent_control_fleet.container import ContainerRuntime
 from agent_control_fleet.settings import (
     EXECUTOR_API_KEY_ENV,
@@ -12,7 +12,7 @@ from agent_control_fleet.settings import (
     REGISTER_API_KEY_ENV,
     FleetSettings,
     NetworkAddresses,
-    executor_environment,
+    group_environment,
     register_environment,
 )
 
@@ -20,9 +20,10 @@ ADDRESSES = NetworkAddresses(
     server_ip="192.168.64.4", postgres_ip="192.168.64.3", gateway="192.168.64.1"
 )
 SPECS = (
-    AgentSpec(agent_name="marketing_researcher", web_tools=True),
-    AgentSpec(agent_name="sales_outreach_drafter", web_tools=False),
+    AgentSpec(agent_name="marketing_researcher", web_tools=True, port=8000),
+    AgentSpec(agent_name="sales_outreach_drafter", web_tools=False, port=8000),
 )
+GROUPS = tuple(GroupSpec(name=spec.agent_name, agents=(spec,)) for spec in SPECS)
 
 ADMIN_KEY = "admin-key-fca31d"
 EXECUTOR_KEY = "executor-key-90b7e2"
@@ -39,20 +40,20 @@ def _env_with_passthrough() -> dict[str, str]:
 
 def test_no_executor_is_ever_handed_the_admin_key() -> None:
     settings = _settings()
-    for spec in SPECS:
-        environment = executor_environment(
-            spec, settings=settings, addresses=ADDRESSES, env=_env_with_passthrough()
+    for group in GROUPS:
+        environment = group_environment(
+            group, settings=settings, addresses=ADDRESSES, env=_env_with_passthrough()
         )
         assert ADMIN_KEY not in environment.values(), (
-            f"{spec.agent_name} carries the register credential"
+            f"{group.name} carries the register credential"
         )
 
 
 def test_the_executor_is_handed_the_credential_it_needs() -> None:
     """So nobody satisfies the absence above by handing the executor nothing."""
 
-    environment = executor_environment(
-        SPECS[0], settings=_settings(), addresses=ADDRESSES, env=BASE_ENV
+    environment = group_environment(
+        GROUPS[0], settings=_settings(), addresses=ADDRESSES, env=BASE_ENV
     )
     assert environment["AGENT_CONTROL_API_KEY"] == EXECUTOR_KEY
 
@@ -95,8 +96,8 @@ def test_the_admin_key_never_reaches_an_executor_argv(
 
     monkeypatch.setattr(container_module.subprocess, "run", run)
 
-    environment = executor_environment(
-        SPECS[0], settings=_settings(), addresses=ADDRESSES, env=_env_with_passthrough()
+    environment = group_environment(
+        GROUPS[0], settings=_settings(), addresses=ADDRESSES, env=_env_with_passthrough()
     )
     ContainerRuntime().run_detached(
         name="ac-executor-marketing-researcher",

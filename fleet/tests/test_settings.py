@@ -3,16 +3,17 @@
 from __future__ import annotations
 
 import pytest
-from agent_control_fleet.config import AgentSpec
+from agent_control_fleet.config import AgentSpec, GroupSpec
 from agent_control_fleet.settings import (
     EXECUTOR_API_KEY_ENV,
     EXECUTOR_CPUS_ENV,
+    FLEET_AGENTS_ENV,
     PASSTHROUGH_ENV,
     REGISTER_API_KEY_ENV,
     FleetSettings,
     NetworkAddresses,
     SettingsError,
-    executor_environment,
+    group_environment,
     model_base_url,
     register_environment,
 )
@@ -20,7 +21,8 @@ from agent_control_fleet.settings import (
 ADDRESSES = NetworkAddresses(
     server_ip="192.168.64.4", postgres_ip="192.168.64.3", gateway="192.168.64.1"
 )
-SPEC = AgentSpec(agent_name="marketing_researcher", web_tools=True)
+SPEC = AgentSpec(agent_name="marketing_researcher", web_tools=True, port=8000)
+GROUP = GroupSpec(name="marketing", agents=(SPEC,))
 
 BASE_ENV = {REGISTER_API_KEY_ENV: "admin-key", EXECUTOR_API_KEY_ENV: "executor-key"}
 
@@ -68,34 +70,45 @@ def test_an_override_wins_over_the_gateway() -> None:
 
 
 def test_the_executor_reaches_the_server_by_container_ip() -> None:
-    environment = executor_environment(
-        SPEC, settings=_settings(), addresses=ADDRESSES, env=BASE_ENV
+    environment = group_environment(
+        GROUP, settings=_settings(), addresses=ADDRESSES, env=BASE_ENV
     )
     assert environment["AGENT_CONTROL_URL"] == "http://192.168.64.4:8000"
-    assert environment["AGENT_CONTROL_AGENT_NAME"] == "marketing_researcher"
 
 
-def test_the_agent_name_is_never_left_to_its_default() -> None:
-    """Unset, the example registers google-adk-plugin, the one agent left unbound."""
+def test_every_process_in_the_group_is_named_with_the_port_it_listens_on() -> None:
+    """The container has no other source for either, and no default to fall back to."""
 
-    for spec in (SPEC, AgentSpec(agent_name="sales_prospector", web_tools=False)):
-        environment = executor_environment(
-            spec, settings=_settings(), addresses=ADDRESSES, env=BASE_ENV
-        )
-        assert environment["AGENT_CONTROL_AGENT_NAME"] == spec.agent_name
+    group = GroupSpec(
+        name="marketing",
+        agents=(
+            SPEC,
+            AgentSpec(agent_name="marketing_copywriter", web_tools=True, port=8001),
+        ),
+    )
+    environment = group_environment(
+        group, settings=_settings(), addresses=ADDRESSES, env=BASE_ENV
+    )
+    assert environment[FLEET_AGENTS_ENV] == (
+        "marketing_researcher:8000,marketing_copywriter:8001"
+    )
+    assert "AGENT_CONTROL_AGENT_NAME" not in environment
 
 
 def test_web_tools_off_reaches_the_container_as_a_value_not_an_absence() -> None:
-    off = AgentSpec(agent_name="sales_outreach_drafter", web_tools=False)
-    environment = executor_environment(
-        off, settings=_settings(), addresses=ADDRESSES, env=BASE_ENV
+    off = AgentSpec(agent_name="sales_outreach_drafter", web_tools=False, port=8000)
+    environment = group_environment(
+        GroupSpec(name="sales", agents=(off,)),
+        settings=_settings(),
+        addresses=ADDRESSES,
+        env=BASE_ENV,
     )
     assert environment["AGENT_CONTROL_WEB_TOOLS"] == "0"
 
 
 def test_the_session_uri_names_an_explicit_driver() -> None:
-    environment = executor_environment(
-        SPEC, settings=_settings(), addresses=ADDRESSES, env=BASE_ENV
+    environment = group_environment(
+        GROUP, settings=_settings(), addresses=ADDRESSES, env=BASE_ENV
     )
     assert environment["ADK_SESSION_SERVICE_URI"].startswith("postgresql+asyncpg://adk:")
     assert "192.168.64.3:5432/adk_runtime" in environment["ADK_SESSION_SERVICE_URI"]
@@ -103,23 +116,28 @@ def test_the_session_uri_names_an_explicit_driver() -> None:
 
 def test_every_passthrough_variable_the_example_reads_reaches_the_container() -> None:
     env = {**BASE_ENV, **{name: f"value-of-{name}" for name in PASSTHROUGH_ENV}}
-    environment = executor_environment(SPEC, settings=_settings(), addresses=ADDRESSES, env=env)
+    environment = group_environment(GROUP, settings=_settings(), addresses=ADDRESSES, env=env)
     missing = [name for name in PASSTHROUGH_ENV if environment.get(name) != f"value-of-{name}"]
     assert not missing, f"the container never sees {missing}"
 
 
 def test_a_passthrough_the_fleet_computes_is_not_overridden_by_the_host() -> None:
-    env = {**BASE_ENV, "AGENT_CONTROL_WEB_TOOLS": "1", "AGENT_CONTROL_AGENT_NAME": "wrong"}
-    off = AgentSpec(agent_name="sales_outreach_drafter", web_tools=False)
-    environment = executor_environment(off, settings=_settings(), addresses=ADDRESSES, env=env)
+    env = {**BASE_ENV, "AGENT_CONTROL_WEB_TOOLS": "1", FLEET_AGENTS_ENV: "wrong:9"}
+    off = AgentSpec(agent_name="sales_outreach_drafter", web_tools=False, port=8000)
+    environment = group_environment(
+        GroupSpec(name="sales", agents=(off,)),
+        settings=_settings(),
+        addresses=ADDRESSES,
+        env=env,
+    )
     assert environment["AGENT_CONTROL_WEB_TOOLS"] == "0"
-    assert environment["AGENT_CONTROL_AGENT_NAME"] == "sales_outreach_drafter"
+    assert environment[FLEET_AGENTS_ENV] == "sales_outreach_drafter:8000"
 
 
 def test_register_differs_from_the_executor_in_the_credential_and_nothing_else() -> None:
     settings = _settings()
     env = {**BASE_ENV, **{name: "set" for name in PASSTHROUGH_ENV}}
-    executor = executor_environment(SPEC, settings=settings, addresses=ADDRESSES, env=env)
+    executor = group_environment(GROUP, settings=settings, addresses=ADDRESSES, env=env)
     register = register_environment(SPEC, settings=settings, addresses=ADDRESSES, env=env)
     differing = {
         key for key in executor.keys() | register.keys() if executor.get(key) != register.get(key)

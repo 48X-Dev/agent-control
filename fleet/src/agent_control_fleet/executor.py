@@ -1,4 +1,4 @@
-"""Starting one executor container and proving it serves the agent it claims."""
+"""Starting one container per group and proving each process serves the agent it claims."""
 
 from __future__ import annotations
 
@@ -6,9 +6,9 @@ import time
 
 import httpx
 
-from .config import AgentSpec
+from .config import AgentSpec, GroupSpec
 from .container import POSTGRES_CONTAINER, SERVER_CONTAINER, ContainerError, ContainerRuntime
-from .settings import EXECUTOR_PORT, NetworkAddresses
+from .settings import NetworkAddresses
 
 __all__ = [
     "EXECUTOR_GID",
@@ -61,7 +61,7 @@ def read_network_addresses(runtime: ContainerRuntime) -> NetworkAddresses:
 
 def start_executor(
     runtime: ContainerRuntime,
-    spec: AgentSpec,
+    group: GroupSpec,
     *,
     image: str,
     environment: dict[str, str],
@@ -70,11 +70,11 @@ def start_executor(
 ) -> None:
     """Start the container unless it is already up, which is what makes ``up`` idempotent."""
 
-    if runtime.is_running(spec.container_name):
+    if runtime.is_running(group.container_name):
         return
-    runtime.remove(spec.container_name)
+    runtime.remove(group.container_name)
     runtime.run_detached(
-        name=spec.container_name,
+        name=group.container_name,
         image=image,
         environment=environment,
         read_only=True,
@@ -87,14 +87,19 @@ def start_executor(
 
 
 def wait_until_serving(address: str, spec: AgentSpec, *, timeout_seconds: float) -> None:
-    """Poll /list-apps until it returns exactly this agent, or refuse."""
+    """Poll one process's /list-apps until it returns exactly this agent, or refuse.
+
+    Exactly this agent and no sibling: each process is given its own agents root
+    holding one directory, and a root shared across the group would make every
+    process in it advertise every name (section 3.4).
+    """
 
     deadline = time.monotonic() + timeout_seconds
     last = "no response"
     while True:
         try:
             response = httpx.get(
-                f"http://{address}:{EXECUTOR_PORT}/list-apps",
+                f"http://{address}:{spec.port}/list-apps",
                 timeout=_REQUEST_TIMEOUT_SECONDS,
             )
             if response.status_code == 200:
@@ -109,7 +114,7 @@ def wait_until_serving(address: str, spec: AgentSpec, *, timeout_seconds: float)
         if time.monotonic() >= deadline:
             raise ExecutorError(
                 "executor_not_serving",
-                f"{spec.container_name} did not serve exactly [{spec.agent_name!r}] within "
+                f"{address}:{spec.port} did not serve exactly [{spec.agent_name!r}] within "
                 f"{timeout_seconds:.0f}s ({last}). Binding it now would produce a row whose "
                 "first turn returns 500 and reads as a broken executor.",
             )

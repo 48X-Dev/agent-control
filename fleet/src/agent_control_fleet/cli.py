@@ -31,8 +31,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="agent-control-fleet",
         description=(
-            "Run one executor container per agent named in fleet.yaml, under Apple's "
-            "container runtime. `up` does the whole ordered sequence; `register` and "
+            "Run the executor containers fleet.yaml declares, one per group and one "
+            "process per agent in it, under Apple's container runtime. `up` does the "
+            "whole ordered sequence; `register` and "
             "`bind` are the two admin jobs it runs, both of which exit; `doctor` "
             "reports how intent and fact differ and fixes nothing."
         ),
@@ -44,8 +45,8 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "Waits for the server, refuses an executor credential that cannot claim "
             "halts, registers every agent in its own subprocess and checks the exit "
-            "code, starts one container per agent with no published ports, waits for "
-            "each to serve exactly its own name, then writes the runtime rows. "
+            "code, starts one container per group with no published ports, waits for "
+            "each process to serve exactly its own name, then writes the runtime rows. "
             "Idempotent: a re-run restarts what is missing. Nothing here restarts a "
             "container that crashes later."
         ),
@@ -69,8 +70,9 @@ def build_parser() -> argparse.ArgumentParser:
         "bind",
         help="Point each agent at the container now serving it, then exit.",
         description=(
-            "Writes PUT /agent-runtimes/{agent_name} with the observed container IP "
-            "and executor_app_name equal to the agent name. A row this fleet did not "
+            "Writes PUT /agent-runtimes/{agent_name} with the observed container IP, "
+            "the agent's own port and executor_app_name equal to the agent name. A row "
+            "this fleet did not "
             "write aborts the run and names the row, unless --adopt."
         ),
     )

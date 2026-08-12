@@ -11,7 +11,12 @@ from agent_control_fleet.container import ContainerRuntime
 from agent_control_fleet.executor import EXECUTOR_GID, EXECUTOR_UID
 from agent_control_fleet.register import RegisterError
 from agent_control_fleet.server import ServerClient, ServerError
-from agent_control_fleet.settings import EXECUTOR_API_KEY_ENV, REGISTER_API_KEY_ENV, FleetSettings
+from agent_control_fleet.settings import (
+    EXECUTOR_API_KEY_ENV,
+    FLEET_AGENTS_ENV,
+    REGISTER_API_KEY_ENV,
+    FleetSettings,
+)
 from agent_control_fleet.up import bring_up
 
 from .fakes import FakeClient, FakeRuntime
@@ -20,10 +25,15 @@ FLEET = parse_fleet_config(
     """
 version: 1
 image: agent-control-executor:local
-agents:
-  - agent_name: marketing_researcher
-  - agent_name: sales_outreach_drafter
-    web_tools: false
+groups:
+  - name: marketing
+    agents:
+      - agent_name: marketing_researcher
+      - agent_name: marketing_copywriter
+  - name: sales_outreach_drafter
+    agents:
+      - agent_name: sales_outreach_drafter
+        web_tools: false
 """
 )
 
@@ -43,7 +53,7 @@ def _runtime() -> FakeRuntime:
         addresses={
             "ac-server": "192.168.64.4",
             "ac-postgres": "192.168.64.3",
-            "ac-executor-marketing-researcher": "192.168.64.7",
+            "ac-executor-marketing": "192.168.64.7",
             "ac-executor-sales-outreach-drafter": "192.168.64.8",
         }
     )
@@ -66,14 +76,16 @@ def test_the_whole_sequence_runs_in_order() -> None:
     assert client.calls[:3] == ["health", "halt-probe", "credentials"]
     assert [job.name for job in runtime.completed] == [
         "ac-register-marketing-researcher",
+        "ac-register-marketing-copywriter",
         "ac-register-sales-outreach-drafter",
     ]
     assert [started.name for started in runtime.started] == [
-        "ac-executor-marketing-researcher",
+        "ac-executor-marketing",
         "ac-executor-sales-outreach-drafter",
     ]
     assert [entry["base_url"] for entry in client.bound] == [
         "http://192.168.64.7:8000",
+        "http://192.168.64.7:8001",
         "http://192.168.64.8:8000",
     ]
 
@@ -144,7 +156,7 @@ def test_the_register_jobs_are_handed_the_credential_they_need() -> None:
 
 def test_a_re_run_restarts_only_what_is_missing() -> None:
     runtime = _runtime()
-    runtime.running.add("ac-executor-marketing-researcher")
+    runtime.running.add("ac-executor-marketing")
     _bring_up(runtime, FakeClient())
     assert [started.name for started in runtime.started] == [
         "ac-executor-sales-outreach-drafter"
@@ -174,3 +186,42 @@ def _recording_bind(client: FakeClient, order: list[str]) -> Any:
         client.bound.append({"agent_name": agent_name, "base_url": base_url})
 
     return bind
+
+
+def test_a_group_is_one_container_that_names_every_process_in_it() -> None:
+    runtime = _runtime()
+    _bring_up(runtime, FakeClient())
+    started = {container.name: container for container in runtime.started}
+    assert started["ac-executor-marketing"].environment[FLEET_AGENTS_ENV] == (
+        "marketing_researcher:8000,marketing_copywriter:8001"
+    )
+    assert started["ac-executor-sales-outreach-drafter"].environment[FLEET_AGENTS_ENV] == (
+        "sales_outreach_drafter:8000"
+    )
+
+
+def test_every_process_is_proved_serving_before_anything_is_bound(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One container answering is not one agent answering; a group has two of each."""
+
+    order: list[str] = []
+    monkeypatch.setattr(
+        up_module,
+        "wait_until_serving",
+        lambda address, spec, timeout_seconds: order.append(
+            f"serving:{spec.agent_name}@{address}:{spec.port}"
+        ),
+    )
+    client = FakeClient()
+    runtime = _runtime()
+    client.bind_runtime = _recording_bind(client, order)  # type: ignore[method-assign]
+    _bring_up(runtime, client)
+    assert order == [
+        "serving:marketing_researcher@192.168.64.7:8000",
+        "serving:marketing_copywriter@192.168.64.7:8001",
+        "serving:sales_outreach_drafter@192.168.64.8:8000",
+        "bind:marketing_researcher",
+        "bind:marketing_copywriter",
+        "bind:sales_outreach_drafter",
+    ]

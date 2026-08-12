@@ -1,4 +1,4 @@
-.PHONY: help sync openapi-spec openapi-spec-check test test-extras test-all contrib-verify scripts-test models-test dispatcher-test knowledge-sync-test fleet-test test-models test-sdk lint lint-fix format format-check typecheck check build build-models build-server build-sdk publish publish-models publish-server publish-sdk hooks-install hooks-uninstall prepush evaluators-test evaluators-lint evaluators-lint-fix evaluators-typecheck evaluators-build contrib-test contrib-lint contrib-lint-fix contrib-typecheck contrib-build sdk-ts-generate sdk-ts-overlay-test sdk-ts-name-check sdk-ts-generate-check sdk-ts-build sdk-ts-test sdk-ts-lint sdk-ts-typecheck sdk-ts-release-check sdk-ts-publish-dry-run sdk-ts-publish telemetry-test telemetry-lint telemetry-lint-fix telemetry-typecheck telemetry-build telemetry-publish
+.PHONY: help sync openapi-spec openapi-spec-check test test-extras test-all contrib-verify scripts-test models-test dispatcher-test knowledge-sync-test fleet-test example-adk-test test-models test-sdk lint lint-fix format format-check typecheck check build build-models build-server build-sdk publish publish-models publish-server publish-sdk hooks-install hooks-uninstall prepush evaluators-test evaluators-lint evaluators-lint-fix evaluators-typecheck evaluators-build contrib-test contrib-lint contrib-lint-fix contrib-typecheck contrib-build sdk-ts-generate sdk-ts-overlay-test sdk-ts-name-check sdk-ts-generate-check sdk-ts-build sdk-ts-test sdk-ts-lint sdk-ts-typecheck sdk-ts-release-check sdk-ts-publish-dry-run sdk-ts-publish telemetry-test telemetry-lint telemetry-lint-fix telemetry-typecheck telemetry-build telemetry-publish
 
 # Workspace package names
 PACK_MODELS := agent-control-models
@@ -103,7 +103,7 @@ openapi-spec-check: openapi-spec
 # Test
 # ---------------------------
 
-test: contrib-verify scripts-test models-test telemetry-test server-test engine-test sdk-test evaluators-test dispatcher-test knowledge-sync-test fleet-test contrib-test
+test: contrib-verify scripts-test models-test telemetry-test server-test engine-test sdk-test evaluators-test dispatcher-test knowledge-sync-test fleet-test example-adk-test contrib-test
 
 contrib-verify:
 	uv run python scripts/contrib_packages.py verify
@@ -138,6 +138,12 @@ fleet-test:
 	uv run --package $(PACK_FLEET) pytest $(FLEET_DIR)/tests \
 		--cov=$(FLEET_DIR)/src \
 		--cov-report=xml:coverage-fleet.xml -q
+
+# The example is the fleet's executor image, so its entrypoint helpers are
+# shipped code. Loaded by path, because importing the package calls the server.
+example-adk-test:
+	uv run --package $(PACK_EXAMPLE_ADK) --with pytest \
+		pytest examples/google_adk_plugin/tests -q
 
 # Run tests for discovered contrib evaluators
 test-extras: contrib-test

@@ -5,10 +5,9 @@ from __future__ import annotations
 import ipaddress
 from dataclasses import dataclass
 
-from .config import AgentSpec, FleetConfig
+from .config import FleetConfig, Placement
 from .container import ContainerError, ContainerRuntime
 from .server import AgentRuntimeRow, ServerClient
-from .settings import EXECUTOR_PORT
 
 __all__ = ["BindError", "bind_runtimes", "is_fleet_written"]
 
@@ -23,19 +22,19 @@ class BindError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class _Observed:
-    spec: AgentSpec
+    placement: Placement
     base_url: str
 
 
-def is_fleet_written(row: AgentRuntimeRow, spec: AgentSpec) -> bool:
+def is_fleet_written(row: AgentRuntimeRow, placement: Placement) -> bool:
     """True when this row has the shape ``bind`` writes, whatever IP it carries."""
-    if row.executor_app_name != spec.agent_name:
+    if row.executor_app_name != placement.agent.agent_name:
         return False
     prefix, _, remainder = row.base_url.partition("://")
     if prefix != "http":
         return False
     host, _, port = remainder.partition(":")
-    if port != str(EXECUTOR_PORT):
+    if port != str(placement.agent.port):
         return False
     try:
         ipaddress.IPv4Address(host)
@@ -53,49 +52,53 @@ def bind_runtimes(
 ) -> None:
     """Point every agent in the fleet file at the container now serving it."""
 
-    observed = tuple(_observe(runtime, spec) for spec in config.agents)
+    observed = tuple(_observe(runtime, placement) for placement in config.placements)
     rows = {row.agent_name: row for row in client.list_runtimes()}
     if not adopt:
         _refuse_foreign_rows(observed, rows)
     for entry in observed:
-        existing = rows.get(entry.spec.agent_name)
+        agent_name = entry.placement.agent.agent_name
+        existing = rows.get(agent_name)
         if existing is not None and existing.base_url == entry.base_url:
-            print(f"   {entry.spec.agent_name} already at {entry.base_url}")
+            print(f"   {agent_name} already at {entry.base_url}")
             continue
         client.bind_runtime(
-            agent_name=entry.spec.agent_name,
+            agent_name=agent_name,
             base_url=entry.base_url,
-            executor_app_name=entry.spec.agent_name,
+            executor_app_name=agent_name,
         )
-        print(f"   {entry.spec.agent_name} -> {entry.base_url}")
+        print(f"   {agent_name} -> {entry.base_url}")
 
 
-def _observe(runtime: ContainerRuntime, spec: AgentSpec) -> _Observed:
+def _observe(runtime: ContainerRuntime, placement: Placement) -> _Observed:
+    """The address is the group's; the port is the agent's."""
+
     try:
-        address = runtime.ipv4_address(spec.container_name)
+        address = runtime.ipv4_address(placement.group.container_name)
     except ContainerError as exc:
         raise BindError(
             "executor_not_running",
-            f"{spec.container_name} has no address, so there is nothing to bind "
-            f"{spec.agent_name} to: {exc}",
+            f"{placement.group.container_name} has no address, so there is nothing to "
+            f"bind {placement.agent.agent_name} to: {exc}",
         ) from exc
-    return _Observed(spec=spec, base_url=f"http://{address}:{EXECUTOR_PORT}")
+    return _Observed(placement=placement, base_url=placement.base_url(address))
 
 
 def _refuse_foreign_rows(
     observed: tuple[_Observed, ...], rows: dict[str, AgentRuntimeRow]
 ) -> None:
     foreign = [
-        (entry.spec, rows[entry.spec.agent_name])
+        (entry.placement, rows[entry.placement.agent.agent_name])
         for entry in observed
-        if entry.spec.agent_name in rows
-        and not is_fleet_written(rows[entry.spec.agent_name], entry.spec)
+        if entry.placement.agent.agent_name in rows
+        and not is_fleet_written(rows[entry.placement.agent.agent_name], entry.placement)
     ]
     if not foreign:
         return
     described = "; ".join(
-        f"{spec.agent_name} is bound to {row.base_url} as {row.executor_app_name!r}"
-        for spec, row in foreign
+        f"{placement.agent.agent_name} is bound to {row.base_url} as "
+        f"{row.executor_app_name!r}"
+        for placement, row in foreign
     )
     raise BindError(
         "binding_not_written_by_fleet",

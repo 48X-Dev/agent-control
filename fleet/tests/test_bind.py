@@ -6,7 +6,7 @@ from typing import cast
 
 import pytest
 from agent_control_fleet.bind import BindError, bind_runtimes, is_fleet_written
-from agent_control_fleet.config import AgentSpec, parse_fleet_config
+from agent_control_fleet.config import parse_fleet_config
 from agent_control_fleet.container import ContainerRuntime
 from agent_control_fleet.server import AgentRuntimeRow, ServerClient
 
@@ -16,11 +16,13 @@ FLEET = parse_fleet_config(
     """
 version: 1
 image: executor:local
-agents:
-  - agent_name: marketing_researcher
+groups:
+  - name: marketing_researcher
+    agents:
+      - agent_name: marketing_researcher
 """
 )
-SPEC = FLEET.agents[0]
+PLACEMENT = FLEET.placements[0]
 
 HAND_WRITTEN = AgentRuntimeRow(
     agent_name="marketing_researcher",
@@ -115,4 +117,46 @@ def test_the_fleet_shape_is_an_ip_on_the_executor_port_under_the_agents_own_name
         executor_app_name=app_name,
         enabled=True,
     )
-    assert is_fleet_written(row, AgentSpec("marketing_researcher", web_tools=True)) is expected
+    assert is_fleet_written(row, PLACEMENT) is expected
+
+
+GROUPED = parse_fleet_config(
+    """
+version: 1
+image: executor:local
+groups:
+  - name: marketing
+    agents:
+      - agent_name: marketing_researcher
+      - agent_name: marketing_copywriter
+"""
+)
+
+
+def test_a_group_binds_one_address_and_a_port_each() -> None:
+    client = FakeClient()
+    bind_runtimes(
+        GROUPED,
+        runtime=cast(
+            ContainerRuntime,
+            FakeRuntime(addresses={"ac-executor-marketing": "192.168.64.7"}),
+        ),
+        client=cast(ServerClient, client),
+        adopt=False,
+    )
+    assert [entry["base_url"] for entry in client.bound] == [
+        "http://192.168.64.7:8000",
+        "http://192.168.64.7:8001",
+    ]
+
+
+def test_a_grouped_row_on_a_sibling_port_is_not_read_as_fleet_written() -> None:
+    """The second process in a group listens on 8001, so a row on 8000 names its sibling."""
+
+    row = AgentRuntimeRow(
+        agent_name="marketing_copywriter",
+        base_url="http://192.168.64.7:8000",
+        executor_app_name="marketing_copywriter",
+        enabled=True,
+    )
+    assert is_fleet_written(row, GROUPED.placements[1]) is False

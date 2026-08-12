@@ -94,3 +94,6 @@ node_modules
 
 # Local MCP server config; can embed credentials in URLs.
 .mcp.json
+
+# Operator-supplied, like knowledge.yaml: only the .example is checked in.
+fleet.yaml
