@@ -1,6 +1,6 @@
 # Agent Fleet Topology: Implementation Plan
 
-Status: design, revision 2. Nothing built.
+Status: design, revision 3. `fleet/` partially built and currently unable to start; see 4.4.1.
 Runtime target: **Apple `container` only.** Revision 1 was written for Docker Compose; section 3.3 records why that was wrong and what it cost.
 Branch context: `build/container-context-and-corpus-migrations`.
 Scope: how N agents get started, addressed and credentialed under the runtime this stack actually uses; and the credential problem that has to be solved before any of it is worth building.
@@ -14,6 +14,11 @@ Does not deliver: a scheduler, a supervisor, autoscaling, or any change to what 
 - **Executors cannot boot on an ordinary key, and revision 1 never examined the path that stops them.** It enumerated registration and stopped. The nudge and halt path is ADMIN, fires at every model and tool boundary, and has no configured alternative in this repo. Section 4.4 is new and it is a blocker, not a caveat.
 
 Where a claim here is about behaviour rather than text, the probe that produced it is named and was run on 11 August.
+
+**Author's note on revision 3, 12 August.** Two changes, one of which the plan did not choose.
+
+- **Section 4.4's option 2 was implemented on 12 August**, as a side effect of fixing agent-side knowledge search rather than as a decision on this plan. The credential gate has therefore moved without being consulted, and the trap 4.4 predicted is now armed: `fleet up` refuses to start anything, measured, not inferred. Section 4.4.1 is new and it is the first thing to fix.
+- **Revision 2 asserted one container per agent by inheriting 3.2's conclusion about processes.** The SDK constraint binds a process, not a container, so the two questions have different answers. Section 3.2.1 re-derives it, 3.3 makes the grouping operator configuration, and 3.4 restates its guarantee as per-process. Disk cost measured on 12 August: roughly 2 GB per container on this runtime, so the topology choice is worth about 14 GB across eight agents.
 
 ---
 
@@ -90,7 +95,9 @@ N agents means N processes. Everything below has to fit that shape.
 
 ### 3.2 Should the constraint be changed instead? No
 
-The tempting move is a per-agent registry in the SDK, so one `adk api_server` hosts many agents and the fleet becomes one container. Three costs, and the third decides it.
+The tempting move is a per-agent registry in the SDK, so one `adk api_server` hosts many agents. Three costs, and the third decides it.
+
+Note what this section is and is not about. It asks whether one *process* may hold many agents. It is not the question of how many processes share a *container*, which revision 2 never asked and 3.2.1 now answers differently.
 
 The mechanical cost is ordinary: `state` becomes a per-agent map, the plugin's constructor refusal becomes a lookup, the refresh loop fans out. Two to three weeks on the most safety-critical file in the SDK, plus a compatibility story for every consumer holding the module-level API.
 
@@ -100,7 +107,23 @@ And the third cost inverts the argument the topology was chosen for. Orchestrati
 
 **Decision: keep one process per agent.** What the fleet design owes in return is that starting the eighth costs the same as starting the second.
 
-### 3.3 One container per agent, driven from Python, addressed by IP
+### 3.2.1 How many containers those processes need is a separate question, and revision 2 got it wrong by inheritance
+
+New in revision 3. Revision 2 carried 3.2's conclusion across to containers without re-deriving it, and stated one container per agent as though the SDK constraint required it. It does not. `_state.py:56` is a module-level singleton, so the constraint binds a **process**. Eight processes in one container hold eight separate copies of it. Nothing in the SDK, ADK or this repo prevents N executor processes sharing a container today, with no code change at all.
+
+**Re-derived against the three costs of 3.2, which do not survive the transfer.** The mechanical cost is zero, because nothing changes. The credential cost is close to zero: eight processes still hold one agent's credentials each, so no process holds the union, which was the whole of that argument. Only the third survives. Processes in one container share a network and PID namespace, so an injected agent holding `web_fetch_exa` can reach a sibling on localhost and read `/proc/<pid>/environ`. That is real and it is the only cost that transfers.
+
+**Measured cost of the boundary, 12 August.** Apple `container` gives every container its own VM root filesystem, so layers are not shared the way they are on Linux. An image costs 1.4 to 2.4 GB of expanded snapshot and each running container costs roughly 2 GB more. Restarting three containers moved the store from 25 GB to 31 GB. So per-agent is about 16 GB for eight, team-per-container about 8 GB for four, and a single container about 2 GB.
+
+**The status quo is the thing to compare against, and it is worse than all three.** Section 2 measured one process serving all eight agents, on the host, bound to `0.0.0.0`. Eight processes in one container with no published ports is a strict improvement on that in isolation, exposure and diagnosability, at the cheapest price of the three. Per-agent containers are the best end state; they are not the only step that improves on today.
+
+**What changed the balance on 12 August.** Before runtime tokens were configured, every executor authenticated with the same admin key, so separating them into containers protected nothing: an attacker injecting any agent already held that key from its own environment. With `AGENT_CONTROL_RUNTIME_TOKEN_SECRET` set and verified (4.4.1), each session now carries a distinct scoped bearer, so isolation finally protects something real. The argument for separate containers is stronger today than it was when revision 2 asserted it without one.
+
+**Decision: the grouping is operator configuration, not a constant in the design.** `fleet.yaml` declares which agents share a container. Per-agent, per-team and all-in-one are the same code path with a different file. Section 3.3 specifies it.
+
+**Why this and not a fixed choice.** Team is already a trust boundary in this codebase rather than a new one: `701f7e5` made the workflow upsert refuse a step naming a non-member with `AGENT_NOT_IN_TEAM`, and teams are the unit the budgets plan meters. All four teams currently hold exactly two agents, and none mixes trust levels. When one does, splitting it is a config edit rather than a rewrite of `fleet/`.
+
+### 3.3 Containers grouped by `fleet.yaml`, driven from Python, addressed by IP
 
 Revision 1 specified a generator emitting `compose.fleet.yml`, a committed generated file, `include:` in `docker-compose.yml`, profiles, and `depends_on` conditions. None of that exists on this runtime. **Deleting it is a scope reduction, not a loss:** the generator, its golden-file test, the committed-artefact drift check and the `include:` blast radius into the quick start all disappear together.
 
@@ -110,17 +133,27 @@ Revision 1 specified a generator emitting `compose.fleet.yml`, a committed gener
 
 **`fleet.yaml.example`, checked in; the real `fleet.yaml` is operator-supplied and gitignored.** This follows `knowledge.yaml.example` exactly, including that the path is an environment variable with a default. Revision 1 wanted the real file committed so fleet changes are reviewable in a diff. That is a genuine loss and it is the cost of matching the precedent this repo already set for operator-supplied allowlists.
 
+**Grouping is declared, not assumed.** Per 3.2.1, a container holds one or more agent processes. `groups` is a list; each entry becomes one container running one `adk api_server` process per listed agent. A file listing one agent per group reproduces revision 2's per-agent topology exactly, so this is a generalization rather than a change of default.
+
 ```yaml
 version: 1
 image: agent-control-executor:local
 defaults:
   web_tools: true
-agents:
-  - agent_name: marketing_researcher
-  - agent_name: marketing_copywriter
-  - agent_name: sales_outreach_drafter
-    web_tools: false
+groups:
+  - name: marketing
+    agents:
+      - agent_name: marketing_researcher
+      - agent_name: marketing_copywriter
+  - name: sales
+    agents:
+      - agent_name: sales_outreach_drafter
+        web_tools: false
 ```
+
+**A group is a trust boundary and the schema says so.** Agents in one group share a network namespace, a PID namespace and a tmpfs, so `web_tools` differing within a group is close to meaningless: an injected sibling reaches the same network the web-enabled process does. Validation therefore **refuses a group whose members disagree on `web_tools`** with `fleet_group_mixed_egress`, naming the group and the disagreeing agents. Lowercase snake, matching every other code in `config.py`; revision 3 first wrote it uppercase, which matched nothing in this repo. Splitting them into two groups is the fix and it is one line. This is the one place the config is opinionated, and it is opinionated about the only cost that survived 3.2.1.
+
+**Ports inside a group.** One `adk api_server` per agent means one port per agent, allocated from 8000 within the container and never published. `base_url` becomes `http://<ipv4Address>:<port>`, so the port is per-agent where the IP is per-group.
 
 **The database is not the source.** Generating containers from `agent_runtimes` is circular: the row records where a process is, so a process started from the row cannot be what creates it, and a stale row becomes self-perpetuating. `fleet.yaml` declares intent, `agent_runtimes` records fact, 6.4 is the reconciliation.
 
@@ -150,6 +183,8 @@ That process serves `my_agent`. Session creation goes straight to the session se
 **The fix is unchanged: make the folder real, and materialize exactly one.** The entrypoint creates `/agents/${AGENT_CONTROL_AGENT_NAME}/agent.py`, a shim importing the shared module, then runs `adk api_server /agents`. One directory, so `/list-apps` returns exactly the agent's name and `executor_app_name` equals `agent_name`.
 
 Materializing all eight into the image would undo the point: `list_agents()` enumerates directories, so every executor would advertise all eight names and the SDK would refuse the second at plugin construction.
+
+**Under 3.2.1's grouping this is a per-process guarantee, not a per-container one, and the distinction is load-bearing.** `list_agents()` enumerates directories under the root a process was given, so a group container gives **each process its own agents root holding exactly one directory**: `/agents/<agent_name>/<agent_name>/agent.py`, with `adk api_server /agents/<agent_name>`. A single shared root holding both agents would make every process in the group advertise both names, which is precisely the mis-binding 3.4 exists to prevent, and the SDK would refuse the second at plugin construction anyway. One root per process, one directory per root.
 
 Agent names in `agent_runtimes` are already underscore-only identifiers, so nothing needs renaming. Container names use hyphens.
 
@@ -238,6 +273,27 @@ Three ways out, none free, and the choice is not this plan's to make alone:
 **A trap in the shipped refusal, found reviewing the built code on 11 August.** `ServerCalls.refuse_when_executor_credential_cannot_halt` probes `halts/claim` with the executor's `X-API-Key` and refuses on 401 or 403. That is correct today and it inverts under option 2. Once `AGENT_CONTROL_RUNTIME_TOKEN_SECRET` is set, `AGENT_NUDGES_CONSUME` moves to the JWT provider, the executor claims halts with a session-bound bearer, and its API key is *supposed* to be refused on that route. The refusal would then block the very fix it exists to demand.
 
 So the probe has to become mode-aware before option 2 lands: under JWT mode the question is not "can this key claim a halt" but "can this key exchange for a runtime token, and does session creation mint a session token carrying `agent_nudges.consume`". Whoever implements option 2 owns that change, and shipping the secret without it turns a working fleet into one that refuses to start.
+
+### 4.4.1 Option 2 was taken on 12 August, and the trap 4.4 predicted is now armed
+
+New in revision 3. Option 2 was implemented, not as a decision on this plan but as the fix for an unrelated user-visible bug, which is worth recording because it means the gate moved without the plan being consulted.
+
+**What was done.** `company_knowledge_search` returned nothing for every agent while the console read the corpus fine. The cause was not the corpus: `knowledge_tools._identity()` returns `None` with no session-bound token and refuses to fall back to the process key by design, so with `AGENT_CONTROL_RUNTIME_TOKEN_SECRET` unset the tool could never work. Fixing it required exactly option 2: give the example a target so the SDK can exchange for a `runtime.use` bearer, set the secret, and pass it to both runtimes.
+
+**Verified after the change.** A turn completes under JWT mode, `company_knowledge_search` returns real content and the agent cites the source document. A queued nudge reaches `applied` with `claimed_at`, `applied_at` and an `applied_trace_id`, with `nudges/claim` and `nudges/ack` both 200. So the nudge path works on a session bearer, which is what 4.4 said option 2 would buy.
+
+**The trap is live, and it is measured rather than predicted.** 4.4 warned that `ServerCalls.refuse_when_executor_credential_cannot_halt` inverts under option 2. It does. The probe at `fleet/src/agent_control_fleet/server.py:96` posts to `halts/claim` with `X-API-Key` and refuses on 401 or 403. Run against the server as configured on 12 August:
+
+```
+POST /api/v1/agent-sessions/__agent_control_fleet_credential_probe__/halts/claim
+X-API-Key: <executor key>   ->  HTTP 401  AUTH_MISSING_KEY  "Missing Authorization header."
+```
+
+So `fleet up` now raises `executor_credential_cannot_halt` and starts nothing. The refusal blocks the fix it exists to demand, exactly as written. **This is a blocker on the fleet package, not on the runtime tokens, and it is the first thing any implementation must fix.**
+
+**What the probe has to become.** Under JWT mode the question is not whether the key can claim a halt. It is whether the key can exchange for a runtime token, and whether session creation mints a session token carrying `agent_nudges.consume`. The probe must detect which mode the server is in rather than assume, because both modes are now reachable configurations of this repo.
+
+**What is still owed from 4.4.** Option 2's second clause, re-checking every operation that moved to the JWT provider, was not done. Only the knowledge, evaluation, nudge and halt paths were exercised. Any operation that routes through `RUNTIME_USE` and was not hit by that testing is unverified, and the fleet should not be sized as though it is.
 
 ### 4.5 Option C, a registration-only credential tier. Deferred
 
