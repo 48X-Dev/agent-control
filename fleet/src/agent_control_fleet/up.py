@@ -12,7 +12,7 @@ from .settings import (
     HEALTH_TIMEOUT_SECONDS,
     READY_TIMEOUT_SECONDS,
     FleetSettings,
-    executor_environment,
+    group_environment,
 )
 
 __all__ = ["bring_up"]
@@ -47,20 +47,21 @@ def bring_up(
     )
 
     print("== executors")
-    for spec in config.agents:
+    for group in config.groups:
         start_executor(
             runtime,
-            spec,
+            group,
             image=config.image,
-            environment=executor_environment(
-                spec, settings=settings, addresses=addresses, env=env
+            environment=group_environment(
+                group, settings=settings, addresses=addresses, env=env
             ),
             memory=settings.executor_memory,
             cpus=settings.executor_cpus,
         )
-        address = runtime.ipv4_address(spec.container_name)
-        wait_until_serving(address, spec, timeout_seconds=READY_TIMEOUT_SECONDS)
-        print(f"   {spec.agent_name} serving at {address}")
+        address = runtime.ipv4_address(group.container_name)
+        for spec in group.agents:
+            wait_until_serving(address, spec, timeout_seconds=READY_TIMEOUT_SECONDS)
+            print(f"   {spec.agent_name} serving at {address}:{spec.port}")
 
     print("== bind")
     bind_runtimes(config, runtime=runtime, client=client, adopt=adopt)

@@ -29,7 +29,10 @@ def test_a_refused_config_exits_two_and_says_why(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     config = tmp_path / "fleet.yaml"
-    config.write_text("version: 1\nimage: e:local\nagents:\n  - agent_name: nope\n")
+    config.write_text(
+        "version: 1\nimage: e:local\ngroups:\n  - name: g\n"
+        "    agents:\n      - agent_name: nope\n"
+    )
     monkeypatch.setattr(
         cli_module.os,
         "environ",

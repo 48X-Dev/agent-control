@@ -6,10 +6,9 @@ from dataclasses import dataclass
 
 import httpx
 
-from .config import AgentSpec, FleetConfig
+from .config import FleetConfig, Placement
 from .container import ContainerError, ContainerRuntime
 from .server import AgentRuntimeRow, ServerClient
-from .settings import EXECUTOR_PORT
 
 __all__ = ["Finding", "diagnose", "render"]
 
@@ -35,8 +34,9 @@ def diagnose(
     intended = {spec.agent_name: spec for spec in config.agents}
     findings: list[Finding] = []
 
-    for spec in config.agents:
-        findings.extend(_diagnose_agent(spec, rows.get(spec.agent_name), runtime))
+    for placement in config.placements:
+        agent_name = placement.agent.agent_name
+        findings.extend(_diagnose_agent(placement, rows.get(agent_name), runtime))
 
     for agent_name in sorted(set(rows) - set(intended)):
         findings.append(
@@ -61,8 +61,9 @@ def diagnose(
 
 
 def _diagnose_agent(
-    spec: AgentSpec, row: AgentRuntimeRow | None, runtime: ContainerRuntime
+    placement: Placement, row: AgentRuntimeRow | None, runtime: ContainerRuntime
 ) -> list[Finding]:
+    spec = placement.agent
     findings: list[Finding] = []
     if row is None:
         findings.append(
@@ -83,19 +84,19 @@ def _diagnose_agent(
             )
         )
 
-    address = _address(runtime, spec)
+    address = _address(runtime, placement)
     if address is None:
         findings.append(
             Finding(
                 "container_missing",
                 spec.agent_name,
-                f"{spec.container_name} is not running. There is no restart policy, so "
-                "it stays down until `agent-control-fleet up` runs again.",
+                f"{placement.group.container_name} is not running. There is no restart "
+                "policy, so it stays down until `agent-control-fleet up` runs again.",
             )
         )
         return findings
 
-    expected = f"http://{address}:{EXECUTOR_PORT}"
+    expected = placement.base_url(address)
     if row is not None and row.base_url != expected:
         findings.append(
             Finding(
@@ -106,32 +107,32 @@ def _diagnose_agent(
             )
         )
 
-    served = _list_apps(address)
+    served = _list_apps(address, spec.port)
     if served != [spec.agent_name]:
         findings.append(
             Finding(
                 "serves_wrong_app",
                 spec.agent_name,
-                f"/list-apps returned {served!r}. The container serves a different "
-                "agent, or predates the one-package-per-container image.",
+                f"/list-apps on port {spec.port} returned {served!r}. That process serves "
+                "a different agent, or was given an agents root it shares with its group.",
             )
         )
     return findings
 
 
-def _address(runtime: ContainerRuntime, spec: AgentSpec) -> str | None:
-    if not runtime.is_running(spec.container_name):
+def _address(runtime: ContainerRuntime, placement: Placement) -> str | None:
+    if not runtime.is_running(placement.group.container_name):
         return None
     try:
-        return runtime.ipv4_address(spec.container_name)
+        return runtime.ipv4_address(placement.group.container_name)
     except ContainerError:
         return None
 
 
-def _list_apps(address: str) -> object:
+def _list_apps(address: str, port: int) -> object:
     try:
         response = httpx.get(
-            f"http://{address}:{EXECUTOR_PORT}/list-apps", timeout=_REQUEST_TIMEOUT_SECONDS
+            f"http://{address}:{port}/list-apps", timeout=_REQUEST_TIMEOUT_SECONDS
         )
     except httpx.HTTPError as exc:
         return f"unreachable: {exc}"

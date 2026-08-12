@@ -1,4 +1,4 @@
-"""One executor container per agent, addressed by IP, bound after it starts."""
+"""Executor containers grouped by fleet.yaml, addressed by IP, bound after they start."""
 
 from __future__ import annotations
 

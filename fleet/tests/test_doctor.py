@@ -17,8 +17,10 @@ FLEET = parse_fleet_config(
     """
 version: 1
 image: executor:local
-agents:
-  - agent_name: marketing_researcher
+groups:
+  - name: marketing_researcher
+    agents:
+      - agent_name: marketing_researcher
 """
 )
 CONTAINER = "ac-executor-marketing-researcher"
@@ -27,7 +29,7 @@ CONTAINER = "ac-executor-marketing-researcher"
 @pytest.fixture
 def served(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     state: dict[str, Any] = {"apps": ["marketing_researcher"]}
-    monkeypatch.setattr(doctor_module, "_list_apps", lambda address: state["apps"])
+    monkeypatch.setattr(doctor_module, "_list_apps", lambda address, port: state["apps"])
     return state
 
 
@@ -108,3 +110,71 @@ def test_doctor_writes_nothing(served: dict[str, Any]) -> None:
 
 def test_render_says_so_when_there_is_nothing_to_say() -> None:
     assert "matching app name" in render(())
+
+
+GROUPED = parse_fleet_config(
+    """
+version: 1
+image: executor:local
+groups:
+  - name: marketing
+    agents:
+      - agent_name: marketing_researcher
+      - agent_name: marketing_copywriter
+"""
+)
+
+
+def test_a_grouped_container_is_asked_once_per_process(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Each process has its own port and its own agents root, so each is its own answer."""
+
+    asked: list[tuple[str, int]] = []
+
+    def list_apps(address: str, port: int) -> object:
+        asked.append((address, port))
+        return ["marketing_researcher"] if port == 8000 else ["marketing_copywriter"]
+
+    monkeypatch.setattr(doctor_module, "_list_apps", list_apps)
+    runtime = FakeRuntime(
+        addresses={"ac-executor-marketing": "192.168.64.7"}, running={"ac-executor-marketing"}
+    )
+    client = FakeClient(
+        rows=(
+            _row(),
+            _row(agent_name="marketing_copywriter", base_url="http://192.168.64.7:8001",
+                 executor_app_name="marketing_copywriter"),
+        )
+    )
+    findings = diagnose(
+        GROUPED, runtime=cast(ContainerRuntime, runtime), client=cast(ServerClient, client)
+    )
+    assert [finding.code for finding in findings] == []
+    assert asked == [("192.168.64.7", 8000), ("192.168.64.7", 8001)]
+
+
+def test_a_process_serving_its_whole_group_is_a_finding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A shared agents root makes every process advertise every name; 3.4 exists to stop it."""
+
+    monkeypatch.setattr(
+        doctor_module,
+        "_list_apps",
+        lambda address, port: ["marketing_copywriter", "marketing_researcher"],
+    )
+    runtime = FakeRuntime(
+        addresses={"ac-executor-marketing": "192.168.64.7"}, running={"ac-executor-marketing"}
+    )
+    client = FakeClient(
+        rows=(
+            _row(),
+            _row(agent_name="marketing_copywriter", base_url="http://192.168.64.7:8001",
+                 executor_app_name="marketing_copywriter"),
+        )
+    )
+    findings = diagnose(
+        GROUPED, runtime=cast(ContainerRuntime, runtime), client=cast(ServerClient, client)
+    )
+    assert [finding.code for finding in findings] == ["serves_wrong_app", "serves_wrong_app"]

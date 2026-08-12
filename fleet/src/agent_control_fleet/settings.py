@@ -7,19 +7,19 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from .config import AgentSpec
+from .config import AgentSpec, GroupSpec
 
 __all__ = [
     "EXECUTOR_API_KEY_ENV",
     "EXECUTOR_CPUS_ENV",
     "EXECUTOR_MEMORY_ENV",
-    "EXECUTOR_PORT",
+    "FLEET_AGENTS_ENV",
     "PASSTHROUGH_ENV",
     "REGISTER_API_KEY_ENV",
     "FleetSettings",
     "NetworkAddresses",
     "SettingsError",
-    "executor_environment",
+    "group_environment",
     "model_base_url",
     "register_environment",
 ]
@@ -41,7 +41,10 @@ SERVER_URL_DEFAULT = "http://localhost:8000"
 EXECUTOR_MEMORY_DEFAULT = "512MB"
 EXECUTOR_CPUS_DEFAULT = 2
 
-EXECUTOR_PORT = 8000
+# The container's own list of processes: one ``<agent_name>:<port>`` per agent,
+# because the entrypoint starts one ``adk api_server`` per entry.
+FLEET_AGENTS_ENV = "AGENT_CONTROL_FLEET_AGENTS"
+
 SERVER_PORT = 8000
 POSTGRES_PORT = 5432
 
@@ -122,21 +125,25 @@ def model_base_url(settings: FleetSettings, addresses: NetworkAddresses) -> str:
     return f"http://{addresses.gateway}:{MODEL_PROXY_PORT}{MODEL_PROXY_PATH}"
 
 
-def executor_environment(
-    spec: AgentSpec,
+def group_environment(
+    group: GroupSpec,
     *,
     settings: FleetSettings,
     addresses: NetworkAddresses,
     env: Mapping[str, str],
 ) -> dict[str, str]:
-    """The environment one executor container gets, computed rather than inherited."""
+    """The environment one container gets, computed rather than inherited.
+
+    One variable covers every process in it. ``web_tools`` is the group's
+    because validation refuses a group whose members disagree.
+    """
 
     computed = {
-        "AGENT_CONTROL_AGENT_NAME": spec.agent_name,
+        FLEET_AGENTS_ENV: ",".join(f"{spec.agent_name}:{spec.port}" for spec in group.agents),
         "AGENT_CONTROL_URL": f"http://{addresses.server_ip}:{SERVER_PORT}",
         "AGENT_CONTROL_API_KEY": settings.executor_api_key,
         "AGENT_CONTROL_MODEL_BASE_URL": model_base_url(settings, addresses),
-        "AGENT_CONTROL_WEB_TOOLS": "1" if spec.web_tools else "0",
+        "AGENT_CONTROL_WEB_TOOLS": "1" if group.web_tools else "0",
         # ADK's --session_service_uri has no envvar binding, so the entrypoint
         # reads this and passes the flag. Explicit driver: the bare form fails
         # at import with "no psycopg2".
@@ -158,10 +165,15 @@ def register_environment(
     addresses: NetworkAddresses,
     env: Mapping[str, str],
 ) -> dict[str, str]:
-    """The executor's environment with the admin key, differing in nothing else."""
+    """One agent's container environment with the admin key, differing in nothing else.
 
+    Registration is one agent per container whatever the grouping is, because a
+    second import in one process registers the first agent again.
+    """
+
+    group = GroupSpec(name=spec.agent_name, agents=(spec,))
     return {
-        **executor_environment(spec, settings=settings, addresses=addresses, env=env),
+        **group_environment(group, settings=settings, addresses=addresses, env=env),
         "AGENT_CONTROL_API_KEY": settings.register_api_key,
     }
 
