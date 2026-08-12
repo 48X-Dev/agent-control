@@ -1,9 +1,31 @@
 #!/bin/bash
 set -euo pipefail
 
+# `register` is the admin one-shot the fleet runs before any executor starts:
+# importing the module runs agent_control.init() and plugin.bind(), which is
+# registration and step sync together. It serves nothing and materializes
+# nothing, so it needs neither a port nor a writable /agents.
+register() {
+    local entries name
+    IFS=',' read -r -a entries <<< "${AGENT_CONTROL_FLEET_AGENTS:-}"
+    if [ "${#entries[@]}" -eq 0 ] || [ -z "${entries[0]}" ]; then
+        echo "executor: AGENT_CONTROL_FLEET_AGENTS is unset, so there is nothing to register." >&2
+        exit 78
+    fi
+    for entry in "${entries[@]}"; do
+        name="${entry%%:*}"
+        echo "registering ${name}"
+        AGENT_CONTROL_AGENT_NAME="$name" python -c "import my_agent.agent"
+    done
+    exit 0
+}
+
 if [ "$#" -gt 0 ]; then
-    echo "executor: this image takes no arguments (got: $*)." >&2
-    echo "It runs the processes AGENT_CONTROL_FLEET_AGENTS names and nothing else." >&2
+    if [ "$#" -eq 1 ] && [ "$1" = "register" ]; then
+        register
+    fi
+    echo "executor: this image takes no arguments except \`register\` (got: $*)." >&2
+    echo "Without arguments it runs the processes AGENT_CONTROL_FLEET_AGENTS names." >&2
     exit 64
 fi
 

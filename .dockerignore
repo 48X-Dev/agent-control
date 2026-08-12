@@ -45,4 +45,24 @@ htmlcov
 
 dist
 docs
-examples
+# Every example except google_adk_plugin, which is the executor image's source.
+# Listed one by one rather than `examples` with a `!` exception: buildkit walks
+# a re-included subdirectory out of order and refuses the context outright.
+# The example's own secrets are excluded below; `**/.venv` keeps its virtualenv
+# out already.
+examples/README.md
+examples/agent_control_demo
+examples/cisco_ai_defense
+examples/crewai
+examples/customer_support_agent
+examples/deepeval
+examples/galileo_luna
+examples/google_adk_callbacks
+examples/google_adk_decorator
+examples/langchain
+examples/steer_action_demo
+examples/strands_agents
+examples/target_context_demo
+examples/typescript_sdk
+examples/google_adk_plugin/.env
+examples/google_adk_plugin/.env.*

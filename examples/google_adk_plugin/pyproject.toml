@@ -20,6 +20,11 @@ dependencies = [
     # is 1.83.14 because every earlier version pins jsonschema==4.23.0 and
     # agent-control-server needs >=4.25.1, which one workspace cannot satisfy.
     "litellm>=1.83.14,<2",
+    # ADK resolves the driver from the --session_service_uri scheme and raises
+    # at startup when it is absent. The fleet points executors at adk_runtime
+    # over postgresql+asyncpg, so without this the container exits before it
+    # binds. Same floor as server and knowledge_sync.
+    "asyncpg>=0.29.0",
 ]
 
 [build-system]
