@@ -320,10 +320,15 @@ _KNOWLEDGE_INSTRUCTION = (
 )
 
 
+# The target is what a runtime token is bound to. Without one the SDK sends no
+# bearer, and a server with AGENT_CONTROL_RUNTIME_TOKEN_SECRET set routes
+# runtime.use to the JWT provider and refuses every evaluation.
 agent_control.init(
     agent_name=AGENT_NAME,
     agent_description="Google ADK example using the packaged Agent Control plugin",
     server_url=SERVER_URL,
+    target_type="agent",
+    target_id=AGENT_NAME,
 )
 
 
