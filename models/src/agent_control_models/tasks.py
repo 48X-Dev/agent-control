@@ -681,9 +681,13 @@ closes the intended issue or an attacker's issue in the same milestone."""
 
 
 class WritebackKind(StrEnum):
-    """What one write-back row would do to the tracker."""
+    """What one write-back row would do to the tracker.
+
+    ``agent_comment`` is its own kind because the step comment is idempotent per step.
+    """
 
     COMMENT = "comment"
+    AGENT_COMMENT = "agent_comment"
     STATUS_CHANGE = "status_change"
 
 

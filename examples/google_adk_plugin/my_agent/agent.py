@@ -311,6 +311,36 @@ def _build_knowledge_tools() -> list[Any]:
     return build_knowledge_tools()
 
 
+def _tracker_tools_enabled() -> bool:
+    """Whether this agent may save to the tracker issue its task came from.
+
+    Off by default, on the same reasoning as the knowledge tools: this is the
+    one tool here whose effect leaves Agent Control, and switching it on is a
+    decision somebody should make in writing.
+    """
+    raw = os.getenv("AGENT_CONTROL_TRACKER_TOOLS", "0").strip().lower()
+    return raw in {"1", "true", "on", "yes"}
+
+
+def _build_tracker_tools() -> list[Any]:
+    """Return the tracker tool, or an empty list when it is off."""
+    if not _tracker_tools_enabled():
+        return []
+
+    from agent_control.integrations.google_adk.tracker_tools import (
+        build_tracker_tools,
+    )
+
+    return build_tracker_tools()
+
+
+_TRACKER_INSTRUCTION = (
+    " When you are asked to save, record or write something to the ticket, call "
+    "save_to_tracker with the exact text to save. It comments on the ticket this "
+    "session is working on and cannot close it or reach any other ticket, so say "
+    "plainly whether it saved and never claim the issue was closed."
+)
+
 _KNOWLEDGE_INSTRUCTION = (
     " For questions about this company's own policies, processes or history, "
     "use company_knowledge_search before answering, and company_knowledge_recent "
@@ -334,6 +364,7 @@ agent_control.init(
 
 _web_toolset = _build_web_toolset()
 _knowledge_tools = _build_knowledge_tools()
+_tracker_tools = _build_tracker_tools()
 
 root_agent = LlmAgent(
     name="root_agent",
@@ -348,12 +379,14 @@ root_agent = LlmAgent(
         "If a tool returns status=blocked, apologize and explain the message without retrying. "
         "Do not invent internal contacts or unsupported city data."
         + (_KNOWLEDGE_INSTRUCTION if _knowledge_tools else "")
+        + (_TRACKER_INSTRUCTION if _tracker_tools else "")
     ),
     tools=[
         get_current_time,
         get_weather,
         *([_web_toolset] if _web_toolset else []),
         *_knowledge_tools,
+        *_tracker_tools,
     ],
 )
 

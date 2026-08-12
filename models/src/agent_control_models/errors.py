@@ -123,6 +123,13 @@ class ErrorCode(StrEnum):
     # are fine, and the same request succeeds unchanged once an operator turns
     # the flag on.
     LINEAR_WRITE_DISABLED = "LINEAR_WRITE_DISABLED"
+    # The session has no tracker issue to comment on: it was opened as a plain
+    # chat rather than for a dispatch task, or its task came from a source with
+    # nothing to write to, or that task is a dry run. A conflict because the
+    # credentials are fine and the session is simply not that kind of session.
+    # The agent is told which of the three it is, because "save this" is a
+    # reasonable thing to ask and the useful answer names the reason.
+    SESSION_HAS_NO_TRACKER_ISSUE = "SESSION_HAS_NO_TRACKER_ISSUE"
     # Linear could not be read or written at the moment an accept needed it.
     # Nothing was changed; the proposal keeps waiting and the same press works
     # once Linear answers.

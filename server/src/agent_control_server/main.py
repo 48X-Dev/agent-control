@@ -39,6 +39,7 @@ from .endpoints.agent_plans import router as agent_plan_router
 from .endpoints.agent_runtimes import router as agent_runtime_router
 from .endpoints.agent_sessions import router as agent_session_router
 from .endpoints.agent_tasks import router as agent_task_router
+from .endpoints.agent_tracker import router as agent_tracker_router
 from .endpoints.agent_workflows import router as agent_workflow_router
 from .endpoints.agents import router as agent_router
 from .endpoints.auth import router as auth_router
@@ -553,6 +554,15 @@ app.include_router(
 # the nudge and halt claims use.
 app.include_router(
     agent_plan_router,
+    prefix=api_v1_prefix,
+    dependencies=[Depends(get_api_key_from_header)],
+)
+
+# The only route in this server an agent can use to write outside it. Same
+# session-bound token, and deliberately narrower: it comments on the issue its
+# own task came from and cannot address another or close anything.
+app.include_router(
+    agent_tracker_router,
     prefix=api_v1_prefix,
     dependencies=[Depends(get_api_key_from_header)],
 )

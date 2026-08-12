@@ -137,6 +137,36 @@ def compose_comment_body(
     return "\n".join(lines)
 
 
+def compose_agent_comment_body(*, task_key: str, agent_name: str, text: str) -> str:
+    """A comment an agent was asked to save mid-session, not one a step produced.
+
+    Same sanitize-and-fence treatment as :func:`compose_comment_body`, and a
+    deliberately different attribution line: this text was saved on a person's
+    instruction during a conversation, and describing it as a finished step
+    would misstate both what it is and when it was written.
+
+    No marker, because there is nothing to deduplicate against. The step
+    comment's marker exists so a retried queue row cannot post twice; this one
+    is sent inline and its outcome is reported to the caller, and two saves are
+    two comments because that is what asking twice means.
+    """
+    sanitized = sanitize_agent_text(text)
+    quoted = "\n".join(f"> {line}" for line in sanitized.split("\n"))
+    lines = [
+        (
+            f"**Agent `{agent_name}` saved this from a chat, when asked to.** "
+            "Written by an agent, not reviewed by a human."
+        ),
+        "> ```",
+        quoted,
+        "> ```",
+    ]
+    base_url = linear_settings.console_base_url.strip().rstrip("/")
+    if base_url:
+        lines.append(f"[Chain]({base_url}/agent-tasks/{task_key})")
+    return "\n".join(lines)
+
+
 def decision_digest(output_text: str, source_ref: str, target_state_id: str) -> str:
     """Bind an accept to the text, the target and the state it moves to.
 

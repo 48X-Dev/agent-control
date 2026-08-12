@@ -373,3 +373,43 @@ class ExecutorHealthResponse(BaseModel):
     )
     executors: list[ExecutorHealthEntry] = Field(default_factory=list)
     checked_at: dt.datetime = Field(..., description="When the probes ran.")
+
+
+# The tracker's own comment ceiling, applied at the boundary so an oversized
+# body is a 422 naming the field rather than a silent truncation downstream.
+TRACKER_COMMENT_MAX_LENGTH = 4000
+
+
+class SaveTrackerCommentRequest(BaseModel):
+    """Text an agent was told to save onto the issue its task came from.
+
+    There is no issue field and there will not be one. The server resolves the
+    target from the session, so an agent cannot name a ticket, and text that
+    reaches the model from a fetched page cannot redirect the write. The reach
+    of this whole route is one comment on one issue the session was already
+    working on.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    text: str = Field(
+        ...,
+        min_length=1,
+        max_length=TRACKER_COMMENT_MAX_LENGTH,
+        description=(
+            "What to post. Sanitized and fenced server-side before it is sent, "
+            "and truncated at the tracker's own limit."
+        ),
+    )
+
+
+class SaveTrackerCommentResponse(BaseModel):
+    """What reached the tracker, so the agent can say so rather than guess."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    issue_ref: str = Field(..., description="The issue the comment was posted to.")
+    issue_url: str | None = Field(
+        default=None, description="Its tracker URL, when the task recorded one."
+    )
+    comment_id: str = Field(..., description="The tracker's id for the created comment.")
