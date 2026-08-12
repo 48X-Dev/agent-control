@@ -141,6 +141,13 @@ class Operation(StrEnum):
     # namespace. See ``auth_framework.config`` for the wiring.
     AGENT_NUDGES_CONSUME = "agent_nudges.consume"
     AGENT_PLANS_WRITE = "agent_plans.write"
+    # Commenting on the tracker issue this session's task came from. Machine
+    # side for the same reason and with a narrower reach than the others: the
+    # issue is resolved from the session, never named by the caller, so a
+    # session-bound token can only ever comment on its own work. Closing an
+    # issue is not here and never will be - that is agent_tasks.approve, which
+    # a person holds.
+    AGENT_TRACKER_COMMENT = "agent_tracker.comment"
     # Reading the company-knowledge mirror. Machine-side like the two above:
     # an agent asks through a session-bound runtime token, never with a key
     # that would be valid for every session in the namespace.

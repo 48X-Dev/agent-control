@@ -105,12 +105,19 @@ in its path.
 SESSION_TOKEN_SCOPES: tuple[str, ...] = (
     Operation.AGENT_NUDGES_CONSUME.value,
     Operation.AGENT_PLANS_WRITE.value,
+    Operation.AGENT_TRACKER_COMMENT.value,
     Operation.COMPANY_KNOWLEDGE_SEARCH.value,
 )
 """What the executor may do with its session token: drain nudges written for
-this session, report progress on this session, and read the company-knowledge
-mirror. Notably not ``runtime.use``, so this token cannot be used for control
-resolution, and not anything that reads another session.
+this session, report progress on this session, comment on the tracker issue
+this session's task came from, and read the company-knowledge mirror. Notably
+not ``runtime.use``, so this token cannot be used for control resolution, and
+not anything that reads another session.
+
+The tracker entry is the only one that leaves this system, and it is the
+narrowest of the four: the issue is resolved from the session's own task, so
+an agent cannot name a target, and it posts a comment rather than closing
+anything. Closing stays ``agent_tasks.approve``, which no token carries.
 
 The third member is a read against a database this token's holder cannot write
 and the control plane itself only reads. It is here rather than on an API key

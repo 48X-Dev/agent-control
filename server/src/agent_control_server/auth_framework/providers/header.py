@@ -115,6 +115,9 @@ DEFAULT_OPERATION_ACCESS: dict[Operation, AccessLevel] = {
     # binding available.
     Operation.AGENT_NUDGES_CONSUME: AccessLevel.ADMIN,
     Operation.AGENT_PLANS_WRITE: AccessLevel.ADMIN,
+    # Same tier and the same reason: with no session binding to key on, an
+    # ordinary key here would let any caller comment on any session's issue.
+    Operation.AGENT_TRACKER_COMMENT: AccessLevel.ADMIN,
     # The dispatch ledger sits at AUTHENTICATED, all four of it, and the
     # reasoning is the same one AGENTS_CREATE already settled: a play button
     # only an admin can press is a play button an admin presses on somebody
