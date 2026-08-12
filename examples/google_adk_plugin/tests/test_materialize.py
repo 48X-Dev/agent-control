@@ -84,3 +84,25 @@ def test_a_postgres_uri_with_no_driver_is_refused_rather_than_left_to_fail_at_st
 
 def test_an_executor_with_no_credential_is_refused() -> None:
     assert _refusal(materialize_module.validated_api_key, "  ") == "executor_api_key_missing"
+
+
+def test_the_agents_root_defaults_to_the_image_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("AGENT_CONTROL_AGENTS_DIR", raising=False)
+    assert _load().AGENTS_DIR == Path("/agents")
+
+
+def test_the_agents_root_follows_the_environment(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A host run needs the same one-package root the image gets, somewhere writable.
+
+    Serving the example directory instead would advertise every sibling
+    directory, this test suite included, as an ADK app.
+    """
+
+    monkeypatch.setenv("AGENT_CONTROL_AGENTS_DIR", str(tmp_path))
+    module = _load()
+    assert module.AGENTS_DIR == tmp_path
+    assert module.Process("marketing_researcher", 8085).agents_root == str(
+        tmp_path / "marketing_researcher"
+    )
