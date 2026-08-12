@@ -26,6 +26,13 @@ EXECUTOR_GID = 10003
 
 AGENTS_TMPFS = "/agents"
 
+# ADK's CLI calls tempfile.gettempdir() at import. Under --read-only with no
+# writable temp, that raises FileNotFoundError before the server ever binds, so
+# the container exits and `up` reports a bind timeout rather than the cause.
+TMP_TMPFS = "/tmp"
+
+EXECUTOR_TMPFS = (AGENTS_TMPFS, TMP_TMPFS)
+
 # The image's one-shot mode: materialize the agent package, import it so bind()
 # discovers the tools, sync the steps, exit. It must not start a server.
 REGISTER_ARGUMENTS = ("register",)
@@ -78,7 +85,7 @@ def start_executor(
         image=image,
         environment=environment,
         read_only=True,
-        tmpfs=(AGENTS_TMPFS,),
+        tmpfs=EXECUTOR_TMPFS,
         uid=EXECUTOR_UID,
         gid=EXECUTOR_GID,
         memory=memory,

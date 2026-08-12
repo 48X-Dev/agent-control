@@ -19,6 +19,7 @@ __all__ = [
     "FleetSettings",
     "NetworkAddresses",
     "SettingsError",
+    "default_executor_memory",
     "group_environment",
     "model_base_url",
     "register_environment",
@@ -35,11 +36,27 @@ EXECUTOR_CPUS_ENV = "AGENT_CONTROL_FLEET_EXECUTOR_CPUS"
 CONFIG_PATH_DEFAULT = Path("fleet.yaml")
 SERVER_URL_DEFAULT = "http://localhost:8000"
 
-# Measured on 11 Aug: an idle executor is 37MB resident and peaks at 105MB
-# through a turn with a tool call. The runtime default is 1024MB per VM, which
-# at eight agents reserves 8GB to run under half a gigabyte of Python.
-EXECUTOR_MEMORY_DEFAULT = "512MB"
+# Measured 12 Aug in a two-agent group: 401MB resident idle and 587MB peak
+# through one turn that ran a knowledge search and a web search. The flat 512MB
+# this used to default to sat under that peak, and the cost is not a slow
+# container: the OOM killer takes one process, and the entrypoint deliberately
+# takes the whole group down when any process exits. A default has to scale
+# with the group, because a group is now one container running N of these.
+#
+# The 11 Aug figures this replaces (37MB idle, 105MB peak) were one process
+# with no knowledge tools, which is no longer the shape being sized.
+EXECUTOR_MEMORY_BASE_MB = 512
+EXECUTOR_MEMORY_PER_AGENT_MB = 384
+EXECUTOR_MEMORY_FLOOR_MB = 1024
 EXECUTOR_CPUS_DEFAULT = 2
+
+
+def default_executor_memory(agent_count: int) -> str:
+    """What a group of ``agent_count`` agents gets when the operator sets nothing."""
+
+    scaled = EXECUTOR_MEMORY_BASE_MB + EXECUTOR_MEMORY_PER_AGENT_MB * agent_count
+    return f"{max(EXECUTOR_MEMORY_FLOOR_MB, scaled)}MB"
+
 
 # The container's own list of processes: one ``<agent_name>:<port>`` per agent,
 # because the entrypoint starts one ``adk api_server`` per entry.
@@ -90,7 +107,7 @@ class FleetSettings:
     executor_api_key: str
     model_base_url_override: str | None
     adk_db_password: str
-    executor_memory: str
+    executor_memory: str | None
     executor_cpus: int
 
     @classmethod
@@ -102,8 +119,8 @@ class FleetSettings:
             executor_api_key=_api_key(env, EXECUTOR_API_KEY_ENV, require_credentials),
             model_base_url_override=_model_base_url_override(env),
             adk_db_password=env.get("ADK_DB_PASSWORD", "").strip() or "adk_local",
-            executor_memory=env.get(EXECUTOR_MEMORY_ENV, "").strip()
-            or EXECUTOR_MEMORY_DEFAULT,
+            # None means "scale it to the group"; only an operator override is a value here.
+            executor_memory=env.get(EXECUTOR_MEMORY_ENV, "").strip() or None,
             executor_cpus=_positive_int(env, EXECUTOR_CPUS_ENV, EXECUTOR_CPUS_DEFAULT),
         )
 

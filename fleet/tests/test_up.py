@@ -132,7 +132,9 @@ def test_executors_publish_no_ports_and_run_hardened() -> None:
         assert started.uid == EXECUTOR_UID
         assert started.gid == EXECUTOR_GID
         assert started.read_only is True
-        assert started.tmpfs == ("/agents",)
+        # /tmp as well as /agents: ADK's CLI calls tempfile.gettempdir() at
+        # import, so a read-only container without it exits before it binds.
+        assert started.tmpfs == ("/agents", "/tmp")
 
 
 def test_no_executor_is_handed_the_register_credential() -> None:
