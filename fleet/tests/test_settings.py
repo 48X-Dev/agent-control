@@ -7,12 +7,14 @@ from agent_control_fleet.config import AgentSpec, GroupSpec
 from agent_control_fleet.settings import (
     EXECUTOR_API_KEY_ENV,
     EXECUTOR_CPUS_ENV,
+    EXECUTOR_MEMORY_ENV,
     FLEET_AGENTS_ENV,
     PASSTHROUGH_ENV,
     REGISTER_API_KEY_ENV,
     FleetSettings,
     NetworkAddresses,
     SettingsError,
+    default_executor_memory,
     group_environment,
     model_base_url,
     register_environment,
@@ -147,10 +149,16 @@ def test_register_differs_from_the_executor_in_the_credential_and_nothing_else()
     assert executor["AGENT_CONTROL_API_KEY"] == "executor-key"
 
 
-def test_executor_limits_default_below_the_runtime_default() -> None:
-    """Measured: 37MB idle, 105MB peak. The runtime would reserve 1024MB per VM."""
+def test_executor_limits_leave_memory_to_the_group_and_default_the_cpus() -> None:
+    """Memory cannot be one number for the fleet once a container holds N agents.
+
+    The flat 512MB this asserted was measured against a single process with no
+    knowledge tools. A two-agent group idles at 401MB and peaks at 587MB, so
+    that value OOM-killed the group it was meant to size.
+    """
+
     settings = _settings()
-    assert settings.executor_memory == "512MB"
+    assert settings.executor_memory is None
     assert settings.executor_cpus == 2
 
 
@@ -159,3 +167,24 @@ def test_a_cpu_count_that_is_not_a_positive_integer_is_refused() -> None:
         with pytest.raises(SettingsError) as caught:
             _settings(**{EXECUTOR_CPUS_ENV: bad})
         assert EXECUTOR_CPUS_ENV in str(caught.value)
+
+
+def test_a_group_gets_memory_scaled_to_the_processes_it_runs() -> None:
+    """A two-agent group peaked at 587MB in measurement; a flat 512MB OOM-killed it."""
+
+    assert default_executor_memory(1) == "1024MB"
+    assert default_executor_memory(2) == "1280MB"
+    assert default_executor_memory(6) == "2816MB"
+
+
+def test_an_operator_memory_override_wins_over_the_scaled_default() -> None:
+    settings = FleetSettings.from_env(
+        {**BASE_ENV, EXECUTOR_MEMORY_ENV: "8GB"}, require_credentials=False
+    )
+    assert settings.executor_memory == "8GB"
+
+
+def test_memory_is_unset_when_the_operator_says_nothing() -> None:
+    """``None`` is what lets ``up`` scale it per group instead of per fleet."""
+
+    assert FleetSettings.from_env(BASE_ENV, require_credentials=False).executor_memory is None

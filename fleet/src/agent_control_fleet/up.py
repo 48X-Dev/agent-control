@@ -12,6 +12,7 @@ from .settings import (
     HEALTH_TIMEOUT_SECONDS,
     READY_TIMEOUT_SECONDS,
     FleetSettings,
+    default_executor_memory,
     group_environment,
 )
 
@@ -55,7 +56,7 @@ def bring_up(
             environment=group_environment(
                 group, settings=settings, addresses=addresses, env=env
             ),
-            memory=settings.executor_memory,
+            memory=settings.executor_memory or default_executor_memory(len(group.agents)),
             cpus=settings.executor_cpus,
         )
         address = runtime.ipv4_address(group.container_name)
