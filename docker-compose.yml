@@ -98,10 +98,6 @@ services:
       # comment says a file was written and not delivered.
       AGENT_CONTROL_LINEAR_ATTACHMENTS_WRITE_ENABLED: ${AGENT_CONTROL_LINEAR_ATTACHMENTS_WRITE_ENABLED:-false}
       AGENT_CONTROL_LINEAR_CONSOLE_BASE_URL: ${AGENT_CONTROL_LINEAR_CONSOLE_BASE_URL:-}
-      # Files an agent writes, as opposed to files an operator attaches. Read by
-      # the executor process rather than by this container, and passed through
-      # here so one `.env` sets it for both halves of a compose deployment.
-      AGENT_CONTROL_AGENT_FILE_OUTPUTS_ENABLED: ${AGENT_CONTROL_AGENT_FILE_OUTPUTS_ENABLED:-false}
       # Company knowledge, read side. Off by default; while off every search
       # answers a stated `knowledge_disabled` refusal and the routes still
       # register, so the OpenAPI spec never depends on one deployment's env.
