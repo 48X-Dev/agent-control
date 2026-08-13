@@ -46,7 +46,7 @@ from __future__ import annotations
 
 import logging
 
-from agent_control_models.attachments import AttachmentStatus
+from agent_control_models.attachments import AttachmentOrigin, AttachmentStatus
 from sqlalchemy import text
 from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -123,6 +123,13 @@ async def sweep_stale_attachment_blobs(
     after the bytes are gone. A download against it returns a written notice
     rather than a 404: the attachment is not missing, its bytes were reclaimed,
     and those are different sentences.
+
+    **An agent's file is exempt until the tracker holds a copy.** Every other
+    row here is a copy of something whose original is elsewhere; a file the
+    agent wrote is the only one there is until ``linear_asset_url`` is set, and
+    reclaiming it on a timer would delete the deliverable rather than a cache
+    of it. Once the column is set the row is a copy like any other and the TTL
+    resumes, which is one predicate rather than a second retention system.
     """
     result = await db.execute(
         text(
@@ -131,6 +138,7 @@ async def sweep_stale_attachment_blobs(
             "    FROM agent_session_attachments a "
             "   WHERE a.namespace_key = :ns "
             "     AND a.status <> :tombstoned "
+            "     AND NOT (a.origin = :agent AND a.linear_asset_url IS NULL) "
             "     AND EXISTS ( "
             "           SELECT 1 FROM agent_turn_attachments t "
             "            WHERE t.namespace_key = a.namespace_key "
@@ -161,6 +169,7 @@ async def sweep_stale_attachment_blobs(
             "ns": namespace_key,
             "days": ttl_days,
             "tombstoned": AttachmentStatus.TOMBSTONED.value,
+            "agent": AttachmentOrigin.AGENT.value,
         },
     )
     return len(result.fetchall())
