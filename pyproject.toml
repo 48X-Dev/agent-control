@@ -43,6 +43,18 @@ agent-control-engine = { workspace = true }
 agent-control-evaluators = { workspace = true }
 agent-control-telemetry = { workspace = true }
 
+# The example under examples/google_adk_plugin is not a workspace member, so its
+# tests run against this venv. Only the file-output builders are listed: they
+# are the part of that example testable without google-adk.
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+    "httpx>=0.27.0",
+    "openpyxl>=3.1",
+    "python-docx>=1.1",
+    "python-pptx>=1.0",
+]
+
 [tool.ruff]
 line-length = 100
 target-version = "py312"

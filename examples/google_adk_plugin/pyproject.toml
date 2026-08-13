@@ -25,6 +25,15 @@ dependencies = [
     # over postgresql+asyncpg, so without this the container exits before it
     # binds. Same floor as server and knowledge_sync.
     "asyncpg>=0.29.0",
+    # File outputs. Measured 2026-08-13: site-packages goes 482MB to 520MB, so
+    # +38MB and +8 packages on this example's own dependency set. The number is
+    # here because server/pyproject.toml records an extra that took an image to
+    # 19.3GB. Two of the eight are compiled, not pure Python: python-docx and
+    # python-pptx pull lxml (19MB) and python-pptx pulls Pillow (13MB), and
+    # neither was already in the google-adk tree.
+    "openpyxl>=3.1",
+    "python-docx>=1.1",
+    "python-pptx>=1.0",
 ]
 
 [build-system]
