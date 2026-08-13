@@ -12,7 +12,8 @@ from agent_control_models.attachments import StepFilesSummary
 from agent_control_models.sessions import TurnResponse
 
 from .client import DispatchClient, DispatchHTTPError, Disposition
-from .envelope import EnvelopeTooLongError, PriorReport, build_envelope
+from .coverage import unmet_items
+from .envelope import EnvelopeTooLongError, PriorAttempt, PriorReport, build_envelope
 from .extract import StepOutputCode, extract_step_output, join_agent_text
 from .ledger import ClaimLedger, ClaimStatus, LocalTaskLedger, TaskLedger
 from .server_ledger import ServerTaskLedger
@@ -446,6 +447,7 @@ class ChainStep:
     agent_name: str
     brief: str
     required_output: str = "text"
+    max_turns: int = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -521,6 +523,7 @@ async def _plan_chain(
                 agent_name=agent_name,
                 brief=step.brief or _fallback_brief(plan.implicit, options),
                 required_output=str(step.required_output),
+                max_turns=step.max_turns,
             )
         )
     return steps, None
@@ -610,7 +613,7 @@ async def _run_one(
     result: TaskResult | None = None
     try:
         for step in remaining:
-            result = await _run_step(
+            result = await _run_attempts(
                 client=client,
                 ledger=ledger,
                 source_kind=source_kind,
@@ -646,6 +649,61 @@ def _delivered_keys(files: StepFilesSummary | None) -> list[str]:
     return [entry.attachment_key for entry in files.files if entry.attachment_key is not None]
 
 
+async def _run_attempts(
+    *,
+    client: DispatchClient,
+    ledger: TaskLedger,
+    source_kind: str,
+    item: SourceItem,
+    step: ChainStep,
+    is_last: bool,
+    options: DispatchOptions,
+    stream: TextIO,
+    opened_sessions: list[str],
+) -> TaskResult:
+    """Run one step until its coverage is clean or its ceiling is spent.
+
+    `max_turns` defaults to 1, so a workflow that never asked for iteration is
+    unchanged. The namespace's hourly budget is still the real ceiling and is
+    refused on the server, not counted here.
+    """
+    result = await _run_step(
+        client=client, ledger=ledger, source_kind=source_kind, item=item, step=step,
+        is_last=is_last, options=options, stream=stream, opened_sessions=opened_sessions,
+    )
+    unmet = unmet_items(result.output_text)
+    attempts = 1
+    while (
+        result.status is ClaimStatus.COMPLETED
+        and unmet
+        and attempts < step.max_turns
+    ):
+        print(
+            f"retry      step {step.index}: {len(unmet)} of its own coverage lines "
+            f"unfinished, attempt {attempts + 1} of {step.max_turns}",
+            file=stream,
+        )
+        retry = PriorAttempt(text=result.output_text or "", unmet=tuple(unmet))
+        result = await _run_step(
+            client=client, ledger=ledger, source_kind=source_kind, item=item, step=step,
+            is_last=is_last, options=options, stream=stream,
+            opened_sessions=opened_sessions, retry=retry,
+        )
+        attempts += 1
+        after = unmet_items(result.output_text)
+        if len(after) >= len(unmet):
+            # No fewer parts outstanding than last time. A model that repeats
+            # its gaps is not converging, and paying for another round is a
+            # decision nobody made.
+            print(
+                f"stopping   step {step.index}: attempt {attempts} closed nothing",
+                file=stream,
+            )
+            return result
+        unmet = after
+    return result
+
+
 async def _run_step(
     *,
     client: DispatchClient,
@@ -657,6 +715,7 @@ async def _run_step(
     options: DispatchOptions,
     stream: TextIO,
     opened_sessions: list[str],
+    retry: PriorAttempt | None = None,
 ) -> TaskResult:
     """One hop: open a session, open the step, build the envelope, run a turn."""
 
@@ -735,6 +794,7 @@ async def _run_step(
             brief=step.brief,
             source_kind=source_kind,
             prior=prior,
+            retry=retry,
             files=files,
         )
     except EnvelopeTooLongError as exc:
