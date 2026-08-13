@@ -33,6 +33,7 @@ from typing import cast
 from uuid import uuid4
 
 from agent_control_models.attachments import (
+    AgentOutputKind,
     Attachment,
     AttachmentOrigin,
     AttachmentStatus,
@@ -114,6 +115,11 @@ class AgentAttachmentsService:
         self._settings = settings
         self._blobs = blobs
 
+    @property
+    def db(self) -> AsyncSession:
+        """The caller's transaction, so the agent-output half writes inside it."""
+        return self._db
+
     async def get_or_404(
         self, *, namespace_key: str, session_id: int, attachment_key: str
     ) -> AgentSessionAttachment:
@@ -187,6 +193,7 @@ class AgentAttachmentsService:
         data: bytes,
         origin: AttachmentOrigin = AttachmentOrigin.OPERATOR_UPLOAD,
         origin_ref: str | None = None,
+        agent_output: AgentOutputKind | None = None,
         enforce_rate: bool = True,
     ) -> tuple[AgentSessionAttachment, bool]:
         """Store one file against one session. Returns ``(row, deduplicated)``.
@@ -285,6 +292,9 @@ class AgentAttachmentsService:
             status=AttachmentStatus.READY.value,
             origin=origin.value,
             origin_ref=origin_ref,
+            # Written here rather than after the insert because the table's
+            # check ties the marker to the origin and would refuse the gap.
+            agent_output_kind=agent_output.value if agent_output else None,
             created_by_hash=caller_hash,
         )
         try:
@@ -482,6 +492,7 @@ def to_wire(row: AgentSessionAttachment, *, session_key: str) -> Attachment:
         converted_from=row.converted_from,
         origin=AttachmentOrigin(row.origin),
         origin_ref=row.origin_ref,
+        agent_output=(AgentOutputKind(row.agent_output_kind) if row.agent_output_kind else None),
         created_at=row.created_at,
         updated_at=row.updated_at,
     )

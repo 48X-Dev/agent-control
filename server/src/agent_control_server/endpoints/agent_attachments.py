@@ -45,6 +45,7 @@ from typing import NoReturn
 from urllib.parse import quote
 
 from agent_control_models.attachments import (
+    AgentOutputKind,
     AttachmentOrigin,
     AttachmentStatus,
     AttachmentVariant,
@@ -71,7 +72,9 @@ from ..services.agent_attachments import (
     AgentAttachmentsService,
     to_wire,
 )
+from ..services.agent_file_outputs import record_agent_output, require_agent_turn
 from ..services.agent_sessions import (
+    RUNTIME_TOKEN_TARGET_TYPE,
     AgentSessionsService,
     require_content_access,
     require_executor_enabled,
@@ -85,6 +88,7 @@ from ..services.executor_metrics import (
     ATTACHMENT_UPLOAD_TOO_LARGE,
     ATTACHMENT_UPLOADS,
 )
+from .agent_nudges import session_target_context
 
 router = APIRouter(prefix="/agent-sessions", tags=["agent-attachments"])
 
@@ -138,6 +142,15 @@ async def _session_for_read(
         for_turn=False,
     )
     return row
+
+
+def _is_the_sessions_own_token(principal: Principal, *, session_key: str) -> bool:
+    """Whether the caller is the agent running inside this very session.
+
+    Read off the token's own binding rather than off anything the request
+    carries, because it decides provenance and provenance must not be forgeable.
+    """
+    return principal.target_type == RUNTIME_TOKEN_TARGET_TYPE and principal.target_id == session_key
 
 
 def _refuse_too_large(counted: int | None) -> NoReturn:
@@ -195,9 +208,20 @@ async def create_attachment(
             "verbatim. Falls back to the part's own filename when omitted."
         ),
     ),
+    agent_output: AgentOutputKind | None = Form(
+        None,
+        description=(
+            "Whether this is the agent's working draft or its deliverable. "
+            "Required from an agent's own session token, and refused from "
+            "anyone else."
+        ),
+    ),
     db: AsyncSession = Depends(get_async_db),
     principal: Principal = Depends(
-        require_operation(Operation.AGENT_ATTACHMENTS_WRITE)
+        require_operation(
+            Operation.AGENT_ATTACHMENTS_WRITE,
+            context_builder=session_target_context,
+        )
     ),
 ) -> CreateAttachmentResponse:
     """Store one file against one session. Nothing is delivered to a model here.
@@ -220,6 +244,11 @@ async def create_attachment(
     attachment with ``deduplicated: true`` rather than a conflict. That is what
     someone who pressed the button twice, or whose connection dropped after the
     write, actually wants.
+
+    **An agent's own session token reaches the same route and is treated
+    differently.** Its file is stored with ``origin=agent``, marked draft or
+    final, and bound to the turn that produced it before this returns, because
+    an unbound upload is what the orphan sweep exists to reclaim.
     """
     _require_attachments_enabled()
 
@@ -238,19 +267,29 @@ async def create_attachment(
         namespace_key=principal.namespace_key, session_key=session_key
     )
     caller_hash = hash_caller_id(principal.caller_id)
+    from_the_agent = _is_the_sessions_own_token(principal, session_key=session_key)
     authorize_attachment_write(
-        session, caller_hash=caller_hash, is_admin=principal.is_admin
+        session,
+        caller_hash=caller_hash,
+        is_admin=principal.is_admin,
+        session_bound_token=from_the_agent,
     )
+    trace_id = require_agent_turn(agent_output, session, from_the_agent=from_the_agent)
 
     data = await _read_capped(file)
-    row, deduplicated = await _service(db).create(
+    service = _service(db)
+    row, deduplicated = await service.create(
         namespace_key=principal.namespace_key,
         session=session,
         caller_hash=caller_hash,
         declared_name=declared_name or file.filename or "",
         declared_mime=file.content_type or "",
         data=data,
+        origin=AttachmentOrigin.AGENT if from_the_agent else AttachmentOrigin.OPERATOR_UPLOAD,
+        agent_output=agent_output,
     )
+    if agent_output is not None and trace_id is not None:
+        await record_agent_output(service, row=row, kind=agent_output, trace_id=trace_id)
     attachment = to_wire(row, session_key=session_key)
     attachment_id = row.id
     source_sha256 = row.source_sha256
