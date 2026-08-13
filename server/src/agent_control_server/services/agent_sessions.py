@@ -107,23 +107,26 @@ SESSION_TOKEN_SCOPES: tuple[str, ...] = (
     Operation.AGENT_PLANS_WRITE.value,
     Operation.AGENT_TRACKER_COMMENT.value,
     Operation.COMPANY_KNOWLEDGE_SEARCH.value,
+    Operation.AGENT_ATTACHMENTS_WRITE.value,
 )
 """What the executor may do with its session token: drain nudges written for
 this session, report progress on this session, comment on the tracker issue
-this session's task came from, and read the company-knowledge mirror. Notably
-not ``runtime.use``, so this token cannot be used for control resolution, and
-not anything that reads another session.
+this session's task came from, read the company-knowledge mirror, and store a
+file it produced against this session. Notably not ``runtime.use``, so this
+token cannot be used for control resolution, and not anything that reads
+another session.
 
 The tracker entry is the only one that leaves this system, and it is the
-narrowest of the four: the issue is resolved from the session's own task, so
-an agent cannot name a target, and it posts a comment rather than closing
-anything. Closing stays ``agent_tasks.approve``, which no token carries.
+narrowest: the issue is resolved from the session's own task, so an agent
+cannot name a target, and it posts a comment rather than closing anything.
+Closing stays ``agent_tasks.approve``, which no token carries.
 
-The third member is a read against a database this token's holder cannot write
+Knowledge search is a read against a database this token's holder cannot write
 and the control plane itself only reads. It is here rather than on an API key
 because the per-session search ceiling has to be keyed on something a caller
 cannot pick, and because a long-lived key handed to every agent process would
-make one agent's runaway loop spend every other agent's allowance."""
+make one agent's runaway loop spend every other agent's allowance. The upload
+scope is on the token for the same reasons."""
 
 _HEALTH_PROBE_LIMIT = 25
 """Ceiling on executors probed by one health call. A namespace with more agents

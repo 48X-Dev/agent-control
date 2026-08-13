@@ -16,9 +16,20 @@ from .agent_sessions import require_content_access
 
 
 def authorize_attachment_write(
-    row: AgentSession, *, caller_hash: str | None, is_admin: bool
+    row: AgentSession,
+    *,
+    caller_hash: str | None,
+    is_admin: bool,
+    session_bound_token: bool = False,
 ) -> None:
     """Decide whether this caller may put bytes into this conversation.
+
+    **A session-bound runtime token is the session**, so it returns before any
+    of the rules below. Every one of them asks which human this conversation
+    belongs to, and the agent running inside it is not one: a task's session
+    would refuse its own agent under the first, and an unattributed one under
+    the second. The verifier has already refused a token naming a different
+    session, so the caller here is this conversation writing to itself.
 
     The shared predicate first, with ``for_turn=True``, because an upload is
     driving the conversation rather than observing it. Then two conditions that
@@ -42,6 +53,9 @@ def authorize_attachment_write(
     deployment is one trust domain with no boundary to enforce, and a rule that
     fired there would 403 every upload in it.
     """
+    if session_bound_token:
+        return
+
     require_content_access(
         row, caller_hash=caller_hash, is_admin=is_admin, for_turn=True
     )
