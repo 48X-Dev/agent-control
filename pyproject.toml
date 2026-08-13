@@ -42,14 +42,20 @@ agent-control-models = { workspace = true }
 agent-control-engine = { workspace = true }
 agent-control-evaluators = { workspace = true }
 agent-control-telemetry = { workspace = true }
+agent-control-sdk = { workspace = true }
 
-# The example under examples/google_adk_plugin is not a workspace member, so its
-# tests run against this venv. Only the file-output builders are listed: they
-# are the part of that example testable without google-adk.
+# The example's tests run against this venv, so what they import is listed here.
+# Only the file-output half of that example is covered: the rest needs google-adk.
 [dependency-groups]
 dev = [
     "pytest>=8.0.0",
     "httpx>=0.27.0",
+    # scripts/build.py vendors models, engine and telemetry into the published
+    # SDK wheel, so an editable workspace SDK only imports with them alongside.
+    "agent-control-sdk",
+    "agent-control-models",
+    "agent-control-engine",
+    "agent-control-telemetry",
     "openpyxl>=3.1",
     "python-docx>=1.1",
     "python-pptx>=1.0",
@@ -111,3 +117,10 @@ tag_format = "v{version}"
 # feat = minor, fix/perf/refactor = patch, breaking (!) = major
 allowed_tags = ["feat", "fix", "perf", "chore", "docs", "style", "refactor", "test", "ci"]
 patch_tags = ["fix", "perf", "chore", "refactor"]
+
+# Async tests are the norm in every package here, and a root-level invocation
+# ("pytest models/tests dispatcher/tests") resolves its config to this file
+# rather than to theirs. Without this line every async test in such a run errors
+# with "async def functions are not natively supported".
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
