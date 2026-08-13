@@ -81,27 +81,89 @@ def build_docx(*, title: str, sections: list[list[str]]) -> bytes:
     return _to_bytes(document)
 
 
-def build_pptx(*, title: str, slides: list[list[str]]) -> bytes:
-    """A title slide, then one bulleted slide per entry."""
+def build_pptx(*, title: str, slides: list[list[str]], template: str | None = None) -> bytes:
+    """A title slide, then one bulleted slide per entry, on the brand template if there is one."""
     pptx = _load("pptx")
 
-    presentation = pptx.Presentation()
+    presentation = pptx.Presentation(template) if template else pptx.Presentation()
+    layout = _pptx_layout(presentation)
+
     if title.strip():
-        opening = presentation.slides.add_slide(presentation.slide_layouts[0])
-        opening.shapes.title.text = title.strip()
+        _pptx_slide(pptx, presentation, layout, title.strip(), ())
 
     for slide in slides:
         if not slide:
             continue
-        heading, *bullets = (str(part) for part in slide)
-        added = presentation.slides.add_slide(presentation.slide_layouts[1])
-        added.shapes.title.text = heading
-        frame = added.placeholders[1].text_frame
-        frame.text = bullets[0] if bullets else ""
-        for bullet in bullets[1:]:
-            frame.add_paragraph().text = bullet
+        heading, *bullets = [str(cell) for cell in slide]
+        _pptx_slide(pptx, presentation, layout, heading, bullets)
 
-    return _to_bytes(presentation)
+    buffer = BytesIO()
+    presentation.save(buffer)
+    return buffer.getvalue()
+
+
+def _pptx_layout(presentation: Any) -> Any:
+    """A layout with a title and a body if the template has one, else its first.
+
+    A designed deck is often one blank layout with hand-placed boxes and no
+    placeholders at all, which is what EarlyCore's own template turned out to
+    be. Falling back to the first layout keeps the theme, fonts and slide size;
+    :func:`_pptx_slide` then places the text itself.
+    """
+    layouts = list(presentation.slide_layouts)
+    if not layouts:
+        return None
+    for layout in layouts:
+        indexes = {placeholder.placeholder_format.idx for placeholder in layout.placeholders}
+        if {0, 1} <= indexes:
+            return layout
+    return layouts[0]
+
+
+def _pptx_slide(
+    pptx: Any, presentation: Any, layout: Any, heading: str, bullets: Iterable[str]
+) -> None:
+    """One slide, filling placeholders when the layout has them and boxing the text when not."""
+    slide = presentation.slides.add_slide(layout)
+    body_text = [str(bullet) for bullet in bullets]
+
+    placeholders = {
+        placeholder.placeholder_format.idx: placeholder for placeholder in slide.placeholders
+    }
+    if 0 in placeholders:
+        placeholders[0].text = heading
+        if 1 in placeholders:
+            frame = placeholders[1].text_frame
+            frame.text = body_text[0] if body_text else ""
+            for bullet in body_text[1:]:
+                frame.add_paragraph().text = bullet
+        return
+
+    # No placeholders: measure from the slide rather than assume 4:3, so the
+    # boxes land inside a widescreen template as well as a default one.
+    width, height = presentation.slide_width, presentation.slide_height
+    margin = int(width * 0.06)
+    title_box = slide.shapes.add_textbox(
+        margin, int(height * 0.08), width - 2 * margin, int(height * 0.16)
+    )
+    title_frame = title_box.text_frame
+    title_frame.text = heading
+    title_frame.paragraphs[0].runs[0].font.size = pptx.util.Pt(32)
+    title_frame.paragraphs[0].runs[0].font.bold = True
+
+    if not body_text:
+        return
+    body_box = slide.shapes.add_textbox(
+        margin, int(height * 0.30), width - 2 * margin, int(height * 0.58)
+    )
+    body_frame = body_box.text_frame
+    body_frame.word_wrap = True
+    body_frame.text = body_text[0]
+    for bullet in body_text[1:]:
+        body_frame.add_paragraph().text = bullet
+    for paragraph in body_frame.paragraphs:
+        for run in paragraph.runs:
+            run.font.size = pptx.util.Pt(18)
 
 
 def _load(module_name: str) -> Any:

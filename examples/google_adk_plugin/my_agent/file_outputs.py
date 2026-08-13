@@ -28,6 +28,15 @@ from .file_builders import (
 logger = logging.getLogger(__name__)
 
 FILE_OUTPUTS_FLAG = "AGENT_CONTROL_AGENT_FILE_OUTPUTS_ENABLED"
+
+PPTX_TEMPLATE_ENV = "AGENT_CONTROL_AGENT_FILE_TEMPLATE_PPTX"
+"""A deck to build on, so output carries this deployment's theme and slide size.
+
+Unset means python-pptx's default: 4:3, Calibri, the Office 2007 palette, and
+nothing a designed deck would recognise. Operator configuration and never a
+tool argument, because a model choosing which file to open is the read surface
+section 6 refuses.
+"""
 """Default false. Read here and forwarded by the fleet, never by the server."""
 
 UPLOAD_TIMEOUT_SECONDS = 30.0
@@ -172,7 +181,7 @@ async def write_pptx_file(
         stage=stage,
         extension=".pptx",
         mime=PPTX_MIME,
-        build=lambda: build_pptx(title=title, slides=slides),
+        build=lambda: build_pptx(title=title, slides=slides, template=_pptx_template()),
     )
 
 
@@ -187,6 +196,21 @@ INSTRUCTION = (
     "final when it is the deliverable, then say in your report which file you "
     "produced. You cannot open, list or change a file once it is saved."
 )
+
+
+def _pptx_template() -> str | None:
+    """The configured deck, or None when it is unset or unreadable here."""
+    path = os.getenv(PPTX_TEMPLATE_ENV, "").strip()
+    if not path:
+        return None
+    if not os.path.isfile(path):
+        logger.warning(
+            "%s is set to %s, which this process cannot read; building on the default theme",
+            PPTX_TEMPLATE_ENV,
+            path,
+        )
+        return None
+    return path
 
 
 def file_outputs_enabled() -> bool:
