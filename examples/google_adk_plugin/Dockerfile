@@ -31,6 +31,10 @@ COPY examples/google_adk_plugin/pyproject.toml examples/google_adk_plugin/README
      examples/google_adk_plugin/
 COPY examples/google_adk_plugin/my_agent/ examples/google_adk_plugin/my_agent/
 
+# Brand templates, if this deployment ships any. The .pptx files are gitignored,
+# so a checkout without one builds an image without one and the tool falls back.
+COPY examples/google_adk_plugin/brand/ examples/google_adk_plugin/brand/
+
 # Same lockfile fallback as server/Dockerfile, dispatcher/Dockerfile and
 # knowledge_sync/Dockerfile.
 RUN uv sync \

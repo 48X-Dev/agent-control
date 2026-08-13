@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import zipfile
 from io import BytesIO
+from pathlib import Path
 
 import pytest
 from my_agent.file_builders import build_docx, build_pptx, build_xlsx
@@ -106,3 +107,49 @@ def test_pptx_makes_a_title_slide_and_one_slide_per_entry() -> None:
 )
 def test_every_builder_emits_a_real_ooxml_package(payload: bytes, marker: str) -> None:
     assert marker in zipfile.ZipFile(BytesIO(payload)).namelist()
+
+
+def test_a_template_gives_the_deck_its_slide_size_and_theme(tmp_path: Path) -> None:
+    """The reason this exists: python-pptx defaults to 4:3 Calibri, which no designed deck is.
+
+    Built from a real template stripped of its slides, so what is asserted is
+    what a brand file actually carries: size, theme and masters, not content.
+    """
+    pptx = pytest.importorskip("pptx")
+
+    source = pptx.Presentation()
+    source.slide_width, source.slide_height = 12191675, 6858000
+    template = tmp_path / "brand.pptx"
+    source.save(template)
+
+    data = build_pptx(title="Deck", slides=[["Problem", "one", "two"]], template=str(template))
+    built = pptx.Presentation(BytesIO(data))
+
+    assert built.slide_width == 12191675, "the template's widescreen size should carry over"
+    assert len(list(built.slides)) == 2
+
+
+def test_no_template_still_builds(tmp_path: Path) -> None:
+    """An unconfigured deployment keeps working on the library default."""
+    pptx = pytest.importorskip("pptx")
+    built = pptx.Presentation(BytesIO(build_pptx(title="Deck", slides=[["A", "b"]])))
+    assert len(list(built.slides)) == 2
+
+
+def test_a_layout_with_no_placeholders_still_gets_its_text(tmp_path: Path) -> None:
+    """EarlyCore's own template turned out to be one blank layout with no placeholders.
+
+    A designed deck is often hand-placed boxes, so filling placeholders finds
+    none and the text has to be boxed instead. Without this the slides are blank.
+    """
+    pptx = pytest.importorskip("pptx")
+    data = build_pptx(title="Title here", slides=[["Heading", "a bullet"]])
+    built = pptx.Presentation(BytesIO(data))
+    texts = [
+        shape.text_frame.text
+        for slide in built.slides
+        for shape in slide.shapes
+        if shape.has_text_frame
+    ]
+    assert any("Title here" in t for t in texts)
+    assert any("a bullet" in t for t in texts)
