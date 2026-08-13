@@ -22,6 +22,7 @@ from agent_control_models.attachments import (
     TurnAttachmentVerdict,
 )
 from agent_control_models.sessions import TURN_MESSAGE_MAX_LENGTH
+from agent_control_models.tasks import STEP_BRIEF_MAX_LENGTH
 
 
 def _item(title: str = "T", body: str = "B") -> SourceItem:
@@ -159,7 +160,15 @@ def test_over_budget_the_lines_go_and_the_count_line_stays() -> None:
 
 def test_a_maximal_envelope_with_three_maximal_filenames_still_fits() -> None:
     """``EnvelopeTooLongError``'s docstring says it is only reachable through an
-    absurd brief. This section must not falsify it."""
+    absurd brief. This section must not falsify it.
+
+    The brief here is ``STEP_BRIEF_MAX_LENGTH``, not a short one. Two full
+    untrusted blocks plus a maximal brief plus the fixed text leaves 607
+    characters for a section whose own ceiling is ``FILES_BLOCK_MAX_CHARS``, so
+    the collapse is what keeps this true rather than the arithmetic. The
+    ``## How to work this`` footer spent 563 characters of the old margin, and
+    this is the assertion that catches the next thing that tries to.
+    """
     rendered = _render(
         StepFilesSummary(
             found=3,
@@ -167,6 +176,7 @@ def test_a_maximal_envelope_with_three_maximal_filenames_still_fits() -> None:
             files=[_delivered("f" * 120 + ".pdf") for _ in range(3)],
         ),
         item=_item(title="t" * 200, body="b" * UNTRUSTED_BLOCK_MAX_CHARS),
+        brief="B" * STEP_BRIEF_MAX_LENGTH,
         prior=PriorReport(
             agent_name="researcher", brief="research", text="r" * UNTRUSTED_BLOCK_MAX_CHARS
         ),

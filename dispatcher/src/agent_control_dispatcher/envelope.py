@@ -11,7 +11,7 @@ from .sources.base import SourceItem
 
 UNTRUSTED_BLOCK_MAX_CHARS = 6000
 """Per untrusted block. ``TURN_MESSAGE_MAX_LENGTH`` is 16000 and the fixed text
-is roughly 900 characters, so two full blocks plus a brief still fit."""
+is 1393 characters, so two full blocks plus a 2000-character brief still fit."""
 
 _TRUNCATION_NOTICE = "\n[... truncated, {omitted} characters omitted ...]"
 
@@ -50,9 +50,12 @@ FILES_BLOCK_MAX_CHARS = 800
 
 ``EnvelopeTooLongError``'s docstring says it is "only reachable through an
 absurd ``brief``", and this section must not falsify that. Two untrusted blocks
-at 6,000 plus roughly 900 characters of fixed text leaves about 3,100 for the
-brief, and three 128-character filenames beside multi-clause refusal sentences
-is enough to tip an attachment-heavy issue over. Turning "one file was not
+at 6,000 plus 1,393 characters of fixed text leaves 2,607 for the brief, and a
+2,000-character brief leaves only 607 of that for this section - less than this
+ceiling, so the collapse below is load-bearing rather than defensive. The
+``## How to work this`` footer took 563 characters of the margin that used to
+absorb this, and ``test_worst_case_envelope_fits`` is what stops the next
+addition spending the rest of it silently. Turning "one file was not
 delivered" into "the step did not run" would be the worst possible trade on
 exactly the issues this feature exists for, so the section is rendered last,
 after the untrusted budget has been spent, and over budget it collapses to the
@@ -115,11 +118,28 @@ ever writes a word of what an agent reads about why a file is missing."""
 
 _REFUSAL_UNKNOWN = "it was not delivered, and this deployment did not say why."
 
-_FOOTER = """
+COVERAGE_HEADING = "## Coverage"
+"""The one part of a report whose shape is fixed, so something other than a
+person can check it. Everything else the footer asks for is a quality the text
+either has or does not; this is a section that is present or absent."""
+
+_FOOTER = f"""
+## How to work this
+Before writing anything, work out what a complete answer to the task above has
+to cover. The task is the goal; the brief is how you were asked to approach it.
+Plan against that, then do the work with the tools you have.
+
 ## How to finish
-Do the work described above using the tools you have. When you are done,
-reply with a plain summary of what you did and what you found. Your reply is
-posted back to the tracker.
+Reply with what you did and what you found. Your reply is the only thing that
+carries forward, and it is posted back to the tracker.
+
+Cover every part of the task. Where you could not determine something, say so
+and say why: a named gap is worth more than a paragraph written to fill the
+space. Do not pad, and do not restate the task back.
+
+End your reply with a `{COVERAGE_HEADING}` section, one line per part of the
+task, each marked `done`, `partial` or `not determined`, and a reason for
+anything not done.
 """
 
 
@@ -159,7 +179,7 @@ def build_envelope(
 
     # After both untrusted blocks, so it is never inside their delimiters, and
     # last of the three so the budget it is measured against is what is left.
-    rendered += _render_files(files)
+    rendered += _render_files(files, TURN_MESSAGE_MAX_LENGTH - len(rendered) - len(_FOOTER))
     rendered += _FOOTER
 
     if len(rendered) > TURN_MESSAGE_MAX_LENGTH:
@@ -171,14 +191,21 @@ def build_envelope(
     return rendered
 
 
-def _render_files(files: StepFilesSummary | None) -> str:
-    """The files section, or nothing at all, and never an exception."""
+def _render_files(files: StepFilesSummary | None, budget: int) -> str:
+    """The files section, or nothing at all, and never an exception.
+
+    ``budget`` is what the envelope has left, which is the smaller of the two
+    ceilings whenever the brief is long. The caller's comment always said this
+    section was measured against what remained; until the ``## How to work
+    this`` footer shrank the margin, ``FILES_BLOCK_MAX_CHARS`` was always the
+    binding one and the claim was never tested.
+    """
     if files is None:
         return ""
     if files.read_failed:
-        return f"{_FILES_HEADER}{_FILES_READ_FAILED}\n"
+        return _fit(f"{_FILES_HEADER}{_FILES_READ_FAILED}\n", budget)
     if files.found == 0:
-        return f"{_FILES_HEADER}{_FILES_NONE_FOUND}\n"
+        return _fit(f"{_FILES_HEADER}{_FILES_NONE_FOUND}\n", budget)
 
     head = _FILES_INTRO.format(delivered=files.delivered, found=files.found)
     skipped = files.found - len(files.files)
@@ -187,11 +214,23 @@ def _render_files(files: StepFilesSummary | None) -> str:
 
     body = "".join(f"\n  {_file_line(entry)}" for entry in files.files)
     section = f"{_FILES_HEADER}{head}\n{body}\n"
-    if len(section) <= FILES_BLOCK_MAX_CHARS:
+    if len(section) <= min(FILES_BLOCK_MAX_CHARS, budget):
         return section
 
     collapsed = _FILES_COLLAPSED.format(delivered=files.delivered, found=files.found)
-    return f"{_FILES_HEADER}{collapsed}\n"
+    return _fit(f"{_FILES_HEADER}{collapsed}\n", budget)
+
+
+def _fit(section: str, budget: int) -> str:
+    """Drop the section rather than overflow the turn.
+
+    Unreachable through a legal brief and kept anyway: ``STEP_BRIEF_MAX_LENGTH``
+    leaves 607 characters and the collapsed count line is about 100, so only an
+    uncapped ``--brief`` gets here, and that envelope is over the ceiling with
+    or without this section. It exists so the next person to spend the margin
+    finds a bound rather than an overflow.
+    """
+    return section if len(section) <= budget else ""
 
 
 def _file_line(entry: StepAttachmentSummary) -> str:

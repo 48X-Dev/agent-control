@@ -1,0 +1,14 @@
+version: 1
+image: agent-control-executor:local
+
+defaults:
+  web_tools: true
+
+# Marketing only, deliberately. This is the one team whose executors are known
+# good, so a failure here is the fleet and not the agents. The other three teams
+# are added once this group runs a turn end to end.
+groups:
+  - name: marketing
+    agents:
+      - agent_name: marketing_researcher
+      - agent_name: marketing_copywriter
