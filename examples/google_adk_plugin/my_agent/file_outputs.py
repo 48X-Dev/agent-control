@@ -28,7 +28,7 @@ from .file_builders import (
 logger = logging.getLogger(__name__)
 
 FILE_OUTPUTS_FLAG = "AGENT_CONTROL_AGENT_FILE_OUTPUTS_ENABLED"
-"""Default false. Section 5 ships this with its compose and env-example halves."""
+"""Default false. Read here and forwarded by the fleet, never by the server."""
 
 UPLOAD_TIMEOUT_SECONDS = 30.0
 """Longer than a knowledge search because this carries a body, still under a turn."""
@@ -305,7 +305,7 @@ async def _upload(
     stage: str,
 ) -> dict[str, Any]:
     """POST one built file to this session's attachment store, never raising."""
-    path = f"/api/v1/agent-sessions/{identity.session_key}/attachments"
+    path = f"/api/v1/agent-sessions/{identity.session_key}/attachments/agent-output"
     headers = {
         "Authorization": f"Bearer {identity.token}",
         # The upload route refuses a request without it, as a CSRF guard.
@@ -321,7 +321,7 @@ async def _upload(
             response = await client.post(
                 path,
                 files={"file": (name, payload, mime)},
-                data={"declared_name": name, "stage": stage},
+                data={"declared_name": name, "agent_output": stage},
                 headers=headers,
             )
     except (TimeoutError, httpx.HTTPError):
