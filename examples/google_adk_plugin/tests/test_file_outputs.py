@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -141,7 +142,7 @@ def test_a_valid_stage_travels_to_the_store(calls: list[dict[str, Any]], stage: 
 
     assert result["status"] == "ok"
     assert result["stage"] == stage
-    assert calls[0]["data"]["stage"] == stage
+    assert calls[0]["data"]["agent_output"] == stage
 
 
 def test_the_default_stage_is_draft(calls: list[dict[str, Any]]) -> None:
@@ -156,7 +157,7 @@ def test_the_default_stage_is_draft(calls: list[dict[str, Any]]) -> None:
     )
 
     assert result["stage"] == "draft"
-    assert calls[0]["data"]["stage"] == "draft"
+    assert calls[0]["data"]["agent_output"] == "draft"
     assert "does not reach the ticket" in result["message"]
 
 
@@ -197,7 +198,7 @@ def test_the_upload_uses_the_session_token_and_its_own_session_path(
     )
 
     sent = calls[0]
-    assert sent["path"] == f"/api/v1/agent-sessions/{SESSION_KEY}/attachments"
+    assert sent["path"] == f"/api/v1/agent-sessions/{SESSION_KEY}/attachments/agent-output"
     assert sent["headers"]["Authorization"] == "Bearer tok-live"
     assert sent["headers"]["X-Requested-With"] == "XMLHttpRequest"
     assert sent["data"]["declared_name"] == "investor-shortlist.xlsx"
@@ -338,6 +339,26 @@ def test_every_outcome_carries_the_same_keys(calls: list[dict[str, Any]]) -> Non
 # =============================================================================
 # Section 5: the flag, and section 6: write only
 # =============================================================================
+
+
+def test_the_flag_defaults_off_and_reaches_the_container() -> None:
+    """Both wiring files in the same commit, or the flag exists and never arrives.
+
+    Only two, and deliberately not the server's: this process reads it, the
+    server never does, and the fleet is what puts it inside the container. The
+    shipped ``AGENT_CONTROL_KNOWLEDGE_TOOLS`` is wired exactly this way.
+    """
+    root = Path(__file__).resolve().parents[3]
+    flag = file_outputs.FILE_OUTPUTS_FLAG
+
+    env_example = (root / "examples" / "google_adk_plugin" / ".env.example").read_text()
+    assert f"# {flag}=1" in env_example
+
+    fleet = (root / "fleet" / "src" / "agent_control_fleet" / "settings.py").read_text()
+    assert f'"{flag}",' in fleet
+
+    server_env = (root / "server" / ".env.example").read_text()
+    assert flag not in server_env, "the server never reads this flag"
 
 
 def test_the_flag_is_off_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
