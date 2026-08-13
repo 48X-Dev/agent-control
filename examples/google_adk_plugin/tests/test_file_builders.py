@@ -39,6 +39,19 @@ def test_xlsx_keeps_a_formula_cell_as_text() -> None:
     assert cell.value.startswith("=HYPERLINK")
 
 
+def test_xlsx_keeps_a_formula_header_as_text() -> None:
+    """A column name is model text too, so the header row is defused as well."""
+    payload = build_xlsx(
+        sheet_name="Data",
+        header=["=HYPERLINK(\"http://evil.example\",\"click\")"],
+        rows=[["1"]],
+    )
+
+    cell = openpyxl.load_workbook(BytesIO(payload)).active["A1"]
+    assert cell.data_type == "s"
+    assert cell.value.startswith("=HYPERLINK")
+
+
 def test_xlsx_leaves_ambiguous_digits_as_text() -> None:
     payload = build_xlsx(sheet_name="D", header=["Code"], rows=[["007"], ["1-2"], ["3.50"]])
 

@@ -7,6 +7,7 @@ the network or a filename. See docs/plans/agent-file-outputs.md section 4.6.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from io import BytesIO
 from typing import Any
 
@@ -51,12 +52,11 @@ def build_xlsx(*, sheet_name: str, header: list[str], rows: list[list[str]]) -> 
         sheet.append([str(name) for name in header])
         for cell in sheet[1]:
             cell.font = openpyxl.styles.Font(bold=True)
+        _defuse_formulas(sheet[1])
 
     for row in rows:
         sheet.append([_cell_value(value) for value in row])
-        for cell in sheet[sheet.max_row]:
-            if isinstance(cell.value, str) and cell.value.startswith(_FORMULA_LEADERS):
-                cell.data_type = "s"
+        _defuse_formulas(sheet[sheet.max_row])
 
     return _to_bytes(workbook)
 
@@ -127,6 +127,13 @@ def _sheet_title(name: str) -> str:
     """A worksheet title Excel accepts, or the fallback when nothing is left."""
     cleaned = name.translate(_SHEET_TITLE_BANNED).strip()[:_SHEET_TITLE_MAX]
     return cleaned or "Data"
+
+
+def _defuse_formulas(cells: Iterable[Any]) -> None:
+    """Force every cell Excel would read as a formula back to text."""
+    for cell in cells:
+        if isinstance(cell.value, str) and cell.value.startswith(_FORMULA_LEADERS):
+            cell.data_type = "s"
 
 
 def _cell_value(value: object) -> object:
