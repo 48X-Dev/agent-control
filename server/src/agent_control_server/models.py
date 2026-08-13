@@ -1118,6 +1118,13 @@ class AgentSessionAttachment(Base):
             f"size_bytes > 0 AND size_bytes <= {ATTACHMENT_HARD_MAX_BYTES}",
             name="ck_agent_session_attachments_size",
         ),
+        # Provenance decides the marker rather than the other way round: a
+        # draft/final marker on a file a person attached would be a claim the
+        # route that wrote the row never made.
+        CheckConstraint(
+            "(agent_output_kind IS NULL) = (origin <> 'agent')",
+            name="ck_agent_session_attachments_agent_output",
+        ),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
@@ -1153,6 +1160,10 @@ class AgentSessionAttachment(Base):
         String(16), nullable=False, server_default=text("'operator_upload'")
     )
     origin_ref: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    agent_output_kind: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    # Null means this row is the only copy of the file, which is what exempts an
+    # agent's blob from the TTL sweep until the tracker holds a copy of its own.
+    linear_asset_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     created_by_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True),
