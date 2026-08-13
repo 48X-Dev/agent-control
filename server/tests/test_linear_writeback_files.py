@@ -331,9 +331,13 @@ async def test_a_failed_attach_keeps_the_asset_url_the_upload_earned() -> None:
     assert fake.uploads == [FILE.filename], "the retry uploaded a second copy"
 
 
-async def test_a_write_back_run_twice_leaves_one_attachment_not_two() -> None:
-    """``attachmentCreate`` is idempotent on ``(issueId, url)``, so the comment
-    dedupe machinery has no counterpart here and none is built."""
+async def test_the_second_push_reuses_the_asset_url_and_asks_linear_to_dedupe() -> None:
+    """What is asserted is this module's behaviour, not Linear's.
+
+    A live round trip against OPS-2 confirmed the other half: ``attachmentCreate``
+    with the same ``url`` and a changed ``title`` returned the same attachment id
+    and updated in place. That is why no comment-style dedupe is built here.
+    """
     fake = FakeFileClient()
 
     first = await push_agent_file(fake, issue_id="issue-1", file=FILE)
