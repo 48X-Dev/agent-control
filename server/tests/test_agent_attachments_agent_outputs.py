@@ -27,7 +27,7 @@ so the format would assert only that the accept gate accepts it.
 from __future__ import annotations
 
 import uuid
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from agent_control_models.attachments import AttachmentOrigin
@@ -41,7 +41,9 @@ from agent_control_server.services.agent_sessions import (
     SESSION_TOKEN_SCOPES,
     mint_session_runtime_token,
 )
+from agent_control_server.services.agent_file_writeback import push_step_files
 from agent_control_server.services.attachment_quota import reset_attachment_quota
+from agent_control_server.services.linear_writeback_runtime import WritebackRuntime
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import text
@@ -493,3 +495,97 @@ def test_an_agent_cannot_claim_a_file_somebody_else_attached(
 
     assert refused.status_code == 409, refused.text
     assert _rows(session_key) == [("theirs.pdf", "ready", None)]
+
+
+# ---------------------------------------------------------------------------
+# What the tracker is given, and what that leaves behind
+# ---------------------------------------------------------------------------
+
+
+class _FakeFileClient:
+    """The file half of the write-back client, and nothing else."""
+
+    def __init__(self) -> None:
+        self.uploaded: list[tuple[str, int]] = []
+        self.attached: list[tuple[str, str, str | None]] = []
+
+    async def file_upload(self, *, filename: str, content_type: str, content: bytes) -> str:
+        self.uploaded.append((filename, len(content)))
+        return "https://uploads.linear.app/deadbeef"
+
+    async def create_attachment(
+        self, *, issue_id: str, title: str, url: str, subtitle: str | None
+    ) -> str:
+        self.attached.append((issue_id, title, subtitle))
+        return f"att-{len(self.attached)}"
+
+
+async def test_a_final_is_pushed_to_the_issue_and_recorded_as_delivered(
+    as_the_agent: Any, async_db: Any
+) -> None:
+    """The push writes ``linear_asset_url``, which is what lets the blob sweep
+    reclaim the bytes: until it is set the row is the only copy there is."""
+    machine = as_the_agent()
+    session_key = _agent_step()
+    stored = _write(machine, session_key, kind="final", filename="shortlist.pdf")
+    assert stored.status_code == 201, stored.text
+
+    fake = _FakeFileClient()
+    lines = await push_step_files(
+        async_db,
+        WritebackRuntime(
+            client=cast(Any, fake),
+            resolver=None,
+            write_enabled=True,
+            attachments_write_enabled=True,
+        ),
+        namespace_key="default",
+        session_key=session_key,
+        issue_id="issue-1",
+        agent_name="researcher",
+        step_index=2,
+    )
+    await async_db.commit()
+
+    assert fake.uploaded == [("shortlist.pdf", len(_REPORT))]
+    assert fake.attached == [("issue-1", "shortlist.pdf", "researcher, step 3")]
+    assert any("shortlist.pdf" in line for line in lines)
+    assert _asset_url(stored.json()["attachment"]["attachment_key"]) is not None
+
+
+async def test_a_draft_is_never_offered_to_the_tracker(
+    as_the_agent: Any, async_db: Any
+) -> None:
+    machine = as_the_agent()
+    session_key = _agent_step()
+    assert _write(machine, session_key, kind="draft").status_code == 201
+
+    fake = _FakeFileClient()
+    lines = await push_step_files(
+        async_db,
+        WritebackRuntime(
+            client=cast(Any, fake),
+            resolver=None,
+            write_enabled=True,
+            attachments_write_enabled=True,
+        ),
+        namespace_key="default",
+        session_key=session_key,
+        issue_id="issue-1",
+        agent_name="researcher",
+        step_index=0,
+    )
+
+    assert lines == []
+    assert fake.uploaded == []
+
+
+def _asset_url(attachment_key: str) -> str | None:
+    with engine.begin() as conn:
+        return conn.execute(
+            text(
+                "SELECT linear_asset_url FROM agent_session_attachments "
+                " WHERE attachment_key = :key"
+            ),
+            {"key": attachment_key},
+        ).scalar()
