@@ -26,6 +26,8 @@ from agent_control_server.config import (
 from agent_control_server.services.linear_client import LinearError
 from agent_control_server.services.linear_writeback import (
     HttpLinearWritebackClient,
+)
+from agent_control_server.services.linear_writeback_compose import (
     compose_comment_body,
 )
 from agent_control_server.services.linear_writeback_files import (
