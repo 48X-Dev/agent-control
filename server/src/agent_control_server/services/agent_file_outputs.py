@@ -38,11 +38,7 @@ def require_agent_turn(
     *,
     from_the_agent: bool,
 ) -> str | None:
-    """Return the turn an agent's file binds to, refusing the incoherent cases.
-
-    ``None`` when the caller is not an agent, which is the ordinary upload and
-    has no turn to bind to.
-    """
+    """Return the turn an agent's file binds to, or ``None`` for anyone else."""
     if agent_output is not None and not from_the_agent:
         raise ForbiddenError(
             error_code=ErrorCode.AUTH_INSUFFICIENT_PRIVILEGES,
@@ -77,11 +73,7 @@ async def record_agent_output(
     kind: AgentOutputKind,
     trace_id: str,
 ) -> None:
-    """Mark the file, bind it to its turn, and end this step's earlier drafts.
-
-    All three in the caller's transaction, so an upload cannot commit as the
-    orphan the binding exists to stop it being.
-    """
+    """Mark the file, bind it to its turn, and end this step's earlier drafts."""
     if row.origin != AttachmentOrigin.AGENT.value:
         raise ConflictError(
             error_code=ErrorCode.ATTACHMENT_NOT_READY,
@@ -107,7 +99,11 @@ async def record_agent_output(
 async def _supersede_drafts(
     service: AgentAttachmentsService, *, row: AgentSessionAttachment
 ) -> None:
-    """This row's arrival ends every live draft the step had before it."""
+    """This row's arrival ends every live draft the step had before it.
+
+    Keyed on the session rather than the step because the dispatcher opens one
+    session per step, so the two are the same set of rows.
+    """
     stmt = select(AgentSessionAttachment).where(
         AgentSessionAttachment.namespace_key == row.namespace_key,
         AgentSessionAttachment.session_id == row.session_id,
