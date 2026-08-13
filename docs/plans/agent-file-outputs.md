@@ -76,7 +76,19 @@ mutation ($issueId: String!, $title: String!, $url: String!, $subtitle: String) 
 
 **`attachmentCreate` is idempotent on `(issueId, url)`.** Linear's documentation: re-creating an attachment with the same URL on the same issue "updates the original instead". This is the single most useful fact in this section. `linear_writeback.py` reads up to `_MARKER_COMMENT_PAGE` (100) comments per write to dedupe, and its own docstring accepts a duplicate comment as the residual failure. Attachments need none of that machinery: a retried write-back updates in place.
 
-**Unverified, and both are Phase 0 probes.** The exact GraphQL argument types and nullability of `fileUpload` are not stated in the prose documentation, only the client-library call shape; the query is written against the live schema, not from this document. And whether `size` must match the uploaded byte count exactly, or is advisory, is unstated. **P1** posts a 12-byte file with a correct size and with a deliberately wrong one; if a wrong size is accepted the client still sends the true length, and if it is rejected the error is surfaced rather than retried.
+**Phase 0 is closed. Both probes ran live and both passed.**
+
+**P1, by schema introspection.** `fileUpload(size: Int!, contentType: String!, filename: String!, metaData: JSON, makePublic: Boolean)` and `attachmentCreate(input: AttachmentCreateInput!)`, where `AttachmentCreateInput` carries `title: String!`, `url: String!`, `issueId: String!` and optional `subtitle`, `iconUrl`, `metadata: JSONObject`, `commentBody`. The mutations above are correct as written.
+
+**`makePublic` is deliberately not set.** It would make the asset readable by anyone holding the URL rather than by the workspace. The default is what this feature wants and the argument stays absent rather than being passed as `false`, so nobody reads an explicit `false` as a thing worth toggling.
+
+**`size` is enforced by storage, not by Linear.** The `headers` array came back with two real entries, `x-goog-content-length-range` and `Content-Disposition`. A wrong `size` therefore fails at the `PUT` with a GCS error rather than at the mutation, which is a confusing place to land. `LinearFileWriter.file_upload` sends `len(content)` and says so at the line that computes it; anyone who later lets a caller declare the size inherits a storage-layer failure with no obvious cause.
+
+**The `PUT` carried no `Authorization` header and returned 200**, confirming that credentials must not reach the signed storage URL.
+
+**P2, by a live round trip against OPS-2**, since cleaned up. `attachmentCreate` with the same `url` and a *changed* `title` returned the same attachment id and updated the title in place; the issue ended with one attachment, not two. `subtitle` updated too, so a retry can correct the agent name and step index rather than leaving them stale. Skipping comment-style dedupe is confirmed correct.
+
+Not covered by either probe: whether `assetUrl` is stable over months. Section 10 still carries that as an assumption.
 
 ---
 
@@ -88,7 +100,11 @@ mutation ($issueId: String!, $title: String!, $url: String!, $subtitle: String) 
 
 `SESSION_TOKEN_SCOPES` (`services/agent_sessions.py:105`) currently grants three operations and its docstring gives the reason this plan follows: *"a long-lived key handed to every agent process would make one agent's runaway loop spend every other agent's allowance."* That is exactly the failure mode here, with disk instead of model spend, and `attachment_quota.py` is a per-credential bucket, so a fleet key means one agent's loop exhausts the upload rate for every other agent sharing it.
 
-**Decision: `AGENT_ATTACHMENTS_WRITE` joins `SESSION_TOKEN_SCOPES`.** The token is already session-bound and the route is `/{session_key}/attachments`, so the existing verifier, which compares the token's target against the request's path, confines an agent to attaching files to its own session with no new mechanism. The quota keys on the caller, and each session token is a different caller, so one runaway agent spends its own allowance.
+**Decision, as revised after Phase 1 shipped: a *second* operation, `agent_attachments.write_self`, on its own route.** The first cut put `AGENT_ATTACHMENTS_WRITE` into `SESSION_TOKEN_SCOPES` and stopped there, and nothing worked: that operation is served by the default header authorizer, which never reads a Bearer token, so an agent got 401 without an API key and 403 with one. A route selects exactly one operation, and these two need different authorizers, a person with a cookie on one, a session-bound runtime token on the other - so they cannot be the same route. `agent_tracker.comment` had already established the shape and this copies it: new operation in `auth_framework/core.py`, into `RUNTIME_TOKEN_BOUND_OPERATIONS`, `AccessLevel.ADMIN` in the header provider's map so it fails closed, into `SESSION_TOKEN_SCOPES`, and `POST /agent-sessions/{session_key}/attachments/agent-output` sharing the handler body with the console's route.
+
+The invariant this violated is now asserted: every member of `SESSION_TOKEN_SCOPES` is also in `RUNTIME_TOKEN_BOUND_OPERATIONS`.
+
+**Correction: being on the session token does not by itself isolate the quota.** The paragraph above claimed "each session token is a different caller". It is not. `mint_session_runtime_token` stamps `actor_id` with the hash of whoever *created* the session, so every session one dispatcher opens presents the same `Principal.caller_id` and shares one bucket. The agent's route therefore meters on `Principal.target_id`, the session key the verifier already refused to let the caller choose, while `created_by_hash` keeps the creator. Knowledge search has the same shape and is *not* corrected here: its ceiling is per creator, and saying so is the point of writing this down.
 
 ### 4.2 Why upload alone is not enough (design question 2)
 
@@ -126,7 +142,9 @@ The name threads through unchanged: the tool's `filename` becomes `declared_name
 
 ### 4.6 What the tool can produce (design question 6)
 
-`openpyxl` for `.xlsx`, `python-docx` for `.docx`, `python-pptx` for `.pptx`. Three libraries, each the one that owns its format, all pure-Python and all already transitively present in the executor image through the `text-extraction` extra.
+`openpyxl` for `.xlsx`, `python-docx` for `.docx`, `python-pptx` for `.pptx`. Three libraries, each the one that owns its format.
+
+**Correction: they are not free, and the `text-extraction` extra is the server's, not the executor's.** This section originally claimed all three arrive transitively through that extra. They do not, so the example declares them explicitly. Measured 2026-08-13: the example's site-packages goes 482MB to 520MB, so +38MB and +8 packages. Two of the eight are compiled rather than pure Python: `python-docx` and `python-pptx` pull `lxml` (19MB), and `python-pptx` pulls Pillow (13MB). Neither was already in the `google-adk` tree.
 
 **Not a generic write-any-bytes tool.** A tool that writes arbitrary files is a tool that writes `.sh`, and the executor image is the one place in this system running untrusted model output. Three typed builders, each taking structured data rather than a byte string, means the model chooses content and the tool chooses encoding.
 
@@ -160,13 +178,15 @@ Three bounds, because a loop that spends model budget needs all three:
 
 ## 5. Wiring: the same commit ships every half
 
-The lesson `company-knowledge.md` section 12 makes normative applies here unchanged. Every flag ships its compose passthrough, its Apple-script line and its `server/.env.example` entry in the same commit, and every half-on state logs one line naming itself at startup.
+The lesson `company-knowledge.md` section 12 makes normative applies here, but the three-file rule it states is the *server's* rule and only server-read flags obey it. Every half-on state still logs one line naming itself at startup.
+
+**A flag the executor reads belongs in `examples/google_adk_plugin/.env.example` and in the fleet's `PASSTHROUGH_ENV`, and nowhere else.** The shipped `AGENT_CONTROL_KNOWLEDGE_TOOLS` is wired exactly that way: it appears in neither `server/.env.example`, nor `docker-compose.yml`, nor `scripts/apple-container-up.sh`, because the server never reads it and the fleet is what puts it inside an executor container. Putting an executor flag on the server's own container makes a feature read as wired when it is not.
 
 - `AGENT_CONTROL_LINEAR_ATTACHMENTS_WRITE_ENABLED`, default false, gating the two new mutations only. It is separate from `AGENT_CONTROL_LINEAR_WRITE_ENABLED` because posting a comment and uploading a file are different blast radii, and an operator who has accepted one has not thereby accepted the other.
-- `AGENT_CONTROL_AGENT_FILE_OUTPUTS_ENABLED`, default false, gating the executor tool.
+- `AGENT_CONTROL_AGENT_FILE_OUTPUTS_ENABLED`, default false, gating the executor tool. Executor-read, so: the example's `.env.example` and `fleet/src/agent_control_fleet/settings.py`.
 - Half-on line, when the tool is on and the Linear half is off: `agent file outputs enabled but Linear attachment write is off; files will be stored and never reach the ticket`.
 
-`scripts/check_knowledge_env_parity.py` is the model for the parity check and its second direction is the one that matters: every variable read anywhere under the new code appears in all three files. Extend it rather than write a second one.
+**Do not extend `scripts/check_knowledge_env_parity.py`.** Its second direction, every variable read anywhere under the new code appearing in the wiring files, is structurally unimplementable for pydantic-settings variables: the name is never a string literal in the source, it is derived from a field name and a prefix at class-construction time, so there is nothing for a static scan to find. The check that does hold is per-flag and lives beside the flag: one test reading the wiring files as text and asserting each line is present, which is what both flags here now carry.
 
 ---
 
@@ -227,6 +247,11 @@ The tests that would have caught the failures this plan exists to fix:
 
 ## 9. Phases and effort
 
+**Base and precedent.** This work is built on `feat/agent-fleet-topology` (merged to `main` as PR #14), not on `main` as it stood when the plan was written. That branch carries session-bound runtime tokens, the executor Dockerfile, the `fleet/` package and `save_to_tracker`, all four of which this plan needs and none of which the three phase branches saw. `save_to_tracker` / `agent_tracker.comment` is the worked example for every machine-side route here: `endpoints/agent_tracker.py` and its tests are what 4.1's operation split copies.
+
+**ADK tool docstrings are legitimately long.** The three tools in `examples/google_adk_plugin/my_agent/file_outputs.py` run 19-21 lines each and must stay that way: an ADK tool docstring *is* the tool's description to the model, so the repository's one-to-three-line rule does not reach them. `sdks/python/src/agent_control/integrations/google_adk/knowledge_tools.py` is the shipped precedent. Every internal helper in that module is one line.
+
+
 **Phase 0, probes, 2 days.** P1: `fileUpload` argument types and whether `size` is enforced, against the live schema. P2: whether `attachmentCreate` idempotency holds across a changed `title` with a stable `url`.
 
 **Phase 1, the store half, 1 week.** Scope on the session token, the `AGENT` origin, binding at upload, the retention predicate, the tests in section 8 that need no Linear.
@@ -256,7 +281,7 @@ Roughly three weeks plus probes, of which about four days is configuration and p
 ## 11. Open questions a reviewer should push on
 
 1. Should the file also be attached to the **session** in the console, or only to the Linear issue? The store makes the first free; nobody has asked for it.
-2. Is `subtitle` the right home for agent name and step index, or should that be `metadata`, which is queryable?
+2. ~~Is `subtitle` the right home for agent name and step index, or should that be `metadata`, which is queryable?~~ **Settled by P1:** `AttachmentCreateInput.metadata` exists and is a `JSONObject`, so both are available. `subtitle` wins because it is the field Linear *renders*. The point of the string is that a person looking at the ticket can see which agent and which step produced the file, and a queryable field nobody has asked to query is not worth a second write path. P2 confirmed `subtitle` updates in place on a retry, so a corrected name replaces a stale one.
 3. ~~Should a failed task's partial deliverable be attached?~~ **Settled 2026-08-13 by the operator:** incomplete work is re-run to completion rather than shipped, and the partial is kept as a draft so the next turn resumes from it. 4.7 and 4.8 carry the design. The ticket never receives a half-finished spreadsheet unless the ceiling is exhausted, which 7 handles explicitly.
 4. Does anything need to stop an agent attaching a file to a **completed** task's issue? The write-back path already has a review gate; the upload path does not.
 5. **What ends a step that reports `partial` honestly and forever?** 4.8's progress check is a heuristic: no improvement across two turns. A model that adds one trivial line per turn defeats it and spends the ceiling. A stricter rule needs a definition of improvement that is not the model's own prose, which probably means the evaluator binding.

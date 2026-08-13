@@ -265,9 +265,12 @@ state that stays with the task, a final is the deliverable. It defaults to
 `draft`, so nothing reaches a ticket by forgetting.
 
 The upload authenticates with the **per-session token**, not this process's API
-key. The store's quota is a per-credential bucket, so one agent's runaway loop
-spends its own allowance rather than every other agent's. Files land in the
-ordinary attachment store and count against every ceiling in it.
+key, and it goes to that session's own route rather than the console's upload.
+The token's caller is whoever created the session, so the server meters this
+route on the session the token names instead: one agent's runaway loop spends
+its own allowance rather than every other agent's under the same dispatcher.
+Files land in the ordinary attachment store and count against every ceiling in
+it.
 
 Control names are `root_agent.write_xlsx_file`, `root_agent.write_docx_file` and
 `root_agent.write_pptx_file` - agent-qualified, the same trap as the tools
