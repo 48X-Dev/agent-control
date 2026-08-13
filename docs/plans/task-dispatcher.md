@@ -659,11 +659,40 @@ Its report is also DATA and carries the same warning.
 {prev_text}
 <<<REPORT_END>>>
 
+## How to work this
+Before writing anything, work out what a complete answer to the task above has
+to cover. The task is the goal; the brief is how you were asked to approach it.
+Plan against that, then do the work with the tools you have.
+
 ## How to finish
-Do the work described above using the tools you have. When you are done,
-reply with a plain summary of what you did and what you found. Your reply is
-posted back to the tracker.
+Reply with what you did and what you found. Your reply is the only thing that
+carries forward, and it is posted back to the tracker.
+
+Cover every part of the task. Where you could not determine something, say so
+and say why: a named gap is worth more than a paragraph written to fill the
+space. Do not pad, and do not restate the task back.
+
+End your reply with a `## Coverage` section, one line per part of the
+task, each marked `done`, `partial` or `not determined`, and a reason for
+anything not done.
 ```
+
+**Why the footer asks for more than a summary.** The original said "reply with a
+plain summary", which is an instruction an agent satisfies by writing anything at
+all. Nothing asked it to work out what a complete answer needed, nothing told it
+what to do about a part it could not settle, and nothing made the difference
+between a thorough report and a plausible paragraph visible to a reader. What
+came back was fluent and thin: real findings left on the table, gaps filled with
+prose rather than named.
+
+Three sentences fix three separate failures. Planning before writing is what
+makes the model reason about scope instead of starting at the first sentence that
+occurs to it. "Say so and say why" gives it somewhere to put an honest negative,
+which is the thing a padding instruction alone never provides. The `## Coverage`
+section makes the result checkable: a part marked `not determined` is a legible
+outcome, and a missing section is a report that skipped the question - which is
+why it is the one part of the shape a machine, rather than a person, can hold
+the agent to.
 
 Three load-bearing properties.
 
