@@ -13,6 +13,7 @@ import datetime as dt
 import pytest
 from agent_control_models import (
     ATTACHMENT_HARD_MAX_BYTES,
+    AgentOutputKind,
     Attachment,
     AttachmentOrigin,
     AttachmentStatus,
@@ -78,6 +79,16 @@ def test_the_page_and_token_fields_default_to_null() -> None:
     assert attachment.page_count is None
     assert attachment.estimated_tokens is None
     assert attachment.converted_from is None
+
+
+def test_an_agent_authored_file_carries_its_own_origin_and_its_draft_marker() -> None:
+    """Three origins rather than two, because a reader has to be able to tell a
+    file a model wrote from one a person attached without opening either."""
+    agent_file = _attachment(origin=AttachmentOrigin.AGENT, agent_output=AgentOutputKind.DRAFT)
+
+    assert agent_file.origin == "agent"
+    assert agent_file.agent_output == AgentOutputKind.DRAFT
+    assert _attachment().agent_output is None
 
 
 def test_a_zero_byte_attachment_is_refused_by_the_model() -> None:
