@@ -1038,3 +1038,74 @@ def test_every_session_of_a_chain_is_bound_to_the_task_row(
     _run(plane, _options(tmp_path), monkeypatch)
 
     assert {session["task_key"] for session in plane.sessions} == {plane.keys["t1"]}
+
+
+# ---------------------------------------------------------------------------
+# max_turns: a step that says it did not finish gets another go
+# ---------------------------------------------------------------------------
+
+
+class _CoveragePlane(FakeControlPlane):
+    """Answers each turn from a queue, so one step can improve on itself."""
+
+    def __init__(self, refs: list[str], replies: list[str], **kwargs: Any) -> None:
+        super().__init__(refs, **kwargs)
+        self.replies = list(replies)
+
+    def _turn(self, path: str, body: dict[str, Any]) -> httpx.Response:
+        agent = next(
+            s["agent_name"] for s in self.sessions if s["session_key"] == path.split("/")[-2]
+        )
+        self.text_for_agent[agent] = self.replies.pop(0) if self.replies else "done."
+        return super()._turn(path, body)
+
+
+_UNMET = "found some\n\n## Coverage\n\n- the list: **partial** - half of it\n- sources: **done**\n"
+_CLEAN = "found the rest\n\n## Coverage\n\n- the list: **done**\n- sources: **done**\n"
+
+
+def test_a_step_that_reports_partial_coverage_runs_again(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The point of max_turns: one pass said partial, the ceiling allowed another."""
+    plane = _CoveragePlane(
+        ["t1"],
+        replies=[_UNMET, _CLEAN],
+        plan_steps=[_planned(0, RESEARCHER, max_turns=3)],
+    )
+
+    report, text = _run(plane, _options(tmp_path), monkeypatch)
+
+    assert len(plane.turns) == 2, "partial coverage should have bought a second turn"
+    assert report.results[0].status is ClaimStatus.COMPLETED
+    assert "retry" in text
+    second = plane.turns[1]["message"]
+    assert "## Your own previous attempt at this step" in second
+    assert "<<<ATTEMPT_BEGIN>>>" in second, "its own output is fenced like any other data"
+    assert "the list: partial - half of it" in second, "it is told which part is unfinished"
+
+
+def test_one_turn_is_the_default_and_partial_coverage_does_not_widen_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A workflow that never asked for iteration does not get it."""
+    plane = _CoveragePlane(
+        ["t1"], replies=[_UNMET, _CLEAN], plan_steps=[_planned(0, RESEARCHER, max_turns=1)]
+    )
+
+    _run(plane, _options(tmp_path), monkeypatch)
+
+    assert len(plane.turns) == 1
+
+
+def test_a_step_that_closes_nothing_stops_rather_than_spending_the_ceiling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Repeating the same gaps is not converging, and round four is nobody's decision."""
+    plane = _CoveragePlane(
+        ["t1"], replies=[_UNMET, _UNMET, _UNMET], plan_steps=[_planned(0, RESEARCHER, max_turns=3)]
+    )
+
+    _run(plane, _options(tmp_path), monkeypatch)
+
+    assert len(plane.turns) == 2, "no improvement on the retry should end the step"
