@@ -107,7 +107,7 @@ SESSION_TOKEN_SCOPES: tuple[str, ...] = (
     Operation.AGENT_PLANS_WRITE.value,
     Operation.AGENT_TRACKER_COMMENT.value,
     Operation.COMPANY_KNOWLEDGE_SEARCH.value,
-    Operation.AGENT_ATTACHMENTS_WRITE.value,
+    Operation.AGENT_ATTACHMENTS_WRITE_SELF.value,
 )
 """What the executor may do with its session token: drain nudges written for
 this session, report progress on this session, comment on the tracker issue
@@ -123,10 +123,16 @@ Closing stays ``agent_tasks.approve``, which no token carries.
 
 Knowledge search is a read against a database this token's holder cannot write
 and the control plane itself only reads. It is here rather than on an API key
-because the per-session search ceiling has to be keyed on something a caller
-cannot pick, and because a long-lived key handed to every agent process would
-make one agent's runaway loop spend every other agent's allowance. The upload
-scope is on the token for the same reasons."""
+because a long-lived key handed to every agent process would let one agent's
+runaway loop spend every other agent's allowance.
+
+**Being on this token does not by itself meter anything per session.**
+``actor_id`` below is the hash of whoever *created* the session, so every
+session one dispatcher opens presents the same ``Principal.caller_id`` and
+shares one bucket in any ceiling keyed on it. A route that wants a per-session
+ceiling has to key on ``Principal.target_id``, which is the session key the
+verifier already refused to let the caller choose. ``agent_attachments.write_self``
+does that; knowledge search does not, and its ceiling is per creator."""
 
 _HEALTH_PROBE_LIMIT = 25
 """Ceiling on executors probed by one health call. A namespace with more agents

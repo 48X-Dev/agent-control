@@ -31,12 +31,11 @@ from typing import Any
 
 import pytest
 from agent_control_models.attachments import AttachmentOrigin
-from agent_control_server.auth_framework import Operation, set_authorizer
+from agent_control_server.auth_framework import Operation
 from agent_control_server.auth_framework.config import (
-    RuntimeAuthConfig,
-    set_runtime_auth_config,
+    RUNTIME_TOKEN_BOUND_OPERATIONS,
+    configure_auth_from_env,
 )
-from agent_control_server.auth_framework.providers import LocalJwtVerifyProvider
 from agent_control_server.config import executor_settings
 from agent_control_server.services.agent_sessions import (
     SESSION_TOKEN_SCOPES,
@@ -47,7 +46,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
-from .conftest import engine
+from .conftest import TEST_ADMIN_API_KEY, engine
 from .test_agent_attachments_endpoints import PNG_BYTES, make_session, upload
 
 _SESSIONS_URL = "/api/v1/agent-sessions"
@@ -66,25 +65,25 @@ def attachments_enabled(monkeypatch: pytest.MonkeyPatch) -> Any:
 
 
 @pytest.fixture()
-def as_the_agent(app: FastAPI) -> Any:
-    """Route the upload operation through the token verifier and hand back a client.
+def as_the_agent(app: FastAPI, monkeypatch: pytest.MonkeyPatch) -> Any:
+    """Wire auth the way production wires it, and hand back an unauthenticated client.
 
-    Called by the test rather than installed by the fixture, because the
-    override owns the operation for every caller: a test that seeds an
-    operator's file first has to do that while an ordinary key still reaches
-    the route.
+    Through ``configure_auth_from_env`` rather than by installing a provider
+    directly: an override this test picks itself would pass whether or not the
+    operation is one production actually routes to the verifier, which is the
+    exact defect this fixture used to hide.
     """
 
     def install() -> TestClient:
-        set_runtime_auth_config(RuntimeAuthConfig(secret=_RUNTIME_SECRET, ttl_seconds=900))
-        set_authorizer(
-            LocalJwtVerifyProvider(secret=_RUNTIME_SECRET),
-            operation=Operation.AGENT_ATTACHMENTS_WRITE,
-        )
+        monkeypatch.setenv("AGENT_CONTROL_RUNTIME_TOKEN_SECRET", _RUNTIME_SECRET)
+        monkeypatch.setenv("AGENT_CONTROL_AUTH_MODE", "api_key")
+        configure_auth_from_env()
         return TestClient(app, raise_server_exceptions=True)
 
     yield install
-    set_runtime_auth_config(None)
+    monkeypatch.delenv("AGENT_CONTROL_RUNTIME_TOKEN_SECRET", raising=False)
+    monkeypatch.delenv("AGENT_CONTROL_AUTH_MODE", raising=False)
+    configure_auth_from_env()
 
 
 def _token(session_key: str) -> dict[str, str]:
@@ -111,7 +110,7 @@ def _write(
     filename: str = "investor-shortlist.pdf",
 ) -> Any:
     return machine.post(
-        f"{_SESSIONS_URL}/{session_key}/attachments",
+        f"{_SESSIONS_URL}/{session_key}/attachments/agent-output",
         files={"file": (filename, data, "application/pdf")},
         data={"declared_name": filename, "agent_output": kind},
         headers=_token(session_key),
@@ -214,10 +213,37 @@ def _sweep(machine: TestClient) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_the_scope_is_on_the_session_token(app: FastAPI) -> None:
-    """A fleet key would make one agent's runaway loop spend everybody's upload
-    allowance, and would not be confined to one conversation at all."""
-    assert Operation.AGENT_ATTACHMENTS_WRITE.value in SESSION_TOKEN_SCOPES
+def test_the_scope_is_on_the_session_token() -> None:
+    """A fleet key would not be confined to one conversation at all."""
+    assert Operation.AGENT_ATTACHMENTS_WRITE_SELF.value in SESSION_TOKEN_SCOPES
+
+
+def test_every_session_scope_is_an_operation_the_runtime_override_serves() -> None:
+    """The invariant that makes a session token usable at all.
+
+    A scope the runtime override does not serve reaches the default authorizer,
+    which never reads a Bearer token: 401 with no API key, 403 with one. Adding
+    a scope without adding the operation here is silent until an agent tries it.
+    """
+    assert set(SESSION_TOKEN_SCOPES) <= {op.value for op in RUNTIME_TOKEN_BOUND_OPERATIONS}
+
+
+def test_the_console_upload_survives_the_runtime_override(as_the_agent: Any, app: FastAPI) -> None:
+    """The console authenticates by cookie on the operation the agent's route
+    does not use, so installing the verifier must not take its upload away."""
+    as_the_agent()
+    browser = TestClient(app, base_url="http://localhost", raise_server_exceptions=True)
+    assert browser.post("/api/login", json={"api_key": TEST_ADMIN_API_KEY}).status_code == 200
+
+    stored = browser.post(
+        f"{_SESSIONS_URL}/{make_session()}/attachments",
+        files={"file": ("brief.pdf", _REPORT, "application/pdf")},
+        data={"declared_name": "brief.pdf"},
+        headers=_XHR,
+    )
+
+    assert stored.status_code == 201, stored.text
+    assert stored.json()["attachment"]["origin"] == AttachmentOrigin.OPERATOR_UPLOAD
 
 
 def test_the_session_token_stores_a_file_against_its_own_session(as_the_agent: Any) -> None:
@@ -244,7 +270,7 @@ def test_a_token_minted_for_another_session_cannot_upload_to_this_one(as_the_age
     theirs = _agent_step()
 
     refused = machine.post(
-        f"{_SESSIONS_URL}/{theirs}/attachments",
+        f"{_SESSIONS_URL}/{theirs}/attachments/agent-output",
         files={"file": ("x.pdf", _REPORT, "application/pdf")},
         data={"declared_name": "x.pdf", "agent_output": "draft"},
         headers=_token(mine),
@@ -283,13 +309,13 @@ def test_an_agent_has_to_say_which_kind_of_file_it_is(as_the_agent: Any) -> None
     session_key = _agent_step()
 
     refused = machine.post(
-        f"{_SESSIONS_URL}/{session_key}/attachments",
+        f"{_SESSIONS_URL}/{session_key}/attachments/agent-output",
         files={"file": ("x.pdf", _REPORT, "application/pdf")},
         data={"declared_name": "x.pdf"},
         headers=_token(session_key),
     )
 
-    assert refused.status_code == 400, refused.text
+    assert refused.status_code == 422, refused.text
 
 
 def test_a_file_produced_outside_a_turn_is_refused(as_the_agent: Any) -> None:

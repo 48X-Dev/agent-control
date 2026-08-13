@@ -34,6 +34,7 @@ from .endpoints.agent_attachments import router as agent_attachment_router
 from .endpoints.agent_configs import model_router as agent_model_router
 from .endpoints.agent_configs import router as agent_config_router
 from .endpoints.agent_dispatch import router as agent_dispatch_router
+from .endpoints.agent_file_outputs import router as agent_file_output_router
 from .endpoints.agent_halts import router as agent_halt_router
 from .endpoints.agent_nudges import router as agent_nudge_router
 from .endpoints.agent_plans import router as agent_plan_router
@@ -497,6 +498,15 @@ app.include_router(
 # unauthenticated server covers this router with it.
 app.include_router(
     agent_attachment_router,
+    prefix=api_v1_prefix,
+    dependencies=[Depends(get_api_key_from_header)],
+)
+
+# The agent's own half of the same store. Mounted after the router above so the
+# console's `/attachments` route is registered first; the two paths do not
+# overlap, and the split is about which authorizer serves each operation.
+app.include_router(
+    agent_file_output_router,
     prefix=api_v1_prefix,
     dependencies=[Depends(get_api_key_from_header)],
 )

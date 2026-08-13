@@ -91,6 +91,14 @@ class Operation(StrEnum):
     # exactly that. Minting a second read operation beside it would document a
     # boundary that does not exist.
     AGENT_ATTACHMENTS_WRITE = "agent_attachments.write"
+    # Storing a file the agent itself produced, against its own session. A
+    # second operation rather than a second caller on the one above, because
+    # this one is machine-side and runtime-token-bound while that one is a
+    # person with a cookie, and an endpoint selects exactly one operation.
+    # Folding them together would either drag the console's upload into the
+    # JWT verifier or leave this one on a provider that never reads a Bearer
+    # token; the split is what lets each keep its own authorizer.
+    AGENT_ATTACHMENTS_WRITE_SELF = "agent_attachments.write_self"
     # Binding an agent to an executor URL is deployment configuration.
     AGENT_RUNTIMES_WRITE = "agent_runtimes.write"
 
