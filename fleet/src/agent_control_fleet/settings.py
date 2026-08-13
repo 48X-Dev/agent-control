@@ -77,6 +77,7 @@ READY_TIMEOUT_SECONDS = 180.0
 # container that gets some of them has features that read as available and are
 # off. Anything the fleet computes is deliberately absent from this list.
 PASSTHROUGH_ENV = (
+    "AGENT_CONTROL_AGENT_FILE_OUTPUTS_ENABLED",
     "AGENT_CONTROL_DEFAULT_MODEL",
     "AGENT_CONTROL_KNOWLEDGE_TOOLS",
     "AGENT_CONTROL_TRACKER_TOOLS",
