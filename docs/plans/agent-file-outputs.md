@@ -14,7 +14,7 @@ Depends on: `agent-file-inputs.md` for the attachment store this reuses, `task-d
 
 ## 0. What ships, in one paragraph
 
-An executor tool writes a real `.xlsx`, `.docx` or `.pptx` with the library that owns that format, uploads it to its own session's attachment store under a name the agent had to choose, and marks it as the step's output. The write-back then does what it already does for text, plus three Linear mutations: `fileUpload` for a signed URL, a `PUT` of the bytes, and `attachmentCreate` to hang the asset on the issue. The comment becomes a short summary and a pointer instead of four thousand truncated characters. Nothing new holds a credential, nothing new is allowed to mutate, and the only process that talks to Linear is the one that already does.
+An executor tool writes a real `.xlsx`, `.docx` or `.pptx` with the library that owns that format, uploads it to its own session's attachment store under a name the agent had to choose, and marks it `draft` or `final`. A draft never leaves this system: it is delivered back into the next turn of the same step so an agent that ran out of room continues instead of starting again, and a step that reports incomplete coverage re-runs within the `max_turns` ceiling that already exists on the step and that nothing currently enforces. A final goes to Linear through the write-back, which gains three mutations: `fileUpload` for a signed URL, a `PUT` of the bytes, and `attachmentCreate` to hang the asset on the issue. The comment becomes a short summary and a pointer instead of four thousand truncated characters. Nothing new holds a credential, nothing new is allowed to mutate, no tool gains the ability to read, and the only process that talks to Linear is the one that already does.
 
 ---
 
@@ -130,6 +130,32 @@ The name threads through unchanged: the tool's `filename` becomes `declared_name
 
 **Not a generic write-any-bytes tool.** A tool that writes arbitrary files is a tool that writes `.sh`, and the executor image is the one place in this system running untrusted model output. Three typed builders, each taking structured data rather than a byte string, means the model chooses content and the tool chooses encoding.
 
+### 4.7 Drafts, so a step can resume rather than restart (design question 7)
+
+An agent that runs out of turns mid-workbook currently loses the workbook. **Decision: a file is attached as a `draft` or as `final`, and the difference is what happens to it.**
+
+A `final` file is the deliverable: pushed to Linear per section 3, kept per 4.4. A `draft` is working state: bound to the step, **never pushed to Linear**, and delivered back to the next turn of the same step so the agent continues from where it stopped.
+
+The resume path needs no read tool, and that is the whole point of doing it this way. The agent does not fetch, list or open anything. The server delivers the draft's converted text into the next turn's envelope using `attachment_delivery`, exactly as it already delivers an inbound file. Section 6's refusal stands unamended: the executor still has no tool that reads.
+
+**A draft is untrusted when it comes back.** `envelope.py` already treats a prior agent's report as DATA carrying the same warning as the issue body, because "A's output can carry B's injection". A draft is the same text one turn later and gets the same fence and the same warning. It is delivered under its own heading, never inside the human-attached files section, so 4.3's rule that an agent is never handed its own output as though a person attached it holds.
+
+**Drafts are superseded, not accumulated.** One live draft per step: attaching a new one tombstones the previous. Otherwise a step with a five-turn ceiling leaves five near-identical workbooks bound to a ticket. When the step produces a `final`, its drafts are tombstoned in the same transaction.
+
+### 4.8 Completing the work, by honouring a field that already exists (design question 8)
+
+`AgentWorkflowStep.max_turns` exists, is validated `ge=1, le=MAX_TURNS_PER_STEP`, and its own description records that "the dispatcher runs one turn per step today". The field is a declared ceiling nothing enforces, which makes it the right home for iteration rather than a new concept.
+
+**Decision: a step whose report declares incomplete work re-runs, within `max_turns`, carrying its draft forward.** The trigger is the `## Coverage` section from the goal scaffold: a step reporting `partial` or `not determined` against any part has not finished, and the next turn is handed its own draft plus the coverage lines that were not `done`.
+
+Three bounds, because a loop that spends model budget needs all three:
+
+- **`max_turns` is a ceiling and the default stays 1.** A workflow that has not asked for iteration does not get it.
+- **Progress, or stop.** Two consecutive turns whose coverage improves on nothing end the step at `partial`. A model that reports the same three gaps forever is not converging, and paying for the fourth round is a decision nobody made.
+- **The namespace hourly turn budget is unchanged and is the real ceiling.** It is a refusal on the server's turn path, so an iterating step spends the same pool as everything else and cannot widen it. A five-turn step is five turns of somebody's hour.
+
+**The honest weakness, stated here rather than found later: the trigger is self-reported.** `## Coverage` is written by the agent being asked whether it finished. It can claim `done` to stop early or `partial` to keep going, and nothing in this plan verifies either. That is the same gap the goal scaffold's own PR names, and it is the argument for binding coverage to an evaluator. Until that exists, `max_turns` is a spend ceiling protecting against a dishonest `partial`, and there is no protection at all against a dishonest `done` beyond a human reading the ticket.
+
 ---
 
 ## 5. Wiring: the same commit ships every half
@@ -156,13 +182,18 @@ The lesson `company-knowledge.md` section 12 makes normative applies here unchan
 
 **No reading of its own outputs.** The tool writes and uploads. It does not list, fetch or modify. `agent-drive.md` section 14 holds the equivalent read tools until a phase that may never come, for the reason that a read tool converts a capability with no injection surface into one with the same surface as a fetched web page. Same argument, same answer.
 
+This survives 4.7's resume path intact, and the distinction is worth being precise about because it is the one a reviewer should test. A draft returns to the agent because **the server put it in the turn message**, on the same path that delivers a file a person attached. The agent never named it, never asked for it and cannot ask for a different one. A read tool would let the model choose what to open, which is the surface being refused; delivery does not, and the executor's tool list is unchanged by 4.7.
+
 ---
 
 ## 7. Edge cases, each with its decided behaviour
 
 | Case | Behaviour |
 |---|---|
-| Agent writes a file, task then fails | File is bound and kept. Write-back posts the failure and the attachment, because a partial deliverable is evidence. |
+| Agent writes a file, task then fails | The draft is bound and kept, and is not pushed to Linear. A reclaimed task resumes from it (4.7). The comment names the failure and says a draft exists. |
+| Step exhausts `max_turns` still `partial` | Its last draft is promoted to `final` and attached, with `subtitle` recording that it is incomplete. Losing four turns of work to a ceiling is the worse outcome. |
+| Coverage says `done` but the workbook is empty | Not detected. 4.8 states this plainly; the trigger is self-reported and nothing here verifies it. |
+| Two turns of a step both attach a draft | The second tombstones the first. One live draft per step. |
 | Write-back retried after a partial success | `attachmentCreate` is idempotent on `(issueId, url)`; the second call updates. No dedupe read needed. |
 | `fileUpload` succeeds, `PUT` fails | No `assetUrl` recorded, blob stays (4.4), write-back posts the comment with one line saying the file was produced and could not be delivered. Never silent. |
 | `PUT` succeeds, `attachmentCreate` fails | `linear_asset_url` is set, so the blob may be reclaimed later while the ticket has no attachment. Retry on the next write-back attempt; the asset URL is stable and the mutation idempotent. |
@@ -184,6 +215,12 @@ The tests that would have caught the failures this plan exists to fix:
 - `filename="output.xlsx"` is refused, and the refusal names the rule;
 - the delivery renderer never renders an `AttachmentOrigin.AGENT` file as though a person attached it;
 - a write-back run twice produces one Linear attachment, not two;
+- a `draft` is never sent to Linear, asserted on the write-back path rather than by inspecting the caller;
+- a draft delivered into turn two arrives under its own heading, fenced and carrying the untrusted warning, and **not** inside the human-attached files section;
+- attaching a second draft to a step tombstones the first, and a `final` tombstones every draft of that step;
+- a step whose coverage is all `done` runs once even when `max_turns` is five;
+- two consecutive turns with no coverage improvement end the step rather than spending the ceiling;
+- the executor's tool list is unchanged by the resume path, asserted by name, because that is what keeps section 6 true;
 - the parity check fails when a new variable reaches only two of the three files.
 
 ---
@@ -196,9 +233,11 @@ The tests that would have caught the failures this plan exists to fix:
 
 **Phase 2, the Linear half, 1 week.** Two mutations on `LinearWritebackClient`, the header transform, the `PUT`, the comment that renders a pointer. Behind its own flag, default off.
 
-**Phase 3, the executor tool, 1 week.** Three typed builders, the required-name validation, the upload call, the wiring in both runtimes.
+**Phase 3, the executor tool, 1 week.** Three typed builders, the required-name validation, the upload call, the wiring in both runtimes. Drafts are storable from here; nothing reads them back yet.
 
-**Phase 4, Drive, unscheduled and blocked.** Only if `agent-drive.md`'s section 4.1 prerequisites are completed by whoever owns the Workspace. Not an engineering decision.
+**Phase 4, resume and iterate, 1 week.** Draft delivery into the next turn, the supersede rule, and honouring `max_turns` with the progress check. Depends on Phase 3 and on PR #12's goal scaffold being merged, because the coverage section is the trigger and without it there is nothing to iterate against.
+
+**Phase 5, Drive, unscheduled and blocked.** Only if `agent-drive.md`'s section 4.1 prerequisites are completed by whoever owns the Workspace. Not an engineering decision.
 
 Roughly three weeks plus probes, of which about four days is configuration and parity plumbing and the rest is real work.
 
@@ -218,5 +257,8 @@ Roughly three weeks plus probes, of which about four days is configuration and p
 
 1. Should the file also be attached to the **session** in the console, or only to the Linear issue? The store makes the first free; nobody has asked for it.
 2. Is `subtitle` the right home for agent name and step index, or should that be `metadata`, which is queryable?
-3. Should a failed task's partial deliverable really be attached (7, row 1)? The argument is that evidence beats silence. The counter-argument is that a ticket acquires a half-finished spreadsheet nobody asked for, and a reviewer may reasonably prefer the failure alone.
+3. ~~Should a failed task's partial deliverable be attached?~~ **Settled 2026-08-13 by the operator:** incomplete work is re-run to completion rather than shipped, and the partial is kept as a draft so the next turn resumes from it. 4.7 and 4.8 carry the design. The ticket never receives a half-finished spreadsheet unless the ceiling is exhausted, which 7 handles explicitly.
 4. Does anything need to stop an agent attaching a file to a **completed** task's issue? The write-back path already has a review gate; the upload path does not.
+5. **What ends a step that reports `partial` honestly and forever?** 4.8's progress check is a heuristic: no improvement across two turns. A model that adds one trivial line per turn defeats it and spends the ceiling. A stricter rule needs a definition of improvement that is not the model's own prose, which probably means the evaluator binding.
+6. Should a draft be visible in the console at all? It is bound to the step, so it will appear unless something hides it. Showing an operator four superseded workbooks is noise; hiding them makes "what was the agent doing" unanswerable when a step burns its ceiling.
+7. `MAX_TURNS_PER_STEP` is the schema's ceiling on the ceiling. Nobody has revisited it since it bounded a field nothing enforced, and 4.8 makes it load-bearing.
