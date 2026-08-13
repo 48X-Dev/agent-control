@@ -17,24 +17,46 @@ from .linear_writeback import (
     HttpLinearWritebackClient,
     LinearWritebackClient,
 )
+from .linear_writeback_files import (
+    ATTACHMENTS_DISABLED_MESSAGE,
+    AgentFile,
+    AgentFileDelivery,
+    push_agent_file,
+)
 
 
 @dataclass(frozen=True)
 class WritebackRuntime:
     """What the write path needs from configuration, resolved once.
 
-    ``client`` is ``None`` when no API key is configured; ``write_enabled``
-    is the flag. The two are separate because a deployment with a key and the
-    flag off must queue rows and send nothing, which is the shipped default.
+    ``client`` is ``None`` when no API key is configured, and the two flags
+    gate comments and files apart. Key and flag are separate because a
+    deployment with a key and the flag off must queue rows and send nothing.
     """
 
     client: LinearWritebackClient | None
     resolver: CompletedStateResolver | None
     write_enabled: bool
+    attachments_write_enabled: bool = False
 
     @property
     def can_write(self) -> bool:
         return self.write_enabled and self.client is not None
+
+    @property
+    def can_write_attachments(self) -> bool:
+        """Its own flag: accepting a comment is not accepting an upload."""
+        return self.attachments_write_enabled and self.client is not None
+
+    async def deliver_agent_file(
+        self, *, issue_id: str, file: AgentFile
+    ) -> AgentFileDelivery:
+        """Push one agent-authored file, or name the flag that stopped it."""
+        if self.client is None or not self.attachments_write_enabled:
+            return AgentFileDelivery(
+                file.title, file.asset_url, None, ATTACHMENTS_DISABLED_MESSAGE
+            )
+        return await push_agent_file(self.client, issue_id=issue_id, file=file)
 
     async def aclose(self) -> None:
         if self.client is not None:
@@ -61,6 +83,7 @@ def build_writeback_runtime() -> WritebackRuntime:
         client=client,
         resolver=CompletedStateResolver(client) if client is not None else None,
         write_enabled=bool(linear_settings.write_enabled),
+        attachments_write_enabled=bool(linear_settings.attachments_write_enabled),
     )
 
 

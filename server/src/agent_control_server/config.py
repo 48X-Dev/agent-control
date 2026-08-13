@@ -387,6 +387,14 @@ class LinearSettings(BaseSettings):
     # ---------------------------------------------------------------------
     write_enabled: bool = False
 
+    # Files an agent wrote, pushed to the issue as a real attachment through
+    # fileUpload and attachmentCreate. A second flag rather than a widening of
+    # the one above: posting a comment and uploading a file are different blast
+    # radii, and an operator who accepted the first has not thereby accepted
+    # the second. With it false the comment says a file was written and not
+    # delivered, which is the one thing this must never do silently.
+    attachments_write_enabled: bool = False
+
     # Absolute origin of the console, used only to append a chain link to each
     # posted comment. Empty means the comment carries no link, which beats a
     # relative link that 404s in the tracker.
@@ -477,6 +485,31 @@ class LinearSettings(BaseSettings):
     def allows_host(self, host: str) -> bool:
         """Whether this exact hostname may receive the API key."""
         return host.lower() in {allowed.lower() for allowed in self.attachment_host_allowlist}
+
+
+def check_linear_attachment_write_state(linear: "LinearSettings") -> None:
+    """Log the half-on states of the attachment write flag. Never refuses to boot.
+
+    A file that is written, stored and never delivered looks from the ticket
+    exactly like a file the agent never wrote, so each half-on state says which
+    of the two switches is the one that is off.
+    """
+    if not linear.attachments_write_enabled:
+        return
+    if linear.get_api_key() is None:
+        _config_logger.warning(
+            "AGENT_CONTROL_LINEAR_ATTACHMENTS_WRITE_ENABLED is true but no Linear "
+            "API key is configured; agent files will be stored and never reach "
+            "the ticket."
+        )
+        return
+    if not linear.write_enabled:
+        _config_logger.warning(
+            "AGENT_CONTROL_LINEAR_ATTACHMENTS_WRITE_ENABLED is true while "
+            "AGENT_CONTROL_LINEAR_WRITE_ENABLED is false; write-back is the only "
+            "caller of the attachment mutations, so agent files will be stored "
+            "and never reach the ticket."
+        )
 
 
 class ExecutorSettings(BaseSettings):

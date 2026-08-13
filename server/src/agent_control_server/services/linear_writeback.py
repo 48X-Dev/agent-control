@@ -1,10 +1,12 @@
 """Write-back to Linear: the one tier-1-shaped action this design permits.
 
-Plan section 5.6. Two mutations exist in this module and nowhere else in the
-server: ``commentCreate`` and ``issueUpdate``. Both sit behind
-``AGENT_CONTROL_LINEAR_WRITE_ENABLED``, default false, because the first
-deployment should be able to read and reason without gaining the ability to
-edit anybody's tracker.
+Plan section 5.6. Every mutation the server makes lives in this module or in
+:mod:`.linear_writeback_files`, and nowhere else: ``commentCreate`` and
+``issueUpdate`` behind ``AGENT_CONTROL_LINEAR_WRITE_ENABLED``, ``fileUpload``
+and ``attachmentCreate`` behind ``..._LINEAR_ATTACHMENTS_WRITE_ENABLED``. Both
+default false, because a first deployment should read and reason without
+gaining the ability to edit anybody's tracker, and an operator who accepted a
+comment has not thereby accepted an upload.
 
 Same conventions as :mod:`.linear_client`: the API key is passed to the
 constructor, held in one attribute and written into exactly one request
@@ -32,6 +34,7 @@ import hashlib
 import logging
 import re
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -40,6 +43,7 @@ from agent_control_models.tasks import WRITEBACK_BODY_MAX_LENGTH
 
 from ..config import linear_settings
 from .linear_client import LinearError
+from .linear_writeback_files import LinearFileClient, LinearFileWriter
 
 _logger = logging.getLogger(__name__)
 
@@ -112,12 +116,14 @@ def compose_comment_body(
     total_steps: int,
     agent_name: str,
     output_text: str,
+    file_lines: Sequence[str] = (),
 ) -> str:
     """The exact comment 5.6 specifies: marker, attribution, fence, chain link.
 
     The fence is for legibility; :func:`sanitize_agent_text` is what makes it
-    hold. The chain link is appended only when the deployment names a console
-    origin, because a relative link in a tracker is a link that 404s.
+    hold, and ``file_lines`` point at a file rather than pasting one in. The
+    chain link is appended only when the deployment names a console origin,
+    because a relative link in a tracker is a link that 404s.
     """
     sanitized = sanitize_agent_text(output_text)
     quoted = "\n".join(f"> {line}" for line in sanitized.split("\n"))
@@ -131,6 +137,7 @@ def compose_comment_body(
         quoted,
         "> ```",
     ]
+    lines.extend(file_lines)
     base_url = linear_settings.console_base_url.strip().rstrip("/")
     if base_url:
         lines.append(f"[Chain]({base_url}/agent-tasks/{task_key})")
@@ -193,7 +200,7 @@ class IssueReviewState:
     milestone_id: str | None
 
 
-class LinearWritebackClient(Protocol):
+class LinearWritebackClient(LinearFileClient, Protocol):
     """The narrow write surface, so tests substitute an object."""
 
     async def create_comment(self, *, issue_id: str, body: str) -> str:
@@ -296,6 +303,9 @@ class HttpLinearWritebackClient:
         self._timeout_seconds = timeout_seconds
         self._owns_client = client is None
         self._client = client or httpx.AsyncClient(timeout=timeout_seconds)
+        self._files = LinearFileWriter(
+            post=self._post, client=self._client, timeout_seconds=timeout_seconds
+        )
 
     async def aclose(self) -> None:
         if self._owns_client:
@@ -363,6 +373,20 @@ class HttpLinearWritebackClient:
             state_type=_optional_str(state.get("type")),
             team_key=_optional_str(_mapping(issue, "team").get("key")),
             milestone_id=_optional_str(_mapping(issue, "projectMilestone").get("id")),
+        )
+
+    async def file_upload(
+        self, *, filename: str, content_type: str, content: bytes
+    ) -> str:
+        return await self._files.file_upload(
+            filename=filename, content_type=content_type, content=content
+        )
+
+    async def create_attachment(
+        self, *, issue_id: str, title: str, url: str, subtitle: str | None
+    ) -> str:
+        return await self._files.create_attachment(
+            issue_id=issue_id, title=title, url=url, subtitle=subtitle
         )
 
     async def _post(self, query: str, variables: dict[str, Any]) -> dict[str, Any]:

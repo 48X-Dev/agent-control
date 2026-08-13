@@ -93,6 +93,10 @@ services:
       # comment rows queue and stay pending, and accepting a review-queue
       # entry is refused.
       AGENT_CONTROL_LINEAR_WRITE_ENABLED: ${AGENT_CONTROL_LINEAR_WRITE_ENABLED:-false}
+      # Files an agent wrote, uploaded and hung on the issue. Its own switch:
+      # accepting a comment is not accepting an upload. Off, and while off the
+      # comment says a file was written and not delivered.
+      AGENT_CONTROL_LINEAR_ATTACHMENTS_WRITE_ENABLED: ${AGENT_CONTROL_LINEAR_ATTACHMENTS_WRITE_ENABLED:-false}
       AGENT_CONTROL_LINEAR_CONSOLE_BASE_URL: ${AGENT_CONTROL_LINEAR_CONSOLE_BASE_URL:-}
       # Company knowledge, read side. Off by default; while off every search
       # answers a stated `knowledge_disabled` refusal and the routes still
