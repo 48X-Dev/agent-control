@@ -12,6 +12,9 @@ from dotenv import load_dotenv
 from google.adk.agents import LlmAgent
 from google.adk.apps import App
 
+from .file_outputs import INSTRUCTION as _FILE_OUTPUTS_INSTRUCTION
+from .file_outputs import build_file_output_tools
+
 if TYPE_CHECKING:
     from google.adk.models import BaseLlm
 
@@ -365,6 +368,9 @@ agent_control.init(
 _web_toolset = _build_web_toolset()
 _knowledge_tools = _build_knowledge_tools()
 _tracker_tools = _build_tracker_tools()
+# Write and upload, never read. A tool that opened a file would let the model
+# choose what to open; see docs/plans/agent-file-outputs.md section 6.
+_file_output_tools = build_file_output_tools()
 
 root_agent = LlmAgent(
     name="root_agent",
@@ -380,6 +386,7 @@ root_agent = LlmAgent(
         "Do not invent internal contacts or unsupported city data."
         + (_KNOWLEDGE_INSTRUCTION if _knowledge_tools else "")
         + (_TRACKER_INSTRUCTION if _tracker_tools else "")
+        + (_FILE_OUTPUTS_INSTRUCTION if _file_output_tools else "")
     ),
     tools=[
         get_current_time,
@@ -387,6 +394,7 @@ root_agent = LlmAgent(
         *([_web_toolset] if _web_toolset else []),
         *_knowledge_tools,
         *_tracker_tools,
+        *_file_output_tools,
     ],
 )
 

@@ -233,6 +233,52 @@ If the server has no knowledge database - which is most deployments - the tools
 answer a stated refusal, the model is told it could not check, and the turn
 carries on. Nothing here fails a turn.
 
+## File outputs, and what they deliberately cannot do
+
+Three more tools - `write_xlsx_file`, `write_docx_file` and `write_pptx_file` -
+let the agent produce a real spreadsheet, document or deck instead of pasting a
+markdown table into its report. Off by default:
+
+```bash
+AGENT_CONTROL_AGENT_FILE_OUTPUTS_ENABLED=1 uv run adk run my_agent
+```
+
+Each takes **structured data** - a header and rows, or headings and paragraphs -
+never a byte string and never a blob of prose. The model chooses the content and
+the tool chooses the encoding, which is why there is no fourth tool that writes
+an arbitrary file: a tool that writes arbitrary bytes writes `.sh`, and this
+process is the one running untrusted model output.
+
+**There is no tool here that reads, lists, fetches or changes a file, and that
+is load-bearing rather than unfinished.** A read tool would let the model pick
+what to open, which turns a capability with no injection surface into one with
+the same surface as a fetched web page. A draft comes back to the agent because
+the *server* puts it in the next turn's message, on the same path that delivers
+a file a person attached. The agent never named it and cannot ask for a
+different one.
+
+`filename` is required and has no default. Generic names - `output`, `file`,
+`result`, `untitled`, `document`, `sheet1`, a bare extension - come back as
+`status=blocked` naming the rule, because a tool that can be called without
+naming the thing will be. `stage` is `draft` or `final`: a draft is working
+state that stays with the task, a final is the deliverable. It defaults to
+`draft`, so nothing reaches a ticket by forgetting.
+
+The upload authenticates with the **per-session token**, not this process's API
+key. The store's quota is a per-credential bucket, so one agent's runaway loop
+spends its own allowance rather than every other agent's. Files land in the
+ordinary attachment store and count against every ceiling in it.
+
+Control names are `root_agent.write_xlsx_file`, `root_agent.write_docx_file` and
+`root_agent.write_pptx_file` - agent-qualified, the same trap as the tools
+above. Every outcome returns the same keys (`status`, `message`, `filename`,
+`stage`, `size_bytes`, `attachment_key`), so a control selecting one of them
+never finds it missing.
+
+Turning the flag on without `openpyxl`, `python-docx` and `python-pptx`
+installed attaches no tools and logs one line naming the flag and the missing
+library. Design: `docs/plans/agent-file-outputs.md`, sections 4.5 to 4.7 and 6.
+
 ## Run
 
 ```bash
