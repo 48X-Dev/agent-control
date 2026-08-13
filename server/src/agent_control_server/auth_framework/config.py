@@ -94,6 +94,11 @@ RUNTIME_TOKEN_BOUND_OPERATIONS: tuple[Operation, ...] = (
     # metered per session, and a token that names its own session is the only
     # thing that makes the meter's key unforgeable.
     Operation.COMPANY_KNOWLEDGE_SEARCH,
+    # An agent storing its own output. The binding is the provenance: the route
+    # writes ``origin=agent`` for a caller whose token names the session in the
+    # path, so a credential that cannot name another session cannot forge a
+    # file into one.
+    Operation.AGENT_ATTACHMENTS_WRITE_SELF,
 )
 """Operations the runtime-auth mode owns, instead of the default authorizer."""
 

@@ -188,6 +188,7 @@ class AgentAttachmentsService:
         namespace_key: str,
         session: AgentSession,
         caller_hash: str | None,
+        rate_limit_hash: str | None = None,
         declared_name: str,
         declared_mime: str,
         data: bytes,
@@ -218,6 +219,12 @@ class AgentAttachmentsService:
         ``created_at``, bytes back, status ``ready``. Minting a second row would
         break the audit chain the tombstone exists to keep.
 
+        ``rate_limit_hash`` defaults to ``caller_hash`` and is passed separately
+        by exactly one caller: an agent's own upload, whose credential names the
+        session's creator rather than the session, so metering it on
+        ``caller_hash`` would pool every session one dispatcher opened into a
+        single bucket. ``created_by_hash`` keeps the creator either way.
+
         ``enforce_rate`` is off for exactly one caller: the Linear fetch, which
         is already bounded by a per-issue count and a per-task byte ceiling and
         has no browser behind it. The per-minute limiter exists to stop a person
@@ -229,7 +236,7 @@ class AgentAttachmentsService:
             enforce_upload_rate(
                 settings=self._settings,
                 namespace_key=namespace_key,
-                caller_hash=caller_hash,
+                caller_hash=rate_limit_hash if rate_limit_hash is not None else caller_hash,
             )
 
         source_sha = hashlib.sha256(data).hexdigest()
