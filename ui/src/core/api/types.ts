@@ -335,7 +335,7 @@ export type AttachmentStatus =
   | 'failed'
   | 'tombstoned';
 
-export type AttachmentOrigin = 'operator_upload' | 'linear';
+export type AttachmentOrigin = 'operator_upload' | 'linear' | 'agent';
 
 export type Attachment = {
   attachment_key: string;

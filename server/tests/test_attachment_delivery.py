@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import pytest
 from agent_control_models.attachment_converter import ConversionStatus
-from agent_control_models.attachments import ATTACHMENT_MAX_PER_TURN
+from agent_control_models.attachments import ATTACHMENT_MAX_PER_TURN, AttachmentOrigin
 from agent_control_models.sessions import TURN_MESSAGE_MAX_LENGTH
 
 from agent_control_server.services.attachment_conversions import (
@@ -28,6 +28,8 @@ from agent_control_server.services.attachment_conversions import (
     CachedConversion,
 )
 from agent_control_server.services.attachment_delivery import (
+    _AGENT_HEADING,
+    _HEADING,
     FILES_BLOCK_MAX_CHARS,
     NOT_INCLUDED,
     REASON_ENCRYPTED,
@@ -72,6 +74,7 @@ def _file(
     size: int = 2_500_000,
     mime: str = "application/pdf",
     key: str | None = None,
+    origin: AttachmentOrigin = AttachmentOrigin.OPERATOR_UPLOAD,
 ) -> DeliverableAttachment:
     return DeliverableAttachment(
         attachment_key=key or name,
@@ -79,6 +82,7 @@ def _file(
         sniffed_mime=mime,
         size_bytes=size,
         conversion=conversion,
+        origin=origin,
     )
 
 
@@ -155,6 +159,57 @@ def test_the_count_line_states_how_many_of_how_many() -> None:
     assert "1 of 3 files" in delivered.message
     assert delivered.included_keys == ("a",)
     assert set(delivered.named_keys) == {"b", "c"}
+
+
+def test_a_file_the_agent_wrote_is_listed_apart_from_the_ones_it_was_given() -> None:
+    """One heading over both tells the agent its own report was handed to it.
+
+    That is the sentence that makes it re-describe or re-produce a deliverable
+    it already wrote, so the two are listed under separate headings and each
+    heading carries only its own files.
+    """
+    delivered = build_turn_message(
+        "Finish it",
+        [
+            _file("brief.pdf", key="a", conversion=_converted("the brief")),
+            _file(
+                "report.md",
+                key="b",
+                mime="text/markdown",
+                origin=AttachmentOrigin.AGENT,
+                conversion=_converted("the report"),
+            ),
+        ],
+    )
+
+    given, marker, produced = delivered.message.partition(_AGENT_HEADING)
+    assert marker, "the file the agent wrote needs a heading of its own"
+    assert _HEADING in given
+    assert "brief.pdf" in given
+    assert "report.md" not in given
+
+    listed, _, _ = produced.partition("<<<FILE_BEGIN")
+    assert "report.md" in listed
+    assert "brief.pdf" not in listed
+    assert set(delivered.included_keys) == {"a", "b"}
+
+
+def test_one_origin_on_a_turn_gets_one_heading_and_never_an_empty_second() -> None:
+    """A heading with no files under it is a file the agent goes looking for."""
+    delivered = build_turn_message(
+        "Carry on",
+        [
+            _file(
+                "report.md",
+                mime="text/markdown",
+                origin=AttachmentOrigin.AGENT,
+                conversion=_converted("the report"),
+            )
+        ],
+    )
+    assert _AGENT_HEADING in delivered.message
+    assert _HEADING not in delivered.message
+    assert "1 file attached to this message" in delivered.message
 
 
 def test_the_status_section_collapses_to_the_count_line_over_budget() -> None:
