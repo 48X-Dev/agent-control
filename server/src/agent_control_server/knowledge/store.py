@@ -14,6 +14,7 @@ why it and not ``to_tsquery`` is the entry point.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -40,7 +41,21 @@ __all__ = [
     "recent_documents",
     "search_chunks",
     "search_chunks_trigram",
+    "any_of",
 ]
+
+
+_TSQUERY_KEYWORDS = frozenset({"or", "and", "not"})
+
+
+def any_of(query: str) -> str | None:
+    """The same query with its words OR'd, or ``None`` when that would change nothing.
+
+    ``websearch_to_tsquery`` ANDs, so a question phrased as a sentence needs every
+    word in one chunk and matches nothing. Still its own input, so it still parses.
+    """
+    words = [w for w in re.findall(r"[\w-]+", query) if w.lower() not in _TSQUERY_KEYWORDS]
+    return " OR ".join(words) if len(words) > 1 else None
 
 # How far past k to look before collapsing duplicates. Two copies of the same
 # paragraph reachable from two sources must not spend two of the k slots, and

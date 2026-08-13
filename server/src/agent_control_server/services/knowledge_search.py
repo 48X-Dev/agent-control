@@ -45,6 +45,7 @@ from ..knowledge.engine import KnowledgeUnavailableError, knowledge_session
 from ..knowledge.store import (
     CorpusStats,
     SnippetRow,
+    any_of,
     corpus_stats,
     recent_documents,
     search_chunks,
@@ -108,10 +109,20 @@ async def search(
                 snippet_max_chars=resolved.snippet_max_chars,
             )
             if not rows:
-                # Only when full-text found nothing at all, which is where the
-                # misspellings and the code-name fragments live. Running it
-                # beside every search would cost a second scan on the queries
-                # that already worked.
+                # An agent asks in a sentence and websearch_to_tsquery ANDs, so
+                # every word has to land in one chunk. Broaden before reaching
+                # for trigram, which needs word similarity a long phrase never has.
+                broadened = any_of(cleaned)
+                if broadened:
+                    rows = await search_chunks(
+                        session,
+                        query=broadened,
+                        limit=limit,
+                        snippet_max_chars=resolved.snippet_max_chars,
+                    )
+            if not rows:
+                # Only when both found nothing, which is where the misspellings
+                # and the code-name fragments live.
                 rows = await search_chunks_trigram(
                     session,
                     query=cleaned,

@@ -29,6 +29,7 @@ from .schema import (
 from .store import (
     CorpusStats,
     SnippetRow,
+    any_of,
     corpus_stats,
     is_supported_schema,
     read_schema_version,
@@ -53,6 +54,7 @@ __all__ = [
     "recent_documents",
     "schema_meta",
     "search_chunks",
+    "any_of",
     "search_chunks_trigram",
     "sources",
     "sync_lease",
