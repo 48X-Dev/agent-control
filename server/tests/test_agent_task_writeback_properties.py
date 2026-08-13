@@ -29,9 +29,11 @@ from pydantic import SecretStr, ValidationError
 from agent_control_server.config import linear_settings
 from agent_control_server.services.linear_writeback import (
     HttpLinearWritebackClient,
+    decision_digest,
+)
+from agent_control_server.services.linear_writeback_compose import (
     comment_marker,
     compose_comment_body,
-    decision_digest,
     sanitize_agent_text,
 )
 from agent_control_server.services.linear_writeback_runtime import (

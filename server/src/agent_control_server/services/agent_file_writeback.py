@@ -24,17 +24,75 @@ from agent_control_models.attachments import (
     AttachmentStatus,
     AttachmentVariant,
 )
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import executor_settings
-from ..models import AgentSession, AgentSessionAttachment
+from ..models import AgentSession, AgentSessionAttachment, AgentTask
+from ..models import AgentTaskStep as AgentTaskStepRow
+from ..models import AgentTaskWriteback as WritebackRow
 from .agent_attachments import AgentAttachmentsService
 from .attachment_blobs import get_attachment_blob_store
+from .linear_writeback_compose import compose_comment_body
 from .linear_writeback_files import AgentFile, AgentFileDelivery, render_file_lines
 from .linear_writeback_runtime import WritebackRuntime
 
 _logger = logging.getLogger(__name__)
+
+
+async def attach_step_files(
+    db: AsyncSession,
+    runtime: WritebackRuntime,
+    *,
+    row: WritebackRow,
+    task: AgentTask,
+    agent_name: str,
+) -> None:
+    """Upload this step's deliverables and fold the pointers into the queued body.
+
+    Persisted, so the body a control judges is the body that gets posted. A
+    file that fails to upload still earns a line saying so, and nothing here
+    raises at the comment: an undelivered file must not cost the comment.
+    """
+    if not runtime.can_write_attachments:
+        return
+    step = await db.scalar(
+        select(AgentTaskStepRow).where(
+            AgentTaskStepRow.task_id == task.id,
+            AgentTaskStepRow.step_index == row.step_index,
+        )
+    )
+    if step is None:
+        return
+    try:
+        file_lines = await push_step_files(
+            db,
+            runtime,
+            namespace_key=task.namespace_key,
+            session_key=step.session_key,
+            issue_id=task.source_ref,
+            agent_name=agent_name,
+            step_index=row.step_index,
+        )
+    except Exception:
+        _logger.exception("Delivering an agent file to the tracker failed.")
+        return
+    if not file_lines:
+        return
+    total = await db.scalar(
+        select(func.count())
+        .select_from(AgentTaskStepRow)
+        .where(AgentTaskStepRow.task_id == task.id)
+    )
+    row.body = compose_comment_body(
+        task_key=task.task_key,
+        step_index=row.step_index,
+        total_steps=max(int(total or 0), row.step_index + 1),
+        agent_name=step.agent_name,
+        output_text=step.output_text or "",
+        file_lines=file_lines,
+    )
+    await db.flush()
 
 
 async def push_step_files(

@@ -32,9 +32,11 @@ from agent_control_server.services.linear_client import LinearError
 from agent_control_server.services.linear_writeback import (
     CompletedStateResolver,
     IssueReviewState,
+    decision_digest,
+)
+from agent_control_server.services.linear_writeback_compose import (
     comment_marker,
     compose_comment_body,
-    decision_digest,
     sanitize_agent_text,
 )
 from agent_control_server.services.linear_writeback_runtime import (

@@ -20,7 +20,9 @@ from typing import Any
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
-from agent_control_server.services.linear_writeback import comment_marker
+from agent_control_server.services.linear_writeback_compose import (
+    comment_marker,
+)
 
 from .test_agent_task_review_gate import (
     DUMMY_DIGEST,

@@ -39,7 +39,9 @@ from ..auth_framework import Operation, Principal, require_operation
 from ..db import get_async_db
 from ..errors import ConflictError, NotFoundError, ServiceUnavailableError
 from ..models import AgentSession, AgentTask
-from ..services.linear_writeback import compose_agent_comment_body
+from ..services.linear_writeback_compose import (
+    compose_agent_comment_body,
+)
 from ..services.linear_writeback_runtime import WritebackRuntime, get_writeback_runtime
 from .agent_nudges import session_target_context
 
