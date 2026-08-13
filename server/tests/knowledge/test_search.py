@@ -11,7 +11,10 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import sqlalchemy as sa
+from sqlalchemy.pool import NullPool
+
 from agent_control_server.knowledge import (
+    any_of,
     corpus_stats,
     knowledge_session,
     recent_documents,
@@ -19,8 +22,6 @@ from agent_control_server.knowledge import (
     search_chunks_trigram,
 )
 from agent_control_server.knowledge.seed import SeedDocument
-from sqlalchemy.pool import NullPool
-
 from tests.knowledge.support import LAPTOPS, RELEASES, handbook, seed, settings_for
 from tests.knowledge_provisioning import Corpus
 
@@ -391,3 +392,28 @@ async def test_an_empty_corpus_reports_zero_rather_than_failing(corpus: Corpus) 
 
     assert stats.documents == 0
     assert stats.sources_enabled == 0
+
+
+async def test_a_sentence_shaped_question_still_finds_the_page(corpus: Corpus) -> None:
+    """The failure this fixes, from a real run: an agent asked in prose and got nothing.
+
+    ``websearch_to_tsquery`` ANDs, so every word had to land in one chunk. The
+    corpus held the answer and the agent reported it could verify nothing.
+    """
+    seed(corpus, **handbook())
+    question = "what is the laptop reimbursement policy for a new joiner and who approves it"
+
+    async with knowledge_session(settings_for(corpus)) as session:
+        strict = await search_chunks(session, query=question, limit=5, snippet_max_chars=1200)
+        broadened = await search_chunks(
+            session, query=any_of(question) or question, limit=5, snippet_max_chars=1200
+        )
+
+    assert not strict, "if AND started matching, this test no longer proves anything"
+    assert broadened, "broadening to OR should reach the laptop policy"
+    assert "laptop" in broadened[0].snippet.lower()
+
+
+def test_broadening_a_single_word_query_would_change_nothing() -> None:
+    assert any_of("laptops") is None
+    assert any_of("laptop reimbursement") == "laptop OR reimbursement"
