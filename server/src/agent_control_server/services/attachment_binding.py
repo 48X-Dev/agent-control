@@ -24,6 +24,7 @@ from __future__ import annotations
 import logging
 
 from agent_control_models.attachments import (
+    AttachmentOrigin,
     AttachmentStatus,
     TurnAttachmentVerdict,
 )
@@ -117,6 +118,7 @@ async def load_for_turn(
                 display_name=row.display_name,
                 sniffed_mime=row.sniffed_mime,
                 size_bytes=row.size_bytes,
+                origin=AttachmentOrigin(row.origin),
                 conversion=cached,
             )
         )
