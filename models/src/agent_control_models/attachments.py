@@ -63,10 +63,26 @@ class AttachmentStatus(StrEnum):
 
 
 class AttachmentOrigin(StrEnum):
-    """Who put this file in the conversation."""
+    """Who put this file in the conversation.
+
+    Written by the route that stored the file, never inferred from its
+    contents: origin decides whether the file is delivered at all.
+    """
 
     OPERATOR_UPLOAD = "operator_upload"
     LINEAR = "linear"
+    AGENT = "agent"
+
+
+class AgentOutputKind(StrEnum):
+    """Whether an agent-authored file is working state or the deliverable.
+
+    A draft never leaves this system. A final is what a later phase pushes to
+    the tracker, and only one live draft exists per step.
+    """
+
+    DRAFT = "draft"
+    FINAL = "final"
 
 
 class AttachmentVariant(StrEnum):
@@ -142,6 +158,10 @@ class Attachment(BaseModel):
         default=None,
         max_length=ATTACHMENT_ORIGIN_REF_MAX_LENGTH,
         description="The tracker's own identifier, for audit and dedupe. Null for uploads.",
+    )
+    agent_output: AgentOutputKind | None = Field(
+        default=None,
+        description="Draft or final, and null unless ``origin`` is ``agent``.",
     )
     created_at: dt.datetime
     updated_at: dt.datetime
