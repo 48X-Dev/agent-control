@@ -29,9 +29,8 @@ from .linear_writeback_files import (
 class WritebackRuntime:
     """What the write path needs from configuration, resolved once.
 
-    ``client`` is ``None`` when no API key is configured, and the two flags
-    gate comments and files apart. Key and flag are separate because a
-    deployment with a key and the flag off must queue rows and send nothing.
+    ``client`` is ``None`` without an API key, and the two flags gate comments
+    and files apart: a key with the flag off queues rows and sends nothing.
     """
 
     client: LinearWritebackClient | None

@@ -204,8 +204,8 @@ async def push_agent_file(
 ) -> AgentFileDelivery:
     """Upload then attach, reporting each failure instead of raising it.
 
-    A failed PUT yields no ``asset_url``; a failed attach keeps the one the
-    upload earned, so the retry attaches rather than uploading a second copy.
+    A failed attach keeps the asset URL, so a retry attaches rather than
+    uploading a second copy.
     """
     asset_url = file.asset_url
     if asset_url is None:

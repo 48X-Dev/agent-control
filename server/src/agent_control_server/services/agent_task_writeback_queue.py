@@ -35,7 +35,7 @@ from agent_control_models.tasks import (
     WritebackKind,
     WritebackStatus,
 )
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -44,6 +44,7 @@ from ..errors import ConflictError, NotFoundError
 from ..models import AgentTask
 from ..models import AgentTaskStep as AgentTaskStepRow
 from ..models import AgentTaskWriteback as WritebackRow
+from .agent_file_writeback import push_step_files
 from .controls import ControlService
 from .linear_client import LinearError
 from .linear_writeback import (
@@ -288,6 +289,8 @@ class WritebackQueueService:
         if not self._runtime.can_write:
             return row
 
+        await self._attach_step_files(row=row, task=task, agent_name=agent_name)
+
         allowed, matches = await evaluate_writeback_body(
             self._db,
             namespace_key=task.namespace_key,
@@ -332,6 +335,55 @@ class WritebackQueueService:
             row.last_error = exc.message
         await self._db.flush()
         return row
+
+    async def _attach_step_files(
+        self, *, row: WritebackRow, task: AgentTask, agent_name: str
+    ) -> None:
+        """Upload this step's deliverables and fold the pointers into the body.
+
+        Before the control evaluates anything, and persisted, so the body that
+        was judged is the body that is posted. A file that fails to upload
+        still earns a line saying so; nothing here raises at the comment.
+        """
+        if not self._runtime.can_write_attachments:
+            return
+        step = await self._db.scalar(
+            select(AgentTaskStepRow).where(
+                AgentTaskStepRow.task_id == task.id,
+                AgentTaskStepRow.step_index == row.step_index,
+            )
+        )
+        if step is None:
+            return
+        try:
+            file_lines = await push_step_files(
+                self._db,
+                self._runtime,
+                namespace_key=task.namespace_key,
+                session_key=step.session_key,
+                issue_id=task.source_ref,
+                agent_name=agent_name,
+                step_index=row.step_index,
+            )
+        except Exception:
+            _logger.exception("Delivering an agent file to the tracker failed.")
+            return
+        if not file_lines:
+            return
+        total = await self._db.scalar(
+            select(func.count())
+            .select_from(AgentTaskStepRow)
+            .where(AgentTaskStepRow.task_id == task.id)
+        )
+        row.body = compose_comment_body(
+            task_key=task.task_key,
+            step_index=row.step_index,
+            total_steps=max(int(total or 0), row.step_index + 1),
+            agent_name=step.agent_name,
+            output_text=step.output_text or "",
+            file_lines=file_lines,
+        )
+        await self._db.flush()
 
     async def deliver_pending_comments(
         self, *, task: AgentTask, emit_events: EventEmitter | None
