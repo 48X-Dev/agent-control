@@ -23,6 +23,7 @@ from .config import (
     check_agent_config_startup_requirements,
     check_executor_startup_requirements,
     check_knowledge_startup_state,
+    check_linear_attachment_write_state,
     executor_settings,
     knowledge_settings,
     observability_settings,
@@ -206,6 +207,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             "steps will not fetch files from their issues. Set "
             "AGENT_CONTROL_LINEAR_ATTACHMENTS_ENABLED=true if they should."
         )
+
+    # The write side of the same story: a file an agent wrote that never
+    # reaches its issue is indistinguishable, from the ticket, from a file that
+    # was never written.
+    check_linear_attachment_write_state(linear_settings)
 
     # The knowledge corpus is a second database this server only reads, and it
     # is absent on most deployments. Never a refusal to boot: with it off or
