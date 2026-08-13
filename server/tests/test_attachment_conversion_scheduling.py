@@ -36,7 +36,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import text
 
 from agent_control_server.config import executor_settings
-from agent_control_server.endpoints import agent_attachments as attachments_endpoint
+from agent_control_server.endpoints import attachment_uploads as attachments_endpoint
 from agent_control_server.services import attachment_conversions as conversions
 from agent_control_server.services.attachment_conversions import (
     STATE_RUNNING,
