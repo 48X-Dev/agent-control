@@ -287,6 +287,20 @@ class FakeControlPlane:
 
     def _start_step(self, path: str, body: dict[str, Any]) -> httpx.Response:
         key = path.split("/")[-2]
+        # The server reuses a row that is running, abandoned or failed and
+        # refuses only a completed one (`agent_tasks.py`, start_step). A fake
+        # that overwrites unconditionally is more permissive than the thing it
+        # stands in for, which is how a retry that reopened a finished step
+        # passed its tests and failed every real task.
+        existing = self.steps.get(key, {}).get(body["step_index"])
+        if existing is not None and existing["status"] == "completed":
+            return httpx.Response(
+                409,
+                json={
+                    "error_code": "TASK_STATUS_CONFLICT",
+                    "detail": f"Step {body['step_index']} of task {key} already completed.",
+                },
+            )
         row = {
             "step_index": body["step_index"],
             "agent_name": body["agent_name"],
@@ -1038,3 +1052,120 @@ def test_every_session_of_a_chain_is_bound_to_the_task_row(
     _run(plane, _options(tmp_path), monkeypatch)
 
     assert {session["task_key"] for session in plane.sessions} == {plane.keys["t1"]}
+
+
+# ---------------------------------------------------------------------------
+# The fake refuses what the server refuses
+# ---------------------------------------------------------------------------
+
+
+def test_the_fake_refuses_reopening_a_completed_step(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fidelity check, kept because its absence cost a production outage.
+
+    A retry that reopened a finished step passed three tests against a fake
+    that accepted it, then failed every real task with TASK_STATUS_CONFLICT.
+    Anything that runs a step more than once has to satisfy this first.
+    """
+    plane = FakeControlPlane(["t1"], plan_steps=[_planned(0, RESEARCHER)])
+    _run(plane, _options(tmp_path), monkeypatch)
+
+    key = plane.keys["t1"]
+    assert plane.steps[key][0]["status"] == "completed"
+
+    reopened = plane.handler(
+        httpx.Request(
+            "POST",
+            f"http://server/api/v1/agent-tasks/{key}/steps",
+            json={"step_index": 0, "agent_name": RESEARCHER, "session_key": "s"},
+        )
+    )
+    assert reopened.status_code == 409
+    assert reopened.json()["error_code"] == "TASK_STATUS_CONFLICT"
+
+
+# ---------------------------------------------------------------------------
+# max_turns: more turns on one step row, never a second step row
+# ---------------------------------------------------------------------------
+
+
+class _CoveragePlane(FakeControlPlane):
+    """Answers each turn from a queue, so one step can improve on itself."""
+
+    def __init__(self, refs: list[str], replies: list[str], **kwargs: Any) -> None:
+        super().__init__(refs, **kwargs)
+        self.replies = list(replies)
+
+    def _turn(self, path: str, body: dict[str, Any]) -> httpx.Response:
+        agent = next(
+            s["agent_name"] for s in self.sessions if s["session_key"] == path.split("/")[-2]
+        )
+        self.text_for_agent[agent] = self.replies.pop(0) if self.replies else "done."
+        return super()._turn(path, body)
+
+
+_UNMET = "found some\n\n## Coverage\n\n- the list: **partial** - half of it\n- sources: **done**\n"
+_CLEAN = "found the rest\n\n## Coverage\n\n- the list: **done**\n- sources: **done**\n"
+
+
+def test_partial_coverage_spends_another_turn_on_the_same_step_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The bug this replaces opened a second step row and the server refused it.
+
+    Two turns, one step row, one `completed`. If this ever starts a second step
+    the fake now answers 409 exactly as the server does.
+    """
+    plane = _CoveragePlane(
+        ["t1"], replies=[_UNMET, _CLEAN], plan_steps=[_planned(0, RESEARCHER, max_turns=3)]
+    )
+
+    report, text = _run(plane, _options(tmp_path), monkeypatch)
+
+    assert len(plane.turns) == 2, "partial coverage should buy a second turn"
+    assert report.results[0].status is ClaimStatus.COMPLETED
+    key = plane.keys["t1"]
+    assert list(plane.steps[key]) == [0], "one step row, not one per turn"
+    assert plane.steps[key][0]["status"] == "completed"
+    second = plane.turns[1]["message"]
+    assert "## Your own previous attempt at this step" in second
+    assert "<<<ATTEMPT_BEGIN>>>" in second, "its own output is fenced like any other data"
+    assert "the list: partial - half of it" in second
+
+
+def test_one_turn_is_the_default_and_partial_coverage_does_not_widen_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plane = _CoveragePlane(
+        ["t1"], replies=[_UNMET, _CLEAN], plan_steps=[_planned(0, RESEARCHER, max_turns=1)]
+    )
+    _run(plane, _options(tmp_path), monkeypatch)
+    assert len(plane.turns) == 1
+
+
+def test_a_turn_that_closes_nothing_stops_rather_than_spending_the_ceiling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plane = _CoveragePlane(
+        ["t1"], replies=[_UNMET, _UNMET, _UNMET], plan_steps=[_planned(0, RESEARCHER, max_turns=3)]
+    )
+    _run(plane, _options(tmp_path), monkeypatch)
+    assert len(plane.turns) == 2, "no improvement should end the step"
+
+
+def test_a_multi_turn_step_still_hands_one_report_to_the_next_agent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The chain sees the last turn's answer, not the abandoned first one."""
+    plane = _CoveragePlane(
+        ["t1"],
+        replies=[_UNMET, _CLEAN, "writer done."],
+        plan_steps=[_planned(0, RESEARCHER, max_turns=3), _planned(1, WRITER)],
+    )
+
+    _run(plane, _options(tmp_path), monkeypatch)
+
+    handed = plane.turns[-1]["message"]
+    assert "found the rest" in handed, "the second turn's answer carries forward"
+    assert "found some" not in handed, "the superseded first answer does not"

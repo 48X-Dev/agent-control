@@ -12,7 +12,8 @@ from agent_control_models.attachments import StepFilesSummary
 from agent_control_models.sessions import TurnResponse
 
 from .client import DispatchClient, DispatchHTTPError, Disposition
-from .envelope import EnvelopeTooLongError, PriorReport, build_envelope
+from .coverage import unmet_items
+from .envelope import EnvelopeTooLongError, PriorAttempt, PriorReport, build_envelope
 from .extract import StepOutputCode, extract_step_output, join_agent_text
 from .ledger import ClaimLedger, ClaimStatus, LocalTaskLedger, TaskLedger
 from .server_ledger import ServerTaskLedger
@@ -446,6 +447,7 @@ class ChainStep:
     agent_name: str
     brief: str
     required_output: str = "text"
+    max_turns: int = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -521,6 +523,7 @@ async def _plan_chain(
                 agent_name=agent_name,
                 brief=step.brief or _fallback_brief(plan.implicit, options),
                 required_output=str(step.required_output),
+                max_turns=step.max_turns,
             )
         )
     return steps, None
@@ -792,6 +795,58 @@ async def _run_step(
         _emit(stream, f"reason     {output.detail}")
     if output.text:
         _emit(stream, _indent(output.text))
+
+    # More turns on the step already open, never a second `start_step`: a step
+    # row is unique on (task, index) and the server refuses a completed one.
+    # `max_turns` is turns this step may spend, so the row is finished once,
+    # below, with whatever the last turn produced.
+    attempts = 1
+    unmet = unmet_items(output.text)
+    while (
+        output.code is StepOutputCode.OK
+        and unmet
+        and attempts < step.max_turns
+    ):
+        _emit(
+            stream,
+            f"retry      {len(unmet)} of its own coverage lines unfinished, "
+            f"turn {attempts + 1} of {step.max_turns}",
+        )
+        try:
+            message = build_envelope(
+                item=item,
+                brief=step.brief,
+                source_kind=source_kind,
+                prior=prior,
+                retry=PriorAttempt(text=output.text or "", unmet=tuple(unmet)),
+                files=files,
+            )
+        except EnvelopeTooLongError:
+            # The answer in hand is worth more than the one that will not fit.
+            break
+        try:
+            turn = await client.start_turn(
+                session_key=session_key,
+                message=message,
+                attachment_keys=_delivered_keys(files),
+            )
+            deny_events = await client.deny_events_for_turn(agent_name=step.agent_name, turn=turn)
+        except DispatchHTTPError as exc:
+            return await _fail(ledger, source_kind, item, exc, stream, session_key=session_key)
+        output = extract_step_output(
+            turn.messages, deny_events=deny_events, required_output=step.required_output
+        )
+        attempts += 1
+        _emit(stream, f"trace      {turn.trace_id}  ({turn.duration_seconds:.1f}s)")
+        _emit(stream, f"outcome    {output.code.value}")
+        after = unmet_items(output.text)
+        if len(after) >= len(unmet):
+            # Nothing closed. A model repeating its own gaps is not converging,
+            # and the next turn is a decision nobody made.
+            _emit(stream, f"stopping   turn {attempts} closed nothing")
+            unmet = after
+            break
+        unmet = after
 
     status = _STATUS_FOR_OUTPUT[output.code]
     outcome_code = None if output.code is StepOutputCode.OK else output.code.value
